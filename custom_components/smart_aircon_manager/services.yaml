@@ -1,0 +1,6 @@
+# Service definitions for AI Aircon Manager
+
+reload:
+  name: Reload
+  description: Reload the AI Aircon Manager integration to apply configuration changes.
+  fields: {}

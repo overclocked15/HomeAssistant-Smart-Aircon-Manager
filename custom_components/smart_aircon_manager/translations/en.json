@@ -1,0 +1,168 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Smart Aircon Manager",
+        "description": "Configure your Mode and target temperature",
+        "data": {
+          "ai_provider": "AI Provider",
+          "api_key": "API Key",
+          "target_temperature": "Target Temperature (°C)",
+          "main_climate_entity": "Main Aircon Climate Entity (Optional - for monitoring)",
+          "main_fan_entity": "Main AC Fan Control (Optional - can be climate or fan entity)"
+        }
+      },
+      "add_room": {
+        "title": "Add Room Configuration",
+        "description": "Configure rooms with temperature sensors and zone fan speed controls. You have added {rooms_added} room(s) so far. After filling in the room details below, choose whether to add another room or finish setup.",
+        "data": {
+          "room_name": "Room Name",
+          "temperature_sensor": "Temperature Sensor",
+          "cover_entity": "Zone Fan Speed Control",
+          "add_another": "Add another room after this one? (Uncheck to finish setup)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Mode",
+      "invalid_auth": "Invalid Configuration",
+      "unknown": "Unexpected error occurred",
+      "no_rooms": "You must add at least one room",
+      "entity_not_found": "Entity does not exist in Home Assistant",
+      "entity_unavailable": "Entity is unavailable or has no valid state"
+    },
+    "abort": {
+      "already_configured": "Integration is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smart Aircon Manager Options",
+        "description": "Choose what you want to configure",
+        "menu_options": {
+          "settings": "Change Settings (temperature, entities, modes)",
+          "manage_rooms": "Manage Rooms (add/remove rooms)",
+          "room_overrides": "Room Overrides (enable/disable AI control per room)",
+          "weather": "Weather Integration (outdoor temperature adjustments)",
+          "schedules": "Time-Based Scheduling (different temps for different times)",
+          "advanced": "Advanced Settings (fine-tune thresholds and behavior)"
+        }
+      },
+      "settings": {
+        "title": "Integration Settings",
+        "description": "Configure integration settings. Changes will reload the integration.",
+        "data": {
+          "target_temperature": "Target Temperature (°C)",
+          "temperature_deadband": "Temperature Deadband (°C) - acceptable range from target",
+          "update_interval": "Update Interval (minutes)",
+          "hvac_mode": "HVAC Mode",
+          "ai_model": "AI Model (Haiku/Mini recommended for cost savings)",
+          "main_climate_entity": "Main Aircon Climate Entity (Optional - for monitoring/control)",
+          "auto_control_main_ac": "Automatically turn main AC on/off based on need",
+          "auto_control_ac_temperature": "Automatically control main AC temperature setpoint (fully automatic mode)",
+          "main_fan_entity": "Main AC Fan Control (Optional - can be climate or fan entity)",
+          "enable_notifications": "Enable notifications for important events"
+        }
+      },
+      "manage_rooms": {
+        "title": "Manage Rooms",
+        "description": "Current rooms:\n{current_rooms}\n\nChoose an action:",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "add_room": {
+        "title": "Add New Room",
+        "description": "Configure a new room with temperature sensor and zone fan control",
+        "data": {
+          "room_name": "Room Name",
+          "temperature_sensor": "Temperature Sensor",
+          "cover_entity": "Zone Fan Speed Control"
+        }
+      },
+      "remove_room": {
+        "title": "Remove Room",
+        "description": "Select a room to remove from the system",
+        "data": {
+          "room_to_remove": "Room to Remove"
+        }
+      },
+      "room_overrides": {
+        "title": "Room Overrides",
+        "description": "Enable or disable AI control for each room. Disabled rooms will not have their fan speeds adjusted by the AI. You have {room_count} room(s) configured.\n\nCheck the box to ENABLE AI control, uncheck to DISABLE.",
+        "data": {}
+      },
+      "weather": {
+        "title": "Weather Integration",
+        "description": "Configure outdoor temperature adjustments. The system will automatically adjust target temperature based on outdoor conditions.\n\n{info}",
+        "data": {
+          "enable_weather_adjustment": "Enable weather-based temperature adjustments",
+          "weather_entity": "Weather Entity (e.g., weather.home)",
+          "outdoor_temp_sensor": "Outdoor Temperature Sensor (alternative or backup)"
+        }
+      },
+      "schedules": {
+        "title": "Time-Based Scheduling",
+        "description": "Manage temperature schedules for different times and days",
+        "menu_options": {
+          "enable_scheduling": "Enable/Disable Scheduling",
+          "add_schedule": "Add New Schedule",
+          "edit_schedule": "View Existing Schedules",
+          "delete_schedule": "Delete Schedule"
+        }
+      },
+      "enable_scheduling": {
+        "title": "Enable Scheduling",
+        "description": "Turn time-based scheduling on or off",
+        "data": {
+          "enable_scheduling": "Enable time-based scheduling"
+        }
+      },
+      "add_schedule": {
+        "title": "Add New Schedule",
+        "description": "Create a new temperature schedule",
+        "data": {
+          "schedule_name": "Schedule Name (e.g., Sleep Mode, Work Hours)",
+          "schedule_days": "Days of Week",
+          "schedule_start_time": "Start Time",
+          "schedule_end_time": "End Time (can cross midnight)",
+          "schedule_target_temp": "Target Temperature (°C)",
+          "schedule_enabled": "Schedule Enabled"
+        }
+      },
+      "edit_schedule": {
+        "title": "Existing Schedules",
+        "description": "{message}",
+        "data": {}
+      },
+      "delete_schedule": {
+        "title": "Delete Schedule",
+        "description": "{message}",
+        "data": {
+          "schedule_to_delete": "Schedule to Delete"
+        }
+      },
+      "advanced": {
+        "title": "Advanced Settings",
+        "description": "Fine-tune system behavior with custom thresholds. Leave at defaults unless you know what you're doing!",
+        "data": {
+          "main_fan_high_threshold": "Main Fan HIGH Threshold - Temp above target for HIGH speed",
+          "main_fan_medium_threshold": "Main Fan MEDIUM Threshold - Temp above target for MEDIUM speed",
+          "weather_influence_factor": "Weather Influence Factor - How much outdoor temp affects target (0=none, 1=full)",
+          "overshoot_tier1_threshold": "Overshoot Tier 1 - Small overshoot threshold (25-35% fan)",
+          "overshoot_tier2_threshold": "Overshoot Tier 2 - Medium overshoot threshold (15-25% fan)",
+          "overshoot_tier3_threshold": "Overshoot Tier 3 - Severe overshoot threshold (0-5% fan)"
+        },
+        "data_description": {
+          "main_fan_high_threshold": "When average temperature deviation exceeds this value, main fan switches to HIGH. Default: 2.5°C",
+          "main_fan_medium_threshold": "When average temperature deviation exceeds this value, main fan switches to MEDIUM. Default: 1.0°C",
+          "weather_influence_factor": "Multiplier for weather-based adjustments. 0.0 = no weather influence, 1.0 = full influence. Default: 0.5",
+          "overshoot_tier1_threshold": "Rooms overshooting by less than this get 25-35% fan (gentle reduction). Default: 1.0°C",
+          "overshoot_tier2_threshold": "Rooms overshooting between tier1 and this get 15-25% fan (moderate reduction). Default: 2.0°C",
+          "overshoot_tier3_threshold": "Rooms overshooting more than this get 0-5% fan (shutdown). Default: 3.0°C"
+        }
+      }
+    }
+  }
+}

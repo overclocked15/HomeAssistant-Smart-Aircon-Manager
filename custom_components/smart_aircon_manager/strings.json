@@ -1,0 +1,91 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up AI Aircon Manager",
+        "description": "Configure your AI provider and target temperature",
+        "data": {
+          "ai_provider": "AI Provider",
+          "api_key": "API Key",
+          "target_temperature": "Target Temperature (°C)",
+          "main_climate_entity": "Main Aircon Climate Entity (Optional - for monitoring)",
+          "main_fan_entity": "Main AC Fan Control (Optional - can be climate or fan entity)"
+        }
+      },
+      "add_room": {
+        "title": "Add Room Configuration",
+        "description": "Configure rooms with temperature sensors and zone fan speed controls. You have added {rooms_added} room(s) so far. After filling in the room details below, choose whether to add another room or finish setup.",
+        "data": {
+          "room_name": "Room Name",
+          "temperature_sensor": "Temperature Sensor",
+          "cover_entity": "Zone Fan Speed Control",
+          "add_another": "Add another room after this one? (Uncheck to finish setup)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to AI provider",
+      "invalid_auth": "Invalid API key",
+      "unknown": "Unexpected error occurred",
+      "no_rooms": "You must add at least one room"
+    },
+    "abort": {
+      "already_configured": "Integration is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "AI Aircon Manager Options",
+        "description": "Choose what you want to configure",
+        "menu_options": {
+          "settings": "Change Settings (temperature, entities, modes)",
+          "manage_rooms": "Manage Rooms (add/remove rooms)",
+          "room_overrides": "Room Overrides (enable/disable AI control per room)"
+        }
+      },
+      "settings": {
+        "title": "Integration Settings",
+        "description": "Configure integration settings. Changes will reload the integration.",
+        "data": {
+          "target_temperature": "Target Temperature (°C)",
+          "temperature_deadband": "Temperature Deadband (°C) - acceptable range from target",
+          "update_interval": "Update Interval (minutes)",
+          "hvac_mode": "HVAC Mode",
+          "main_climate_entity": "Main Aircon Climate Entity (Optional - for monitoring/control)",
+          "auto_control_main_ac": "Automatically turn main AC on/off based on need",
+          "main_fan_entity": "Main AC Fan Control (Optional - can be climate or fan entity)",
+          "enable_notifications": "Enable notifications for important events"
+        }
+      },
+      "manage_rooms": {
+        "title": "Manage Rooms",
+        "description": "Current rooms:\n{current_rooms}\n\nChoose an action:",
+        "data": {
+          "action": "Action"
+        }
+      },
+      "add_room": {
+        "title": "Add New Room",
+        "description": "Configure a new room with temperature sensor and zone fan control",
+        "data": {
+          "room_name": "Room Name",
+          "temperature_sensor": "Temperature Sensor",
+          "cover_entity": "Zone Fan Speed Control"
+        }
+      },
+      "remove_room": {
+        "title": "Remove Room",
+        "description": "Select a room to remove from the system",
+        "data": {
+          "room_to_remove": "Room to Remove"
+        }
+      },
+      "room_overrides": {
+        "title": "Room Overrides",
+        "description": "Enable or disable AI control for each room. Disabled rooms will not have their fan speeds adjusted by the AI. You have {room_count} room(s) configured.\n\nCheck the box to ENABLE AI control, uncheck to DISABLE.",
+        "data": {}
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Smart Aircon Manager",
+  "render_readme": true,
+  "filename": "smart_aircon_manager.zip",
+  "domains": ["climate"],
+  "iot_class": "Local Polling",
+  "homeassistant": "2024.1.0"
+}
