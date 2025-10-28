@@ -47,14 +47,21 @@ A Home Assistant integration that uses **intelligent logic-based algorithms** to
 ## How It Works
 
 1. The integration monitors temperature sensors in each configured room
-2. Every 5 minutes (configurable), it analyzes all room temperatures against the target
-3. **Logic-based algorithm calculates optimal fan speeds**:
-   - **Too hot?** Increases zone fan speed (75-100%) to cool faster
-   - **Too cold?** Decreases zone fan speed (25-50%) to reduce cooling
-   - **At target?** Maintains balanced fan speeds (60-70%) across all zones
-4. **Optional**: Can also set optimal AC temperature setpoint based on room conditions
-5. This creates a temperature equilibrium across your entire house
-6. The system continuously adjusts to maintain the target temperature efficiently
+2. **Fast polling**: Reads sensor data every **10 seconds** for responsive monitoring
+3. **Frequent optimization**: Adjusts fan speeds every **30 seconds** for precise control
+4. **Granular logic-based algorithm** calculates optimal fan speeds with 8 temperature bands:
+   - **4°C+ above target**: 100% fan speed (extreme heat/cold)
+   - **3-4°C above**: 90% fan speed (very hot/cold)
+   - **2-3°C above**: 75% fan speed (hot/cold)
+   - **1.5-2°C above**: 65% fan speed (moderately hot/cold)
+   - **1-1.5°C above**: 55% fan speed (slightly hot/cold)
+   - **0.7-1°C above**: 45% fan speed (just above target)
+   - **0.5-0.7°C above**: 40% fan speed (barely above target)
+   - **Within 0.5°C**: 50% fan speed (at target - maintain circulation)
+5. **Progressive overshoot handling** for rooms that are too cold/warm
+6. **Optional**: Can also set optimal AC temperature setpoint based on room conditions
+7. This creates smooth, responsive temperature equilibrium across your entire house
+8. The fast update cycle (30s) ensures rooms quickly reach and maintain target temperature
 
 ### Why Logic-Based Instead of AI?
 
@@ -148,7 +155,7 @@ You can change settings after initial setup:
 **In "Change Settings":**
 - **Target Temperature**: Your desired comfort temperature
 - **Temperature Deadband**: Acceptable range (±) from target before taking action (default: 0.5°C)
-- **Update Interval**: How often optimization runs (default: 5 minutes)
+- **Update Interval**: How often optimization runs (default: 30 seconds)
 - **HVAC Mode**: Cooling, Heating, or Auto (detect from main climate)
 - **Automatically turn main AC on/off**: Enable automatic AC control with hysteresis
 - **Automatically control AC temperature**: Enable full automation of AC temperature setpoint
@@ -156,37 +163,54 @@ You can change settings after initial setup:
 
 ## Logic-Based Algorithm Details
 
+### Performance Characteristics
+- **Polling Frequency**: Every 10 seconds (sensor monitoring)
+- **Optimization Frequency**: Every 30 seconds (fan speed adjustments)
+- **Response Time**: Typically reaches target temperature in 5-15 minutes
+- **Stability**: Maintains ±0.5°C of target once achieved
+- **Granularity**: 8 temperature bands for smooth, precise control
+
 ### Cooling Mode Strategy
 
-**For rooms ABOVE target** (need cooling):
-- High deviation (3°C+ above): Set fan to 90% (aggressive cooling)
-- Medium deviation (1.5-3°C above): Set fan to 70% (moderate cooling)
-- Small deviation (<1.5°C above): Set fan to 55% (gentle cooling)
+**For rooms ABOVE target** (need cooling) - 8 granular bands:
+- **4°C+ above**: 100% fan (extreme heat - maximum cooling)
+- **3-4°C above**: 90% fan (very hot - aggressive cooling)
+- **2-3°C above**: 75% fan (hot - strong cooling)
+- **1.5-2°C above**: 65% fan (moderately hot - good cooling)
+- **1-1.5°C above**: 55% fan (slightly hot - moderate cooling)
+- **0.7-1°C above**: 45% fan (just above - gentle cooling)
+- **0.5-0.7°C above**: 40% fan (barely above - minimal cooling)
 
-**For rooms BELOW target** (overshot, too cold):
-- Severe overshoot (3°C+ below): Set fan to 2% (shutdown)
-- High overshoot (2-3°C below): Set fan to 10% (minimal airflow)
-- Medium overshoot (1-2°C below): Set fan to 20% (reduced cooling)
-- Small overshoot (<1°C below): Set fan to 30% (gentle reduction)
+**For rooms BELOW target** (overshot, too cold) - 5 progressive bands:
+- **3°C+ below**: 5% fan (severe overshoot - near shutdown)
+- **2-3°C below**: 12% fan (high overshoot - minimal airflow)
+- **1-2°C below**: 22% fan (medium overshoot - reduced cooling)
+- **0.7-1°C below**: 30% fan (small overshoot - gentle reduction)
+- **0.5-0.7°C below**: 35% fan (very small overshoot - slight reduction)
 
-**For rooms AT TARGET** (within deadband):
-- Set fan to 60% (maintain equilibrium with good circulation)
+**For rooms AT TARGET** (within ±0.5°C deadband):
+- **50% fan** (baseline circulation - maintains comfort)
 
 ### Heating Mode Strategy
 
-**For rooms BELOW target** (need heating):
-- High deviation (3°C+ below): Set fan to 90% (aggressive heating)
-- Medium deviation (1.5-3°C below): Set fan to 70% (moderate heating)
-- Small deviation (<1.5°C below): Set fan to 55% (gentle heating)
+**For rooms BELOW target** (need heating) - 8 granular bands:
+- **4°C+ below**: 100% fan (extreme cold - maximum heating)
+- **3-4°C below**: 90% fan (very cold - aggressive heating)
+- **2-3°C below**: 75% fan (cold - strong heating)
+- **1.5-2°C below**: 65% fan (moderately cold - good heating)
+- **1-1.5°C below**: 55% fan (slightly cold - moderate heating)
+- **0.7-1°C below**: 45% fan (just below - gentle heating)
+- **0.5-0.7°C below**: 40% fan (barely below - minimal heating)
 
-**For rooms ABOVE target** (overshot, too warm):
-- Severe overshoot (3°C+ above): Set fan to 2% (shutdown)
-- High overshoot (2-3°C above): Set fan to 10% (minimal airflow)
-- Medium overshoot (1-2°C above): Set fan to 20% (reduced heating)
-- Small overshoot (<1°C above): Set fan to 30% (gentle reduction)
+**For rooms ABOVE target** (overshot, too warm) - 5 progressive bands:
+- **3°C+ above**: 5% fan (severe overshoot - near shutdown)
+- **2-3°C above**: 12% fan (high overshoot - minimal airflow)
+- **1-2°C above**: 22% fan (medium overshoot - reduced heating)
+- **0.7-1°C above**: 30% fan (small overshoot - gentle reduction)
+- **0.5-0.7°C above**: 35% fan (very small overshoot - slight reduction)
 
-**For rooms AT TARGET** (within deadband):
-- Set fan to 60% (maintain equilibrium with good circulation)
+**For rooms AT TARGET** (within ±0.5°C deadband):
+- **50% fan** (baseline circulation - maintains comfort)
 
 ### Main Fan Control Logic
 

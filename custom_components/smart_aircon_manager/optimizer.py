@@ -447,54 +447,89 @@ class AirconOptimizer:
         return recommendations
 
     def _calculate_fan_speed(self, temp_diff: float, abs_temp_diff: float) -> int:
-        """Calculate fan speed based on temperature difference and HVAC mode."""
+        """Calculate fan speed based on temperature difference and HVAC mode.
+
+        Uses granular bands for smooth, responsive temperature control.
+        """
+        # Within deadband - maintain with moderate circulation
         if abs_temp_diff <= self.temperature_deadband:
-            return 60
+            return 50  # Baseline circulation when at target
 
         if self.hvac_mode == "cool":
             if temp_diff > 0:
-                if abs_temp_diff >= 3.0:
-                    return 90
+                # Room is too hot - needs cooling (more granular bands)
+                if abs_temp_diff >= 4.0:
+                    return 100  # Extreme heat - maximum cooling
+                elif abs_temp_diff >= 3.0:
+                    return 90   # Very hot - aggressive cooling
+                elif abs_temp_diff >= 2.0:
+                    return 75   # Hot - strong cooling
                 elif abs_temp_diff >= 1.5:
-                    return 70
+                    return 65   # Moderately hot - good cooling
+                elif abs_temp_diff >= 1.0:
+                    return 55   # Slightly hot - moderate cooling
+                elif abs_temp_diff >= 0.7:
+                    return 45   # Just above target - gentle cooling
                 else:
-                    return 55
+                    return 40   # Barely above - minimal cooling
             else:
-                if abs_temp_diff >= self.overshoot_tier3_threshold:
-                    return 2
-                elif abs_temp_diff >= self.overshoot_tier2_threshold:
-                    return 10
-                elif abs_temp_diff >= self.overshoot_tier1_threshold:
-                    return 20
+                # Room is too cold - overshot target, reduce cooling progressively
+                if abs_temp_diff >= self.overshoot_tier3_threshold:  # 3°C+
+                    return 5    # Severe overshoot - near shutdown
+                elif abs_temp_diff >= self.overshoot_tier2_threshold:  # 2-3°C
+                    return 12   # High overshoot - minimal airflow
+                elif abs_temp_diff >= self.overshoot_tier1_threshold:  # 1-2°C
+                    return 22   # Medium overshoot - reduced cooling
+                elif abs_temp_diff >= 0.7:
+                    return 30   # Small overshoot - gentle reduction
                 else:
-                    return 30
+                    return 35   # Very small overshoot - slight reduction
 
         elif self.hvac_mode == "heat":
             if temp_diff < 0:
-                if abs_temp_diff >= 3.0:
-                    return 90
+                # Room is too cold - needs heating (more granular bands)
+                if abs_temp_diff >= 4.0:
+                    return 100  # Extreme cold - maximum heating
+                elif abs_temp_diff >= 3.0:
+                    return 90   # Very cold - aggressive heating
+                elif abs_temp_diff >= 2.0:
+                    return 75   # Cold - strong heating
                 elif abs_temp_diff >= 1.5:
-                    return 70
+                    return 65   # Moderately cold - good heating
+                elif abs_temp_diff >= 1.0:
+                    return 55   # Slightly cold - moderate heating
+                elif abs_temp_diff >= 0.7:
+                    return 45   # Just below target - gentle heating
                 else:
-                    return 55
+                    return 40   # Barely below - minimal heating
             else:
-                if abs_temp_diff >= self.overshoot_tier3_threshold:
-                    return 2
-                elif abs_temp_diff >= self.overshoot_tier2_threshold:
-                    return 10
-                elif abs_temp_diff >= self.overshoot_tier1_threshold:
-                    return 20
+                # Room is too warm - overshot target, reduce heating progressively
+                if abs_temp_diff >= self.overshoot_tier3_threshold:  # 3°C+
+                    return 5    # Severe overshoot - near shutdown
+                elif abs_temp_diff >= self.overshoot_tier2_threshold:  # 2-3°C
+                    return 12   # High overshoot - minimal airflow
+                elif abs_temp_diff >= self.overshoot_tier1_threshold:  # 1-2°C
+                    return 22   # Medium overshoot - reduced heating
+                elif abs_temp_diff >= 0.7:
+                    return 30   # Small overshoot - gentle reduction
                 else:
-                    return 30
+                    return 35   # Very small overshoot - slight reduction
         else:
-            if abs_temp_diff >= 3.0:
-                return 90
-            elif abs_temp_diff >= 1.5:
+            # Auto mode - use magnitude-based approach with granular control
+            if abs_temp_diff >= 4.0:
+                return 100
+            elif abs_temp_diff >= 3.0:
+                return 85
+            elif abs_temp_diff >= 2.0:
                 return 70
-            elif abs_temp_diff >= 0.8:
-                return 55
+            elif abs_temp_diff >= 1.5:
+                return 60
+            elif abs_temp_diff >= 1.0:
+                return 50
+            elif abs_temp_diff >= 0.7:
+                return 42
             else:
-                return 40
+                return 35
 
     def _calculate_ac_temperature(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> float:
         """Calculate optimal AC temperature setpoint."""
