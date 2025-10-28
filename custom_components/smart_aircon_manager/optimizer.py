@@ -43,30 +43,32 @@ class AirconOptimizer:
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
-        self.target_temperature = target_temperature
+
+        # Validate and store configuration parameters
+        self.target_temperature = self._validate_temperature(target_temperature, "target_temperature", 10.0, 35.0)
         self.room_configs = room_configs
         self.main_climate_entity = main_climate_entity
         self.main_fan_entity = main_fan_entity
-        self.temperature_deadband = temperature_deadband
-        self.hvac_mode = hvac_mode
+        self.temperature_deadband = self._validate_positive_float(temperature_deadband, "temperature_deadband", 0.1, 5.0)
+        self.hvac_mode = hvac_mode if hvac_mode in ["cool", "heat", "auto"] else "cool"
         self.auto_control_main_ac = auto_control_main_ac
         self.auto_control_ac_temperature = auto_control_ac_temperature
         self.enable_notifications = enable_notifications
         self.room_overrides = room_overrides or {}
         self.config_entry = config_entry
-        self.ac_turn_on_threshold = ac_turn_on_threshold
-        self.ac_turn_off_threshold = ac_turn_off_threshold
+        self.ac_turn_on_threshold = self._validate_positive_float(ac_turn_on_threshold, "ac_turn_on_threshold", 0.1, 10.0)
+        self.ac_turn_off_threshold = self._validate_positive_float(ac_turn_off_threshold, "ac_turn_off_threshold", 0.1, 10.0)
         self.weather_entity = weather_entity
         self.enable_weather_adjustment = enable_weather_adjustment
         self.outdoor_temp_sensor = outdoor_temp_sensor
         self.enable_scheduling = enable_scheduling
         self.schedules = schedules or []
-        self.main_fan_high_threshold = main_fan_high_threshold
-        self.main_fan_medium_threshold = main_fan_medium_threshold
-        self.weather_influence_factor = weather_influence_factor
-        self.overshoot_tier1_threshold = overshoot_tier1_threshold
-        self.overshoot_tier2_threshold = overshoot_tier2_threshold
-        self.overshoot_tier3_threshold = overshoot_tier3_threshold
+        self.main_fan_high_threshold = self._validate_positive_float(main_fan_high_threshold, "main_fan_high_threshold", 0.1, 10.0)
+        self.main_fan_medium_threshold = self._validate_positive_float(main_fan_medium_threshold, "main_fan_medium_threshold", 0.1, 10.0)
+        self.weather_influence_factor = self._validate_positive_float(weather_influence_factor, "weather_influence_factor", 0.0, 1.0)
+        self.overshoot_tier1_threshold = self._validate_positive_float(overshoot_tier1_threshold, "overshoot_tier1_threshold", 0.1, 10.0)
+        self.overshoot_tier2_threshold = self._validate_positive_float(overshoot_tier2_threshold, "overshoot_tier2_threshold", 0.1, 10.0)
+        self.overshoot_tier3_threshold = self._validate_positive_float(overshoot_tier3_threshold, "overshoot_tier3_threshold", 0.1, 10.0)
         self._last_optimization_response = None
         self._last_error = None
         self._error_count = 0
@@ -79,6 +81,63 @@ class AirconOptimizer:
         self._last_main_fan_speed = None
         self._current_schedule = None
         self._outdoor_temperature = None
+        self._last_fan_speeds = {}  # For smoothing
+
+    def _validate_temperature(self, value: float, name: str, min_val: float, max_val: float) -> float:
+        """Validate temperature value is within acceptable range."""
+        try:
+            temp = float(value)
+            if not (min_val <= temp <= max_val):
+                _LOGGER.warning(
+                    "%s value %.1f°C outside valid range (%.1f-%.1f°C), using default",
+                    name, temp, min_val, max_val
+                )
+                return 22.0  # Safe default
+            return temp
+        except (ValueError, TypeError) as e:
+            _LOGGER.error("Invalid %s value '%s': %s, using default", name, value, e)
+            return 22.0
+
+    def _validate_positive_float(self, value: float, name: str, min_val: float, max_val: float) -> float:
+        """Validate float value is positive and within range."""
+        try:
+            val = float(value)
+            if not (min_val <= val <= max_val):
+                _LOGGER.warning(
+                    "%s value %.2f outside valid range (%.2f-%.2f), clamping",
+                    name, val, min_val, max_val
+                )
+                return max(min_val, min(max_val, val))
+            return val
+        except (ValueError, TypeError) as e:
+            _LOGGER.error("Invalid %s value '%s': %s, using minimum", name, value, e)
+            return min_val
+
+    def _validate_sensor_temperature(self, value: Any, room_name: str) -> float | None:
+        """Validate temperature reading from sensor with sanity checks."""
+        if value is None or value in ["unknown", "unavailable", "none"]:
+            return None
+
+        try:
+            temp = float(value)
+
+            # Sanity check: realistic temperature range (-50°C to 70°C)
+            if not (-50.0 <= temp <= 70.0):
+                _LOGGER.warning(
+                    "Temperature reading for %s (%.1f°C) outside realistic range, ignoring",
+                    room_name, temp
+                )
+                return None
+
+            # Additional check for clearly wrong readings
+            if abs(temp) < 0.01:
+                _LOGGER.warning("Temperature reading for %s suspiciously close to zero, ignoring", room_name)
+                return None
+
+            return temp
+        except (ValueError, TypeError) as e:
+            _LOGGER.warning("Could not parse temperature for %s: %s", room_name, e)
+            return None
 
     async def async_setup(self) -> None:
         """Set up the optimizer."""
@@ -196,10 +255,32 @@ class AirconOptimizer:
         return round(adjusted, 1)
 
     async def async_optimize(self) -> dict[str, Any]:
-        """Run optimization cycle."""
+        """Run optimization cycle with error handling."""
+        try:
+            return await self._async_optimize_impl()
+        except Exception as e:
+            _LOGGER.error("Unexpected error during optimization: %s", e, exc_info=True)
+            self._last_error = f"Optimization Error: {e}"
+            self._error_count += 1
+
+            # Return safe default state
+            return {
+                "room_states": {},
+                "recommendations": {},
+                "optimization_response_text": None,
+                "main_climate_state": None,
+                "main_fan_speed": None,
+                "main_ac_running": False,
+                "needs_ac": False,
+                "last_error": self._last_error,
+                "error_count": self._error_count,
+            }
+
+    async def _async_optimize_impl(self) -> dict[str, Any]:
+        """Implementation of optimization cycle."""
         active_schedule = None
         effective_target = self.target_temperature
-        
+
         if self.enable_scheduling:
             active_schedule = self._get_active_schedule()
             if active_schedule:
@@ -377,27 +458,37 @@ class AirconOptimizer:
             temp_state = self.hass.states.get(temp_sensor)
             current_temp = None
 
-            if temp_state and temp_state.state not in ["unknown", "unavailable", "none", None]:
-                try:
-                    current_temp = float(temp_state.state)
+            if temp_state:
+                # Use validation method for temperature
+                current_temp = self._validate_sensor_temperature(temp_state.state, room_name)
+
+                if current_temp is not None:
+                    # Handle unit conversion
                     unit = temp_state.attributes.get("unit_of_measurement", "°C")
-                    
                     if unit in ["°F", "fahrenheit", "F"]:
                         current_temp = (current_temp - 32) * 5.0 / 9.0
-                        _LOGGER.info("Converted temperature for %s from F to C: %.1f°C", room_name, current_temp)
-                except (ValueError, TypeError) as e:
-                    _LOGGER.warning("Could not convert temperature for %s: %s", room_name, e)
+                        _LOGGER.debug("Converted temperature for %s from F to C: %.1f°C", room_name, current_temp)
+                        # Re-validate after conversion
+                        current_temp = self._validate_sensor_temperature(current_temp, room_name)
 
             cover_state = self.hass.states.get(cover_entity)
-            cover_position = 100
+            cover_position = 100  # Default to fully open
+
             if cover_state:
-                try:
-                    if "current_position" in cover_state.attributes:
-                        pos = cover_state.attributes.get("current_position")
-                        if pos not in ["unknown", "unavailable", "none", None]:
-                            cover_position = int(pos)
-                except (ValueError, TypeError) as e:
-                    _LOGGER.warning("Could not convert cover position for %s: %s", room_name, e)
+                pos = cover_state.attributes.get("current_position")
+                if pos not in ["unknown", "unavailable", "none", None]:
+                    try:
+                        cover_position = int(float(pos))
+                        # Validate cover position is 0-100
+                        if not (0 <= cover_position <= 100):
+                            _LOGGER.warning(
+                                "Cover position for %s (%d%%) outside valid range (0-100%%), clamping",
+                                room_name, cover_position
+                            )
+                            cover_position = max(0, min(100, cover_position))
+                    except (ValueError, TypeError) as e:
+                        _LOGGER.warning("Could not parse cover position for %s: %s, using default", room_name, e)
+                        cover_position = 100
 
             room_states[room_name] = {
                 "current_temperature": current_temp,
@@ -427,9 +518,13 @@ class AirconOptimizer:
             temp_diff = current_temp - effective_target
             abs_temp_diff = abs(temp_diff)
 
-            fan_speed = self._calculate_fan_speed(temp_diff, abs_temp_diff)
+            # Calculate raw fan speed
+            raw_fan_speed = self._calculate_fan_speed(temp_diff, abs_temp_diff)
+
+            # Apply smoothing to prevent oscillation
+            fan_speed = self._smooth_fan_speed(room_name, raw_fan_speed)
             recommendations[room_name] = fan_speed
-            
+
             _LOGGER.debug(
                 "Room %s: temp=%.1f°C, target=%.1f°C, diff=%+.1f°C → fan=%d%%",
                 room_name,
@@ -445,6 +540,33 @@ class AirconOptimizer:
 
         self._last_optimization_response = self._build_optimization_summary(recommendations, room_states)
         return recommendations
+
+    def _smooth_fan_speed(self, room_name: str, new_speed: int, smoothing_threshold: int = 10) -> int:
+        """Smooth fan speed transitions to prevent rapid oscillation.
+
+        Only applies smoothing when near band boundaries (within threshold).
+        """
+        if room_name not in self._last_fan_speeds:
+            self._last_fan_speeds[room_name] = new_speed
+            return new_speed
+
+        last_speed = self._last_fan_speeds[room_name]
+        speed_diff = abs(new_speed - last_speed)
+
+        # If change is small (within threshold), dampen it
+        if speed_diff <= smoothing_threshold:
+            # Use weighted average: 70% new, 30% old
+            smoothed = int(0.7 * new_speed + 0.3 * last_speed)
+            _LOGGER.debug(
+                "Smoothing fan speed for %s: %d%% -> %d%% (dampened to %d%%)",
+                room_name, last_speed, new_speed, smoothed
+            )
+            self._last_fan_speeds[room_name] = smoothed
+            return smoothed
+
+        # Large change - apply immediately
+        self._last_fan_speeds[room_name] = new_speed
+        return new_speed
 
     def _calculate_fan_speed(self, temp_diff: float, abs_temp_diff: float) -> int:
         """Calculate fan speed based on temperature difference and HVAC mode.
