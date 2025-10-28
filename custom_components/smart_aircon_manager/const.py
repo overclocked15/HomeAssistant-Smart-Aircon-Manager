@@ -43,6 +43,11 @@ CONF_OVERSHOOT_TIER1_THRESHOLD = "overshoot_tier1_threshold"
 CONF_OVERSHOOT_TIER2_THRESHOLD = "overshoot_tier2_threshold"
 CONF_OVERSHOOT_TIER3_THRESHOLD = "overshoot_tier3_threshold"
 
+# Fan speed smoothing
+CONF_ENABLE_FAN_SMOOTHING = "enable_fan_smoothing"
+CONF_SMOOTHING_FACTOR = "smoothing_factor"
+CONF_SMOOTHING_THRESHOLD = "smoothing_threshold"
+
 # HVAC Modes
 HVAC_MODE_COOL = "cool"
 HVAC_MODE_HEAT = "heat"
@@ -74,6 +79,11 @@ DEFAULT_WEATHER_INFLUENCE_FACTOR = 0.5  # How much outdoor temp influences targe
 DEFAULT_OVERSHOOT_TIER1_THRESHOLD = 1.0  # degrees C overshoot for tier 1 (25-35%)
 DEFAULT_OVERSHOOT_TIER2_THRESHOLD = 2.0  # degrees C overshoot for tier 2 (15-25%)
 DEFAULT_OVERSHOOT_TIER3_THRESHOLD = 3.0  # degrees C overshoot for tier 3 (0-5%)
+
+# Fan speed smoothing defaults
+DEFAULT_ENABLE_FAN_SMOOTHING = True  # Enable smoothing by default
+DEFAULT_SMOOTHING_FACTOR = 0.7  # Weighting for new speed (0.0-1.0, 0.7 = 70% new, 30% old)
+DEFAULT_SMOOTHING_THRESHOLD = 10  # Only smooth changes smaller than this (percentage points)
 
 # Days of week for scheduling
 SCHEDULE_DAYS_OPTIONS = [

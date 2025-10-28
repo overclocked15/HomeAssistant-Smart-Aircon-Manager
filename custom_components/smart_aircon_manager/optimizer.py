@@ -83,6 +83,11 @@ class AirconOptimizer:
         self._outdoor_temperature = None
         self._last_fan_speeds = {}  # For smoothing
 
+        # Performance metrics tracking
+        self._total_optimizations_run = 0
+        self._optimization_start_time = None
+        self._last_cycle_time_ms = None
+
     def _validate_temperature(self, value: float, name: str, min_val: float, max_val: float) -> float:
         """Validate temperature value is within acceptable range."""
         try:
@@ -278,6 +283,10 @@ class AirconOptimizer:
 
     async def _async_optimize_impl(self) -> dict[str, Any]:
         """Implementation of optimization cycle."""
+        # Start performance tracking
+        import time
+        cycle_start = time.time()
+
         active_schedule = None
         effective_target = self.target_temperature
 
@@ -428,6 +437,16 @@ class AirconOptimizer:
         else:
             _LOGGER.info("Main AC is not running - skipping optimization")
 
+        # End performance tracking
+        cycle_end = time.time()
+        cycle_time_ms = (cycle_end - cycle_start) * 1000
+        self._last_cycle_time_ms = cycle_time_ms
+        self._total_optimizations_run += 1
+
+        # Calculate error rate (errors per hour)
+        uptime_hours = (cycle_end - self._startup_time) / 3600 if self._startup_time else 1
+        error_rate = self._error_count / uptime_hours if uptime_hours > 0 else 0
+
         return {
             "room_states": room_states,
             "recommendations": recommendations,
@@ -443,6 +462,10 @@ class AirconOptimizer:
             "base_target_temperature": self.target_temperature,
             "weather_adjustment": weather_adjustment,
             "outdoor_temperature": outdoor_temp,
+            # Performance metrics
+            "optimization_cycle_time_ms": cycle_time_ms,
+            "total_optimizations_run": self._total_optimizations_run,
+            "error_rate_per_hour": round(error_rate, 2),
         }
 
     async def _collect_room_states(self, target_temperature: float | None = None) -> dict[str, dict[str, Any]]:

@@ -101,6 +101,12 @@ async def async_setup_entry(
     entities.append(ErrorTrackingSensor(coordinator, config_entry))
     entities.append(ValidSensorsCountSensor(coordinator, config_entry))
 
+    # Add performance metrics sensors
+    entities.append(OptimizationCycleTimeSensor(coordinator, config_entry))
+    entities.append(ErrorRateSensor(coordinator, config_entry))
+    entities.append(TotalOptimizationsRunSensor(coordinator, config_entry))
+    entities.append(SensorDataQualitySensor(coordinator, config_entry))
+
     # Add main fan speed recommendation debug sensor if configured
     if optimizer.main_fan_entity:
         entities.append(MainFanSpeedRecommendationSensor(coordinator, config_entry))
@@ -1200,3 +1206,194 @@ class EffectiveTargetTemperatureSensor(AirconManagerSensorBase):
 
         return attrs
 
+
+
+class OptimizationCycleTimeSensor(AirconManagerSensorBase):
+    """Sensor showing how long the last optimization cycle took."""
+
+    _attr_native_unit_of_measurement = "ms"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_optimization_cycle_time"
+        self._attr_name = "Optimization Cycle Time"
+        self._attr_icon = "mdi:timer-outline"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the last optimization cycle time in milliseconds."""
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("optimization_cycle_time_ms")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self.coordinator.data:
+            return {}
+
+        cycle_time = self.coordinator.data.get("optimization_cycle_time_ms")
+
+        attrs = {
+            "status": "fast" if cycle_time and cycle_time < 100 else "moderate" if cycle_time and cycle_time < 500 else "slow" if cycle_time else "unknown",
+        }
+
+        if cycle_time:
+            attrs["cycle_time_seconds"] = round(cycle_time / 1000, 3)
+
+        return attrs
+
+
+class ErrorRateSensor(AirconManagerSensorBase):
+    """Sensor showing error rate (errors per hour)."""
+
+    _attr_native_unit_of_measurement = "errors/hour"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_error_rate"
+        self._attr_name = "Error Rate"
+        self._attr_icon = "mdi:alert-circle-outline"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the error rate (errors per hour)."""
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("error_rate_per_hour", 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self.coordinator.data:
+            return {}
+
+        error_count = self.coordinator.data.get("error_count", 0)
+        total_optimizations = self.coordinator.data.get("total_optimizations_run", 0)
+
+        attrs = {
+            "total_errors": error_count,
+            "total_optimizations": total_optimizations,
+        }
+
+        if total_optimizations > 0:
+            error_percentage = (error_count / total_optimizations) * 100
+            attrs["error_percentage"] = round(error_percentage, 2)
+            attrs["health_status"] = (
+                "excellent" if error_percentage < 1
+                else "good" if error_percentage < 5
+                else "fair" if error_percentage < 10
+                else "poor"
+            )
+        else:
+            attrs["error_percentage"] = 0.0
+            attrs["health_status"] = "no_data"
+
+        return attrs
+
+
+class TotalOptimizationsRunSensor(AirconManagerSensorBase):
+    """Sensor showing total number of optimizations run since startup."""
+
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_total_optimizations"
+        self._attr_name = "Total Optimizations Run"
+        self._attr_icon = "mdi:counter"
+
+    @property
+    def native_value(self) -> int:
+        """Return the total optimizations run."""
+        if not self.coordinator.data:
+            return 0
+        return self.coordinator.data.get("total_optimizations_run", 0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self.coordinator.data:
+            return {}
+
+        total = self.native_value
+        error_count = self.coordinator.data.get("error_count", 0)
+        success_count = total - error_count
+
+        return {
+            "successful_optimizations": success_count,
+            "failed_optimizations": error_count,
+            "success_rate": round((success_count / total * 100), 2) if total > 0 else 100.0,
+        }
+
+
+class SensorDataQualitySensor(AirconManagerSensorBase):
+    """Sensor showing sensor data quality metrics."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_sensor_data_quality"
+        self._attr_name = "Sensor Data Quality"
+        self._attr_icon = "mdi:quality-high"
+
+    @property
+    def native_value(self) -> float:
+        """Return the sensor data quality percentage."""
+        if not self.coordinator.data:
+            return 0.0
+
+        room_states = self.coordinator.data.get("room_states", {})
+        if not room_states:
+            return 0.0
+
+        valid_count = sum(
+            1 for state in room_states.values()
+            if state.get("current_temperature") is not None
+        )
+        total_count = len(room_states)
+
+        return round((valid_count / total_count * 100), 1) if total_count > 0 else 0.0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self.coordinator.data:
+            return {}
+
+        room_states = self.coordinator.data.get("room_states", {})
+
+        if not room_states:
+            return {"status": "no_room_data"}
+
+        valid_sensors = []
+        invalid_sensors = []
+
+        for room_name, state in room_states.items():
+            if state.get("current_temperature") is not None:
+                valid_sensors.append(room_name)
+            else:
+                invalid_sensors.append(room_name)
+
+        quality_pct = self.native_value
+
+        return {
+            "total_sensors": len(room_states),
+            "valid_sensors": len(valid_sensors),
+            "invalid_sensors": len(invalid_sensors),
+            "invalid_sensor_names": invalid_sensors,
+            "quality_status": (
+                "excellent" if quality_pct == 100
+                else "good" if quality_pct >= 90
+                else "fair" if quality_pct >= 75
+                else "poor"
+            ),
+        }
