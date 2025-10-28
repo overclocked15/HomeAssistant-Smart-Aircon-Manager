@@ -1,6 +1,68 @@
-# Service definitions for AI Aircon Manager
+# Service definitions for Smart Aircon Manager
 
 reload:
   name: Reload
-  description: Reload the AI Aircon Manager integration to apply configuration changes.
+  description: Reload the Smart Aircon Manager integration to apply configuration changes.
   fields: {}
+
+force_optimize:
+  name: Force Optimization
+  description: Immediately run an optimization cycle, ignoring the normal schedule
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID (optional, runs all if not specified)
+      required: false
+      example: "abc123def456"
+      selector:
+        text:
+
+reset_smoothing:
+  name: Reset Smoothing
+  description: Clear fan speed smoothing history to start fresh
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID (optional, resets all if not specified)
+      required: false
+      example: "abc123def456"
+      selector:
+        text:
+
+set_room_override:
+  name: Set Room Override
+  description: Temporarily override a room's automatic control
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    room_name:
+      name: Room Name
+      description: The name of the room to override
+      required: true
+      example: "Living Room"
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      description: Whether to enable or disable automatic control for this room
+      required: true
+      default: true
+      selector:
+        boolean:
+
+reset_error_count:
+  name: Reset Error Count
+  description: Reset the error counter to zero
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID (optional, resets all if not specified)
+      required: false
+      example: "abc123def456"
+      selector:
+        text:
