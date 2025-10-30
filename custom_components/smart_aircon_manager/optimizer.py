@@ -1,6 +1,7 @@
 """Logic-based Manager for Aircon control."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -8,6 +9,11 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+# Retry configuration
+MAX_RETRIES = 3
+INITIAL_RETRY_DELAY = 1.0  # seconds
+RETRY_BACKOFF_FACTOR = 2.0  # exponential backoff multiplier
 
 
 class AirconOptimizer:
@@ -148,6 +154,57 @@ class AirconOptimizer:
         """Set up the optimizer."""
         self._startup_time = time.time()
         _LOGGER.info("Smart Aircon Manager optimizer initialized (logic-based, no AI required)")
+
+    async def _retry_service_call(
+        self,
+        domain: str,
+        service: str,
+        service_data: dict[str, Any],
+        entity_name: str = "unknown"
+    ) -> bool:
+        """Call a service with retry logic and exponential backoff.
+
+        Returns True if successful, False if all retries exhausted.
+        """
+        last_exception = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                await self.hass.services.async_call(
+                    domain,
+                    service,
+                    service_data,
+                    blocking=True,
+                )
+
+                if attempt > 0:
+                    _LOGGER.info(
+                        "Successfully called %s.%s for %s on attempt %d",
+                        domain, service, entity_name, attempt + 1
+                    )
+
+                return True
+
+            except Exception as e:
+                last_exception = e
+
+                if attempt < MAX_RETRIES - 1:
+                    delay = INITIAL_RETRY_DELAY * (RETRY_BACKOFF_FACTOR ** attempt)
+                    _LOGGER.warning(
+                        "Failed to call %s.%s for %s (attempt %d/%d): %s. Retrying in %.1fs...",
+                        domain, service, entity_name, attempt + 1, MAX_RETRIES, e, delay
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    _LOGGER.error(
+                        "Failed to call %s.%s for %s after %d attempts: %s",
+                        domain, service, entity_name, MAX_RETRIES, e
+                    )
+
+        # All retries exhausted
+        self._last_error = f"Service call failed after {MAX_RETRIES} attempts: {last_exception}"
+        self._error_count += 1
+        return False
 
     def _get_active_schedule(self) -> dict[str, Any] | None:
         """Get the currently active schedule based on time and day."""
@@ -750,19 +807,21 @@ class AirconOptimizer:
                 _LOGGER.warning("Cover entity %s for room %s is %s", cover_entity, room_name, cover_state.state)
                 continue
 
-            try:
-                await self.hass.services.async_call(
-                    "cover",
-                    "set_cover_position",
-                    {"entity_id": cover_entity, "position": position},
-                    blocking=True,
-                )
+            # Use retry logic for cover position changes
+            success = await self._retry_service_call(
+                "cover",
+                "set_cover_position",
+                {"entity_id": cover_entity, "position": position},
+                entity_name=f"{room_name} ({cover_entity})"
+            )
+
+            if success:
                 _LOGGER.info("Set cover position for %s (%s) to %d%%", room_name, cover_entity, position)
-            except Exception as e:
-                _LOGGER.error("Error setting cover position for %s: %s", room_name, e)
-                self._last_error = f"Cover Control Error ({room_name}): {e}"
-                self._error_count += 1
-                await self._send_notification("Cover Control Error", f"Failed to set fan speed for {room_name}: {e}")
+            else:
+                await self._send_notification(
+                    "Cover Control Error",
+                    f"Failed to set fan speed for {room_name} after {MAX_RETRIES} attempts"
+                )
 
     async def _determine_and_set_main_fan_speed(self, room_states: dict[str, dict[str, Any]]) -> str:
         """Determine and set the main aircon fan speed."""
@@ -823,25 +882,29 @@ class AirconOptimizer:
             _LOGGER.warning("Main fan entity %s is %s", self.main_fan_entity, fan_state.state)
             return fan_speed
 
-        try:
-            if self.main_fan_entity.startswith("climate."):
-                await self.hass.services.async_call(
-                    "climate",
-                    "set_fan_mode",
-                    {"entity_id": self.main_fan_entity, "fan_mode": fan_speed},
-                    blocking=True,
-                )
-            else:
-                await self.hass.services.async_call(
-                    "fan",
-                    "set_preset_mode",
-                    {"entity_id": self.main_fan_entity, "preset_mode": fan_speed},
-                    blocking=True,
-                )
+        # Use retry logic for fan speed changes
+        if self.main_fan_entity.startswith("climate."):
+            success = await self._retry_service_call(
+                "climate",
+                "set_fan_mode",
+                {"entity_id": self.main_fan_entity, "fan_mode": fan_speed},
+                entity_name=f"Main Fan ({self.main_fan_entity})"
+            )
+        else:
+            success = await self._retry_service_call(
+                "fan",
+                "set_preset_mode",
+                {"entity_id": self.main_fan_entity, "preset_mode": fan_speed},
+                entity_name=f"Main Fan ({self.main_fan_entity})"
+            )
+
+        if success:
             _LOGGER.info("Set main fan (%s) to %s", self.main_fan_entity, fan_speed)
-        except Exception as e:
-            _LOGGER.error("Error setting main fan speed: %s", e)
-            await self._send_notification("Main Fan Error", f"Failed to set main fan speed: {e}")
+        else:
+            await self._send_notification(
+                "Main Fan Error",
+                f"Failed to set main fan speed after {MAX_RETRIES} attempts"
+            )
 
         return fan_speed
 
@@ -913,33 +976,30 @@ class AirconOptimizer:
 
         current_mode = main_climate_state.get("hvac_mode")
 
-        try:
-            if needs_ac:
-                if current_mode == "off":
-                    target_mode = self.hvac_mode if self.hvac_mode != "auto" else "cool"
-                    _LOGGER.info("Turning ON main AC (mode: %s)", target_mode)
-                    await self.hass.services.async_call(
-                        "climate",
-                        "set_hvac_mode",
-                        {"entity_id": self.main_climate_entity, "hvac_mode": target_mode},
-                        blocking=True,
-                    )
+        # Use retry logic for AC control
+        if needs_ac:
+            if current_mode == "off":
+                target_mode = self.hvac_mode if self.hvac_mode != "auto" else "cool"
+                _LOGGER.info("Turning ON main AC (mode: %s)", target_mode)
+                success = await self._retry_service_call(
+                    "climate",
+                    "set_hvac_mode",
+                    {"entity_id": self.main_climate_entity, "hvac_mode": target_mode},
+                    entity_name=f"Main AC ({self.main_climate_entity})"
+                )
+                if success:
                     await self._send_notification("AC Turned On", f"Smart Manager turned on AC in {target_mode} mode")
-            else:
-                if current_mode and current_mode != "off":
-                    _LOGGER.info("Turning OFF main AC")
-                    await self.hass.services.async_call(
-                        "climate",
-                        "set_hvac_mode",
-                        {"entity_id": self.main_climate_entity, "hvac_mode": "off"},
-                        blocking=True,
-                    )
+        else:
+            if current_mode and current_mode != "off":
+                _LOGGER.info("Turning OFF main AC")
+                success = await self._retry_service_call(
+                    "climate",
+                    "set_hvac_mode",
+                    {"entity_id": self.main_climate_entity, "hvac_mode": "off"},
+                    entity_name=f"Main AC ({self.main_climate_entity})"
+                )
+                if success:
                     await self._send_notification("AC Turned Off", "Smart Manager turned off AC (rooms at target)")
-        except Exception as e:
-            _LOGGER.error("Error controlling main AC: %s", e)
-            self._last_error = f"AC Control Error: {e}"
-            self._error_count += 1
-            await self._send_notification("AC Control Error", f"Failed to control main AC: {e}")
 
     async def _set_ac_temperature(self, temperature: float) -> None:
         """Set the main AC temperature setpoint."""
@@ -958,14 +1018,14 @@ class AirconOptimizer:
                 return
 
             _LOGGER.info("Setting main AC temperature to %.1f°C", temperature)
-            await self.hass.services.async_call(
+            await self._retry_service_call(
                 "climate",
                 "set_temperature",
                 {"entity_id": self.main_climate_entity, "temperature": temperature},
-                blocking=True,
+                entity_name=f"Main AC Temperature ({self.main_climate_entity})"
             )
         except Exception as e:
-            _LOGGER.error("Error setting AC temperature: %s", e)
+            _LOGGER.error("Error in _set_ac_temperature: %s", e)
             self._last_error = f"AC Temperature Control Error: {e}"
             self._error_count += 1
 

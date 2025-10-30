@@ -116,10 +116,100 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Reloading Smart Aircon Manager integration")
         await hass.config_entries.async_reload(entry.entry_id)
 
-    # Only register service once (for first entry)
+    # Register services (only once for first entry)
     if not hass.services.has_service(DOMAIN, "reload"):
         hass.services.async_register(DOMAIN, "reload", async_reload_service)
         _LOGGER.debug("Registered reload service")
+
+        # Register force_optimize service
+        async def async_force_optimize_service(call):
+            """Handle force_optimize service call."""
+            config_entry_id = call.data.get("config_entry_id")
+
+            if config_entry_id:
+                # Run for specific entry
+                if config_entry_id in hass.data[DOMAIN]:
+                    _LOGGER.info("Force running optimization for entry %s", config_entry_id)
+                    coordinator = hass.data[DOMAIN][config_entry_id]["coordinator"]
+                    await coordinator.async_refresh()
+                else:
+                    _LOGGER.error("Config entry %s not found", config_entry_id)
+            else:
+                # Run for all entries
+                _LOGGER.info("Force running optimization for all entries")
+                for entry_id in hass.data[DOMAIN]:
+                    coordinator = hass.data[DOMAIN][entry_id]["coordinator"]
+                    await coordinator.async_refresh()
+
+        hass.services.async_register(DOMAIN, "force_optimize", async_force_optimize_service)
+        _LOGGER.debug("Registered force_optimize service")
+
+        # Register reset_smoothing service
+        async def async_reset_smoothing_service(call):
+            """Handle reset_smoothing service call."""
+            config_entry_id = call.data.get("config_entry_id")
+
+            if config_entry_id:
+                if config_entry_id in hass.data[DOMAIN]:
+                    _LOGGER.info("Resetting smoothing for entry %s", config_entry_id)
+                    optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                    optimizer._last_fan_speeds = {}
+                else:
+                    _LOGGER.error("Config entry %s not found", config_entry_id)
+            else:
+                # Reset for all entries
+                _LOGGER.info("Resetting smoothing for all entries")
+                for entry_id in hass.data[DOMAIN]:
+                    optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
+                    optimizer._last_fan_speeds = {}
+
+        hass.services.async_register(DOMAIN, "reset_smoothing", async_reset_smoothing_service)
+        _LOGGER.debug("Registered reset_smoothing service")
+
+        # Register set_room_override service
+        async def async_set_room_override_service(call):
+            """Handle set_room_override service call."""
+            config_entry_id = call.data.get("config_entry_id")
+            room_name = call.data.get("room_name")
+            enabled = call.data.get("enabled", True)
+
+            if not config_entry_id or not room_name:
+                _LOGGER.error("config_entry_id and room_name are required")
+                return
+
+            if config_entry_id in hass.data[DOMAIN]:
+                _LOGGER.info("Setting room override for %s in entry %s: enabled=%s", room_name, config_entry_id, enabled)
+                optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                optimizer.room_overrides[f"{room_name}_enabled"] = enabled
+            else:
+                _LOGGER.error("Config entry %s not found", config_entry_id)
+
+        hass.services.async_register(DOMAIN, "set_room_override", async_set_room_override_service)
+        _LOGGER.debug("Registered set_room_override service")
+
+        # Register reset_error_count service
+        async def async_reset_error_count_service(call):
+            """Handle reset_error_count service call."""
+            config_entry_id = call.data.get("config_entry_id")
+
+            if config_entry_id:
+                if config_entry_id in hass.data[DOMAIN]:
+                    _LOGGER.info("Resetting error count for entry %s", config_entry_id)
+                    optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                    optimizer._error_count = 0
+                    optimizer._last_error = None
+                else:
+                    _LOGGER.error("Config entry %s not found", config_entry_id)
+            else:
+                # Reset for all entries
+                _LOGGER.info("Resetting error count for all entries")
+                for entry_id in hass.data[DOMAIN]:
+                    optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
+                    optimizer._error_count = 0
+                    optimizer._last_error = None
+
+        hass.services.async_register(DOMAIN, "reset_error_count", async_reset_error_count_service)
+        _LOGGER.debug("Registered reset_error_count service")
 
     return True
 
@@ -134,9 +224,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id)
 
-        # Unregister reload service if this was the last entry
+        # Unregister services if this was the last entry
         if not hass.data[DOMAIN]:
             hass.services.async_remove(DOMAIN, "reload")
-            _LOGGER.debug("Unregistered reload service")
+            hass.services.async_remove(DOMAIN, "force_optimize")
+            hass.services.async_remove(DOMAIN, "reset_smoothing")
+            hass.services.async_remove(DOMAIN, "set_room_override")
+            hass.services.async_remove(DOMAIN, "reset_error_count")
+            _LOGGER.debug("Unregistered all services")
 
     return unload_ok
