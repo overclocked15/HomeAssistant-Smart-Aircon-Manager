@@ -48,6 +48,12 @@ CONF_ENABLE_FAN_SMOOTHING = "enable_fan_smoothing"
 CONF_SMOOTHING_FACTOR = "smoothing_factor"
 CONF_SMOOTHING_THRESHOLD = "smoothing_threshold"
 
+# Adaptive learning
+CONF_ENABLE_LEARNING = "enable_learning"
+CONF_LEARNING_MODE = "learning_mode"
+CONF_LEARNING_CONFIDENCE_THRESHOLD = "learning_confidence_threshold"
+CONF_LEARNING_MAX_ADJUSTMENT = "learning_max_adjustment"
+
 # HVAC Modes
 HVAC_MODE_COOL = "cool"
 HVAC_MODE_HEAT = "heat"
@@ -84,6 +90,12 @@ DEFAULT_OVERSHOOT_TIER3_THRESHOLD = 3.0  # degrees C overshoot for tier 3 (0-5%)
 DEFAULT_ENABLE_FAN_SMOOTHING = True  # Enable smoothing by default
 DEFAULT_SMOOTHING_FACTOR = 0.7  # Weighting for new speed (0.0-1.0, 0.7 = 70% new, 30% old)
 DEFAULT_SMOOTHING_THRESHOLD = 10  # Only smooth changes smaller than this (percentage points)
+
+# Adaptive learning defaults
+DEFAULT_ENABLE_LEARNING = False  # Disabled by default (opt-in feature)
+DEFAULT_LEARNING_MODE = "passive"  # passive (collect only) or active (apply adjustments)
+DEFAULT_LEARNING_CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence to apply learning (0.0-1.0)
+DEFAULT_LEARNING_MAX_ADJUSTMENT = 0.10  # Maximum parameter adjustment per update (10%)
 
 # Days of week for scheduling
 SCHEDULE_DAYS_OPTIONS = [
