@@ -1,4 +1,4 @@
-"""Binary sensor platform for AI Aircon Manager integration."""
+"""Binary sensor platform for Smart Aircon Manager integration."""
 from __future__ import annotations
 
 import logging
@@ -23,7 +23,7 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the AI Aircon Manager binary sensor platform."""
+    """Set up the Smart Aircon Manager binary sensor platform."""
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
     optimizer = hass.data[DOMAIN][config_entry.entry_id]["optimizer"]
 

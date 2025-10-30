@@ -191,7 +191,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                     self._data[CONF_ROOM_CONFIGS] = self._rooms
                     return self.async_create_entry(
-                        title="AI Aircon Manager", data=self._data
+                        title="Smart Aircon Manager", data=self._data
                     )
 
         return self.async_show_form(

@@ -1,4 +1,4 @@
-"""Climate platform for AI Aircon Manager integration."""
+"""Climate platform for Smart Aircon Manager integration."""
 from __future__ import annotations
 
 import logging
@@ -25,7 +25,7 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the AI Aircon Manager climate platform."""
+    """Set up the Smart Aircon Manager climate platform."""
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
     optimizer = hass.data[DOMAIN][config_entry.entry_id]["optimizer"]
 
@@ -34,10 +34,10 @@ async def async_setup_entry(
 
 
 class AirconAIClimate(CoordinatorEntity, ClimateEntity):
-    """Representation of an AI Aircon Manager climate entity."""
+    """Representation of an Smart Aircon Manager climate entity."""
 
     _attr_has_entity_name = True
-    _attr_name = "AI Aircon Manager"
+    _attr_name = "Smart Aircon Manager"
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF

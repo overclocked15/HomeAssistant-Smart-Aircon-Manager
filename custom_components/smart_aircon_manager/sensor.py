@@ -1,4 +1,4 @@
-"""Sensor platform for AI Aircon Manager integration."""
+"""Sensor platform for Smart Aircon Manager integration."""
 from __future__ import annotations
 
 import logging
@@ -21,7 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class AirconManagerSensorBase(CoordinatorEntity, SensorEntity):
-    """Base class for AI Aircon Manager sensors with device info."""
+    """Base class for Smart Aircon Manager sensors with device info."""
 
     def __init__(self, coordinator, config_entry: ConfigEntry, optimizer=None) -> None:
         """Initialize the base sensor."""
@@ -41,9 +41,9 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the AI Aircon Manager sensor platform."""
+    """Set up the Smart Aircon Manager sensor platform."""
     _LOGGER.info(
-        "Setting up AI Aircon Manager sensor platform for entry_id: %s",
+        "Setting up Smart Aircon Manager sensor platform for entry_id: %s",
         config_entry.entry_id
     )
 
@@ -67,13 +67,13 @@ async def async_setup_entry(
         except Exception as e:
             _LOGGER.error("Failed to create RoomTemperatureDifferenceSensor for %s: %s", room_name, e, exc_info=True)
 
-        # AI recommendation sensor
+        # Fan speed recommendation sensor
         try:
-            sensor = RoomAIRecommendationSensor(coordinator, config_entry, room_name)
+            sensor = RoomFanRecommendationSensor(coordinator, config_entry, room_name)
             entities.append(sensor)
-            _LOGGER.info("Created RoomAIRecommendationSensor for %s", room_name)
+            _LOGGER.info("Created RoomFanRecommendationSensor for %s", room_name)
         except Exception as e:
-            _LOGGER.error("Failed to create RoomAIRecommendationSensor for %s: %s", room_name, e, exc_info=True)
+            _LOGGER.error("Failed to create RoomFanRecommendationSensor for %s: %s", room_name, e, exc_info=True)
 
         # Fan speed sensor
         try:
@@ -84,10 +84,10 @@ async def async_setup_entry(
             _LOGGER.error("Failed to create RoomFanSpeedSensor for %s: %s", room_name, e, exc_info=True)
 
     # Add overall status sensor
-    entities.append(AIOptimizationStatusSensor(coordinator, config_entry))
+    entities.append(OptimizationStatusSensor(coordinator, config_entry))
 
-    # Add last AI response sensor for debugging
-    entities.append(AILastResponseSensor(coordinator, config_entry))
+    # Add last optimization response sensor for debugging
+    entities.append(LastResponseSensor(coordinator, config_entry))
 
     # Add main fan speed sensor if configured
     if optimizer.main_fan_entity:
@@ -96,7 +96,7 @@ async def async_setup_entry(
     # Add debug sensors
     entities.append(SystemStatusDebugSensor(coordinator, config_entry))
     entities.append(LastOptimizationTimeSensor(coordinator, config_entry))
-    entities.append(LastAIOptimizationTimeSensor(coordinator, config_entry))
+    entities.append(LastOptimizationTimeSensor(coordinator, config_entry))
     entities.append(NextOptimizationTimeSensor(coordinator, config_entry))
     entities.append(ErrorTrackingSensor(coordinator, config_entry))
     entities.append(ValidSensorsCountSensor(coordinator, config_entry))
@@ -191,8 +191,8 @@ class RoomTemperatureDifferenceSensor(AirconManagerSensorBase):
         }
 
 
-class RoomAIRecommendationSensor(AirconManagerSensorBase):
-    """Sensor showing AI recommendation for a room."""
+class RoomFanRecommendationSensor(AirconManagerSensorBase):
+    """Sensor showing fan speed recommendation for a room."""
 
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -203,12 +203,12 @@ class RoomAIRecommendationSensor(AirconManagerSensorBase):
         self._room_name = room_name
         # Normalize room name for unique_id (replace spaces with underscores, lowercase)
         room_id = room_name.lower().replace(" ", "_")
-        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_ai_recommendation"
-        self._attr_name = f"{room_name} AI Recommendation"
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_fan_recommendation"
+        self._attr_name = f"{room_name} Fan Speed Recommendation"
 
     @property
     def native_value(self) -> int | None:
-        """Return the AI recommended fan speed."""
+        """Return the recommended fan speed."""
         if not self.coordinator.data:
             return None
 
@@ -273,14 +273,14 @@ class RoomFanSpeedSensor(AirconManagerSensorBase):
         return room_states[self._room_name]["cover_position"]
 
 
-class AIOptimizationStatusSensor(AirconManagerSensorBase):
+class OptimizationStatusSensor(AirconManagerSensorBase):
     """Sensor showing overall optimization status."""
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
         self._attr_unique_id = f"{config_entry.entry_id}_optimization_status"
-        self._attr_name = "AI Optimization Status"
+        self._attr_name = "Optimization Status"
 
     @property
     def native_value(self) -> str:
@@ -352,18 +352,18 @@ class AIOptimizationStatusSensor(AirconManagerSensorBase):
         }
 
 
-class AILastResponseSensor(AirconManagerSensorBase):
-    """Sensor showing the last AI response for debugging."""
+class LastResponseSensor(AirconManagerSensorBase):
+    """Sensor showing the last optimization response for debugging."""
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
-        self._attr_unique_id = f"{config_entry.entry_id}_last_ai_response"
-        self._attr_name = "AI Last Response"
+        self._attr_unique_id = f"{config_entry.entry_id}_last_response"
+        self._attr_name = "Last Optimization Response"
 
     @property
     def native_value(self) -> str:
-        """Return the last AI response status."""
+        """Return the last optimization response status."""
         if not self.coordinator.data:
             return "no_data"
 
@@ -381,7 +381,7 @@ class AILastResponseSensor(AirconManagerSensorBase):
 
         return {
             "raw_recommendations": self.coordinator.data.get("recommendations", {}),
-            "ai_response_text": self.coordinator.data.get("ai_response_text", ""),
+            "optimization_response_text": self.coordinator.data.get("optimization_response_text", ""),
         }
 
 
@@ -446,12 +446,12 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
         self._attr_unique_id = f"{config_entry.entry_id}_main_fan_recommendation_debug"
-        self._attr_name = "Main Fan Speed AI Recommendation"
+        self._attr_name = "Main Fan Speed Fan Speed Recommendation"
         self._attr_icon = "mdi:fan-alert"
 
     @property
     def native_value(self) -> str:
-        """Return the AI recommended fan speed."""
+        """Return the recommended fan speed."""
         if not self.coordinator.data:
             return "unknown"
 
@@ -639,7 +639,7 @@ class SystemStatusDebugSensor(AirconManagerSensorBase):
             "error_count": self.coordinator.data.get("error_count", 0),
             "has_recommendations": bool(self.coordinator.data.get("recommendations")),
             "recommendation_count": len(self.coordinator.data.get("recommendations", {})),
-            "ai_response_available": bool(self.coordinator.data.get("ai_response_text")),
+            "ai_response_available": bool(self.coordinator.data.get("optimization_response_text")),
             "main_climate_state": self.coordinator.data.get("main_climate_state"),
         }
 
@@ -696,21 +696,21 @@ class LastOptimizationTimeSensor(AirconManagerSensorBase):
         return attrs
 
 
-class LastAIOptimizationTimeSensor(AirconManagerSensorBase):
-    """Sensor showing when AI last ran (not just coordinator updates)."""
+class LastOptimizationTimeSensor(AirconManagerSensorBase):
+    """Sensor showing when last optimization ran (not just coordinator updates)."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
-        self._attr_unique_id = f"{config_entry.entry_id}_last_ai_optimization"
-        self._attr_name = "Last AI Optimization"
+        self._attr_unique_id = f"{config_entry.entry_id}_last_optimization"
+        self._attr_name = "Last Optimization"
         self._attr_icon = "mdi:brain"
 
     @property
     def native_value(self):
-        """Return the last AI optimization time."""
+        """Return the last optimization time."""
         from datetime import datetime, timezone
 
         if not self.coordinator.data:
@@ -724,9 +724,9 @@ class LastAIOptimizationTimeSensor(AirconManagerSensorBase):
         if not optimizer:
             return None
 
-        # Get actual AI optimization timestamp
-        if hasattr(optimizer, '_last_ai_optimization') and optimizer._last_ai_optimization:
-            return datetime.fromtimestamp(optimizer._last_ai_optimization, tz=timezone.utc)
+        # Get actual optimization timestamp
+        if hasattr(optimizer, '_last_optimization') and optimizer._last_optimization:
+            return datetime.fromtimestamp(optimizer._last_optimization, tz=timezone.utc)
 
         return None
 
@@ -748,9 +748,9 @@ class LastAIOptimizationTimeSensor(AirconManagerSensorBase):
 
         attrs = {}
 
-        if hasattr(optimizer, '_last_ai_optimization') and optimizer._last_ai_optimization:
+        if hasattr(optimizer, '_last_optimization') and optimizer._last_optimization:
             current_time = time.time()
-            seconds_since = current_time - optimizer._last_ai_optimization
+            seconds_since = current_time - optimizer._last_optimization
             attrs["seconds_since_last_ai_run"] = round(seconds_since, 1)
             attrs["minutes_since_last_ai_run"] = round(seconds_since / 60, 2)
         else:
@@ -761,7 +761,7 @@ class LastAIOptimizationTimeSensor(AirconManagerSensorBase):
 
 
 class NextOptimizationTimeSensor(AirconManagerSensorBase):
-    """Sensor showing when next AI optimization will run."""
+    """Sensor showing when next optimization will run."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
@@ -769,12 +769,12 @@ class NextOptimizationTimeSensor(AirconManagerSensorBase):
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
         self._attr_unique_id = f"{config_entry.entry_id}_next_optimization_time"
-        self._attr_name = "Next AI Optimization Time"
+        self._attr_name = "Next Optimization Time"
         self._attr_icon = "mdi:clock-outline"
 
     @property
     def native_value(self):
-        """Return the next AI optimization time."""
+        """Return the next optimization time."""
         from datetime import datetime, timezone, timedelta
 
         if not self.coordinator.data:
@@ -789,8 +789,8 @@ class NextOptimizationTimeSensor(AirconManagerSensorBase):
             return None
 
         # Calculate next optimization time
-        if hasattr(optimizer, '_last_ai_optimization') and optimizer._last_ai_optimization:
-            last_opt_timestamp = optimizer._last_ai_optimization
+        if hasattr(optimizer, '_last_optimization') and optimizer._last_optimization:
+            last_opt_timestamp = optimizer._last_optimization
             interval_seconds = optimizer._ai_optimization_interval
             next_opt_timestamp = last_opt_timestamp + interval_seconds
 
@@ -823,9 +823,9 @@ class NextOptimizationTimeSensor(AirconManagerSensorBase):
         }
 
         # Calculate time until next optimization
-        if hasattr(optimizer, '_last_ai_optimization') and optimizer._last_ai_optimization:
+        if hasattr(optimizer, '_last_optimization') and optimizer._last_optimization:
             current_time = time.time()
-            time_since_last = current_time - optimizer._last_ai_optimization
+            time_since_last = current_time - optimizer._last_optimization
             time_until_next = optimizer._ai_optimization_interval - time_since_last
 
             attrs["seconds_until_next"] = max(0, time_until_next)
