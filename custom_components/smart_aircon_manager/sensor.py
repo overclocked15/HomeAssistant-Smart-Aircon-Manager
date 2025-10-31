@@ -96,7 +96,7 @@ async def async_setup_entry(
     # Add debug sensors
     entities.append(SystemStatusDebugSensor(coordinator, config_entry))
     entities.append(LastOptimizationTimeSensor(coordinator, config_entry))
-    entities.append(LastOptimizationTimeSensor(coordinator, config_entry))
+    entities.append(LastActualOptimizationSensor(coordinator, config_entry))
     entities.append(NextOptimizationTimeSensor(coordinator, config_entry))
     entities.append(ErrorTrackingSensor(coordinator, config_entry))
     entities.append(ValidSensorsCountSensor(coordinator, config_entry))
@@ -706,7 +706,7 @@ class LastOptimizationTimeSensor(AirconManagerSensorBase):
         return attrs
 
 
-class LastOptimizationTimeSensor(AirconManagerSensorBase):
+class LastActualOptimizationSensor(AirconManagerSensorBase):
     """Sensor showing when last optimization ran (not just coordinator updates)."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
@@ -714,8 +714,8 @@ class LastOptimizationTimeSensor(AirconManagerSensorBase):
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
-        self._attr_unique_id = f"{config_entry.entry_id}_last_optimization"
-        self._attr_name = "Last Optimization"
+        self._attr_unique_id = f"{config_entry.entry_id}_last_actual_optimization"
+        self._attr_name = "Last Actual Optimization"
         self._attr_icon = "mdi:brain"
 
     @property
