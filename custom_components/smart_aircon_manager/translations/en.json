@@ -146,7 +146,7 @@
       },
       "learning": {
         "title": "Adaptive Learning Configuration",
-        "description": "{info}",
+        "description": "Configure 100% local, logic-based adaptive learning. Passive mode collects data safely. Active mode applies optimizations when confidence is high. All learning happens locally with full privacy.",
         "data": {
           "enable_learning": "Enable Adaptive Learning",
           "learning_mode": "Learning Mode",

@@ -833,17 +833,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 }
             ),
-            description_placeholders={
-                "info": (
-                    "Adaptive Learning uses 100% logic-based statistical analysis to learn your rooms' thermal characteristics.\n\n"
-                    "• Passive Mode: Safely collect data without making changes (recommended to start)\n"
-                    "• Active Mode: Apply learned optimizations automatically (requires high confidence)\n"
-                    "• Confidence Threshold: Minimum confidence (0.5-0.95) before applying adjustments in active mode\n"
-                    "• Max Adjustment: Maximum parameter change limit (0.05-0.30) for safety\n"
-                    "• Smoothing Factor: Fan speed transition smoothing (0.5-0.95, higher = smoother)\n\n"
-                    "Learning is 100% local, private, and transparent. Monitor progress via learning sensors."
-                )
-            },
         )
 
     async def async_step_advanced(
