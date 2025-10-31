@@ -43,9 +43,10 @@
         "menu_options": {
           "settings": "Change Settings (temperature, entities, modes)",
           "manage_rooms": "Manage Rooms (add/remove rooms)",
-          "room_overrides": "Room Overrides (enable/disable AI control per room)",
+          "room_overrides": "Room Overrides (enable/disable control per room)",
           "weather": "Weather Integration (outdoor temperature adjustments)",
           "schedules": "Time-Based Scheduling (different temps for different times)",
+          "learning": "Adaptive Learning (100% local statistical learning)",
           "advanced": "Advanced Settings (fine-tune thresholds and behavior)"
         }
       },
@@ -90,7 +91,7 @@
       },
       "room_overrides": {
         "title": "Room Overrides",
-        "description": "Enable or disable AI control for each room. Disabled rooms will not have their fan speeds adjusted by the AI. You have {room_count} room(s) configured.\n\nCheck the box to ENABLE AI control, uncheck to DISABLE.",
+        "description": "Enable or disable automatic control for each room. Disabled rooms will not have their fan speeds adjusted automatically. You have {room_count} room(s) configured.\n\nCheck the box to ENABLE automatic control, uncheck to DISABLE.",
         "data": {}
       },
       "weather": {
@@ -141,6 +142,24 @@
         "description": "{message}",
         "data": {
           "schedule_to_delete": "Schedule to Delete"
+        }
+      },
+      "learning": {
+        "title": "Adaptive Learning Configuration",
+        "description": "{info}",
+        "data": {
+          "enable_learning": "Enable Adaptive Learning",
+          "learning_mode": "Learning Mode",
+          "learning_confidence_threshold": "Confidence Threshold (min confidence to apply adjustments)",
+          "learning_max_adjustment": "Maximum Adjustment Limit (safety limit for parameter changes)",
+          "smoothing_factor": "Fan Speed Smoothing Factor (higher = smoother transitions)"
+        },
+        "data_description": {
+          "enable_learning": "Enable 100% local, logic-based adaptive learning to optimize performance over time",
+          "learning_mode": "Passive mode collects data only. Active mode applies learned optimizations when confidence is high enough.",
+          "learning_confidence_threshold": "Minimum confidence score (0.5-0.95) required before applying learned adjustments in active mode. Default: 0.7 (70%)",
+          "learning_max_adjustment": "Maximum allowed adjustment to parameters (0.05-0.30) for safety. Prevents aggressive changes. Default: 0.10 (10%)",
+          "smoothing_factor": "Controls how smoothly fan speeds transition (0.5-0.95). Higher values = smoother but slower response. Default: 0.7"
         }
       },
       "advanced": {

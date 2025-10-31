@@ -50,6 +50,16 @@ from .const import (
     DEFAULT_AUTO_CONTROL_MAIN_AC,
     DEFAULT_AUTO_CONTROL_AC_TEMPERATURE,
     DEFAULT_ENABLE_NOTIFICATIONS,
+    CONF_ENABLE_LEARNING,
+    CONF_LEARNING_MODE,
+    CONF_LEARNING_CONFIDENCE_THRESHOLD,
+    CONF_LEARNING_MAX_ADJUSTMENT,
+    CONF_SMOOTHING_FACTOR,
+    DEFAULT_ENABLE_LEARNING,
+    DEFAULT_LEARNING_MODE,
+    DEFAULT_LEARNING_CONFIDENCE_THRESHOLD,
+    DEFAULT_LEARNING_MAX_ADJUSTMENT,
+    DEFAULT_SMOOTHING_FACTOR,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -241,7 +251,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options - show menu."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "schedules", "advanced"],
+            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "schedules", "learning", "advanced"],
         )
 
     async def async_step_settings(
@@ -742,6 +752,98 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 }
             ),
+        )
+
+    async def async_step_learning(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle adaptive learning configuration."""
+        if user_input is not None:
+            # Merge with existing data and update the config entry
+            new_data = {**self.config_entry.data, **user_input}
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+            # Reload the integration to apply changes
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        return self.async_show_form(
+            step_id="learning",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_ENABLE_LEARNING,
+                        default=self.config_entry.data.get(
+                            CONF_ENABLE_LEARNING, DEFAULT_ENABLE_LEARNING
+                        ),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_LEARNING_MODE,
+                        default=self.config_entry.data.get(
+                            CONF_LEARNING_MODE, DEFAULT_LEARNING_MODE
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                {"label": "Passive (Safe Data Collection)", "value": "passive"},
+                                {"label": "Active (Apply Learned Optimizations)", "value": "active"},
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_LEARNING_CONFIDENCE_THRESHOLD,
+                        default=self.config_entry.data.get(
+                            CONF_LEARNING_CONFIDENCE_THRESHOLD, DEFAULT_LEARNING_CONFIDENCE_THRESHOLD
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.5,
+                            max=0.95,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_LEARNING_MAX_ADJUSTMENT,
+                        default=self.config_entry.data.get(
+                            CONF_LEARNING_MAX_ADJUSTMENT, DEFAULT_LEARNING_MAX_ADJUSTMENT
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.05,
+                            max=0.30,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_SMOOTHING_FACTOR,
+                        default=self.config_entry.data.get(
+                            CONF_SMOOTHING_FACTOR, DEFAULT_SMOOTHING_FACTOR
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.5,
+                            max=0.95,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={
+                "info": (
+                    "Adaptive Learning uses 100% logic-based statistical analysis to learn your rooms' thermal characteristics.\n\n"
+                    "• Passive Mode: Safely collect data without making changes (recommended to start)\n"
+                    "• Active Mode: Apply learned optimizations automatically (requires high confidence)\n"
+                    "• Confidence Threshold: Minimum confidence (0.5-0.95) before applying adjustments in active mode\n"
+                    "• Max Adjustment: Maximum parameter change limit (0.05-0.30) for safety\n"
+                    "• Smoothing Factor: Fan speed transition smoothing (0.5-0.95, higher = smoother)\n\n"
+                    "Learning is 100% local, private, and transparent. Monitor progress via learning sensors."
+                )
+            },
         )
 
     async def async_step_advanced(
