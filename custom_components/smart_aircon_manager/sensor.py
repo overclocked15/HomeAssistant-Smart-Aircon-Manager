@@ -108,7 +108,13 @@ async def async_setup_entry(
     entities.append(SensorDataQualitySensor(coordinator, config_entry))
 
     # Add adaptive learning sensors (if learning is enabled)
+    _LOGGER.debug(
+        "Checking learning sensors: learning_manager=%s, enabled=%s",
+        optimizer.learning_manager is not None,
+        optimizer.learning_manager.enabled if optimizer.learning_manager else "N/A"
+    )
     if optimizer.learning_manager and optimizer.learning_manager.enabled:
+        _LOGGER.info("Creating learning sensors for %d rooms", len(optimizer.room_configs))
         for room_config in optimizer.room_configs:
             room_name = room_config["room_name"]
             entities.append(RoomThermalMassSensor(coordinator, config_entry, room_name, optimizer))
@@ -116,6 +122,8 @@ async def async_setup_entry(
             entities.append(RoomLearningConfidenceSensor(coordinator, config_entry, room_name, optimizer))
             entities.append(RoomDataPointsSensor(coordinator, config_entry, room_name, optimizer))
             entities.append(RoomOvershootRateSensor(coordinator, config_entry, room_name, optimizer))
+    else:
+        _LOGGER.info("Learning sensors NOT created - learning is not enabled")
 
     # Add main fan speed recommendation debug sensor if configured
     if optimizer.main_fan_entity:

@@ -179,6 +179,10 @@ class AirconOptimizer:
                 DEFAULT_LEARNING_CONFIDENCE_THRESHOLD,
                 DEFAULT_LEARNING_MAX_ADJUSTMENT,
             )
+            _LOGGER.debug(
+                "Reading learning config from entry. Config entry data keys: %s",
+                list(self.config_entry.data.keys())
+            )
             self.learning_manager.enabled = self.config_entry.data.get(CONF_ENABLE_LEARNING, DEFAULT_ENABLE_LEARNING)
             self.learning_manager.learning_mode = self.config_entry.data.get(CONF_LEARNING_MODE, DEFAULT_LEARNING_MODE)
             self.learning_manager.confidence_threshold = self.config_entry.data.get(
@@ -186,6 +190,13 @@ class AirconOptimizer:
             )
             self.learning_manager.max_adjustment_per_update = self.config_entry.data.get(
                 CONF_LEARNING_MAX_ADJUSTMENT, DEFAULT_LEARNING_MAX_ADJUSTMENT
+            )
+            _LOGGER.debug(
+                "Learning config applied: enabled=%s, mode=%s, confidence=%s, max_adj=%s",
+                self.learning_manager.enabled,
+                self.learning_manager.learning_mode,
+                self.learning_manager.confidence_threshold,
+                self.learning_manager.max_adjustment_per_update
             )
 
         # Load existing learning profiles
