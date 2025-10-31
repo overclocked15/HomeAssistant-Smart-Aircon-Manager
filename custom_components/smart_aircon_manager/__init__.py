@@ -86,18 +86,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         min_airflow_percent=entry.data.get("min_airflow_percent", DEFAULT_MIN_AIRFLOW_PERCENT),
     )
 
-    # Get update interval from config (for AI optimization)
+    # Get update interval from config
     update_interval = entry.data.get("update_interval", DEFAULT_UPDATE_INTERVAL)
 
-    # Pass the AI optimization interval to the optimizer
-    optimizer._ai_optimization_interval = update_interval * 60  # Convert minutes to seconds
+    # Pass the optimization interval to the optimizer
+    optimizer._optimization_interval = update_interval * 60  # Convert minutes to seconds
     _LOGGER.info(
-        "AI optimization interval set to %d minutes (%d seconds)",
+        "Optimization interval set to %d minutes (%d seconds)",
         update_interval,
-        optimizer._ai_optimization_interval
+        optimizer._optimization_interval
     )
 
-    # Create coordinator for frequent data polling (independent of AI optimization)
+    # Create coordinator for frequent data polling (independent of optimization)
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,

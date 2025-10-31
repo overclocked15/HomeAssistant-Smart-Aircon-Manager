@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import statistics
 import time
 from pathlib import Path
 from typing import Any
@@ -864,16 +865,15 @@ class AirconOptimizer:
         Returns:
             Adjusted recommendations with balancing applied
         """
-        import statistics
-
         # Get all valid temperatures
         temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
         if len(temps) < 2:
+            self._balancing_active = False
             return recommendations  # Need at least 2 rooms to balance
 
         # Calculate house statistics
         avg_temp = statistics.mean(temps)
-        temp_variance = statistics.stdev(temps) if len(temps) > 1 else 0.0
+        temp_variance = statistics.stdev(temps)  # Safe now - len(temps) >= 2
 
         # Store for diagnostics
         self._house_avg_temp = avg_temp
@@ -908,19 +908,17 @@ class AirconOptimizer:
             deviation_from_avg = room_temp - avg_temp
 
             # Calculate balancing adjustment
-            # Positive deviation = hotter than average
-            # Negative deviation = cooler than average
+            # Positive deviation = room is hotter than house average
+            # Negative deviation = room is cooler than house average
             balancing_bias = deviation_from_avg * self.balancing_aggressiveness * 100
 
-            # In cooling mode: hot rooms need MORE cooling (higher fan)
-            # In heating mode: cold rooms need MORE heating (higher fan)
-            # The bias sign naturally handles this because:
-            # - Cool mode: hot room (+bias) → increase fan → more cooling ✓
-            # - Cool mode: cold room (-bias) → decrease fan → less cooling (warms up) ✓
-            # - Heat mode: cold room (-bias from avg, but temp_diff is negative) → handled by base calc
-
-            # However, we need to flip the bias for heating mode because
-            # a hot room in heating mode should get LESS heating (lower fan)
+            # Flip the bias sign for heating mode to ensure correct behavior:
+            # Cooling mode (no flip):
+            #   - Hot room (+deviation) → +bias → MORE airflow → MORE cooling ✓
+            #   - Cold room (-deviation) → -bias → LESS airflow → LESS cooling (warms up) ✓
+            # Heating mode (flip bias):
+            #   - Hot room (+deviation) → -bias (after flip) → LESS airflow → LESS heating ✓
+            #   - Cold room (-deviation) → +bias (after flip) → MORE airflow → MORE heating ✓
             if self.hvac_mode == "heat":
                 balancing_bias = -balancing_bias
 

@@ -145,7 +145,10 @@ async def async_setup_entry(
         entities.append(EffectiveTargetTemperatureSensor(coordinator, config_entry))
 
     # Add balancing sensors if balancing is enabled
-    if optimizer.enable_room_balancing and len(optimizer.room_configs) > 1:
+    if (optimizer.enable_room_balancing and
+        optimizer.room_configs and
+        isinstance(optimizer.room_configs, list) and
+        len(optimizer.room_configs) > 1):
         entities.append(HouseAverageTemperatureSensor(coordinator, config_entry))
         entities.append(RoomTemperatureVarianceSensor(coordinator, config_entry))
         entities.append(BalancingActiveSensor(coordinator, config_entry))
@@ -815,7 +818,7 @@ class NextOptimizationTimeSensor(AirconManagerSensorBase):
         # Calculate next optimization time
         if hasattr(optimizer, '_last_optimization') and optimizer._last_optimization:
             last_opt_timestamp = optimizer._last_optimization
-            interval_seconds = optimizer._ai_optimization_interval
+            interval_seconds = optimizer._optimization_interval
             next_opt_timestamp = last_opt_timestamp + interval_seconds
 
             # Convert to datetime
@@ -842,15 +845,15 @@ class NextOptimizationTimeSensor(AirconManagerSensorBase):
             return {"status": "optimizer_not_found"}
 
         attrs = {
-            "ai_optimization_interval_seconds": optimizer._ai_optimization_interval if hasattr(optimizer, '_ai_optimization_interval') else None,
-            "ai_optimization_interval_minutes": (optimizer._ai_optimization_interval / 60) if hasattr(optimizer, '_ai_optimization_interval') else None,
+            "optimization_interval_seconds": optimizer._optimization_interval if hasattr(optimizer, '_optimization_interval') else None,
+            "optimization_interval_minutes": (optimizer._optimization_interval / 60) if hasattr(optimizer, '_optimization_interval') else None,
         }
 
         # Calculate time until next optimization
         if hasattr(optimizer, '_last_optimization') and optimizer._last_optimization:
             current_time = time.time()
             time_since_last = current_time - optimizer._last_optimization
-            time_until_next = optimizer._ai_optimization_interval - time_since_last
+            time_until_next = optimizer._optimization_interval - time_since_last
 
             attrs["seconds_until_next"] = max(0, time_until_next)
             attrs["minutes_until_next"] = max(0, time_until_next / 60)
