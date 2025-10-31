@@ -167,9 +167,34 @@ class AirconOptimizer:
         config_entry_id = self.config_entry.entry_id if self.config_entry else "default"
         self.learning_manager = LearningManager(self.hass, config_entry_id, storage_path)
 
+        # Apply configuration from config entry
+        if self.config_entry:
+            from .const import (
+                CONF_ENABLE_LEARNING,
+                CONF_LEARNING_MODE,
+                CONF_LEARNING_CONFIDENCE_THRESHOLD,
+                CONF_LEARNING_MAX_ADJUSTMENT,
+                DEFAULT_ENABLE_LEARNING,
+                DEFAULT_LEARNING_MODE,
+                DEFAULT_LEARNING_CONFIDENCE_THRESHOLD,
+                DEFAULT_LEARNING_MAX_ADJUSTMENT,
+            )
+            self.learning_manager.enabled = self.config_entry.data.get(CONF_ENABLE_LEARNING, DEFAULT_ENABLE_LEARNING)
+            self.learning_manager.learning_mode = self.config_entry.data.get(CONF_LEARNING_MODE, DEFAULT_LEARNING_MODE)
+            self.learning_manager.confidence_threshold = self.config_entry.data.get(
+                CONF_LEARNING_CONFIDENCE_THRESHOLD, DEFAULT_LEARNING_CONFIDENCE_THRESHOLD
+            )
+            self.learning_manager.max_adjustment_per_update = self.config_entry.data.get(
+                CONF_LEARNING_MAX_ADJUSTMENT, DEFAULT_LEARNING_MAX_ADJUSTMENT
+            )
+
         # Load existing learning profiles
         await self.learning_manager.async_load_profiles()
-        _LOGGER.info("Adaptive learning initialized (mode: %s)", self.learning_manager.learning_mode)
+        _LOGGER.info(
+            "Adaptive learning initialized (enabled: %s, mode: %s)",
+            self.learning_manager.enabled,
+            self.learning_manager.learning_mode
+        )
 
     async def _retry_service_call(
         self,

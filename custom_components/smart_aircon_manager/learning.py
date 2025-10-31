@@ -343,8 +343,8 @@ class LearningManager:
         self.tracker = PerformanceTracker(hass, config_entry_id)
         self.profiles = {}  # room_name -> LearningProfile
 
-        # Learning configuration
-        self.enabled = True
+        # Learning configuration (defaults - will be overridden by config entry)
+        self.enabled = False  # Disabled by default (opt-in)
         self.learning_mode = "passive"  # passive, active
         self.confidence_threshold = 0.7
         self.max_adjustment_per_update = 0.10  # 10% max change
