@@ -66,3 +66,68 @@ reset_error_count:
       example: "abc123def456"
       selector:
         text:
+
+analyze_learning:
+  name: Analyze Learning
+  description: Force immediate analysis and update of learning profiles
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID (optional, analyzes all if not specified)
+      required: false
+      example: "abc123def456"
+      selector:
+        text:
+
+reset_learning:
+  name: Reset Learning
+  description: Clear all learned data and start learning from scratch
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID (optional, resets all if not specified)
+      required: false
+      example: "abc123def456"
+      selector:
+        text:
+    room_name:
+      name: Room Name
+      description: Optional room name to reset only that room (resets all rooms if not specified)
+      required: false
+      example: "Living Room"
+      selector:
+        text:
+
+enable_learning:
+  name: Enable Learning
+  description: Enable adaptive learning
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    mode:
+      name: Learning Mode
+      description: Learning mode - passive (collect only) or active (apply adjustments)
+      required: false
+      default: "passive"
+      selector:
+        select:
+          options:
+            - "passive"
+            - "active"
+
+disable_learning:
+  name: Disable Learning
+  description: Disable adaptive learning (keeps existing data)
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID
+      required: true
+      example: "abc123def456"
+      selector:
+        text:

@@ -107,6 +107,16 @@ async def async_setup_entry(
     entities.append(TotalOptimizationsRunSensor(coordinator, config_entry))
     entities.append(SensorDataQualitySensor(coordinator, config_entry))
 
+    # Add adaptive learning sensors (if learning is enabled)
+    if optimizer.learning_manager and optimizer.learning_manager.enabled:
+        for room_config in optimizer.room_configs:
+            room_name = room_config["room_name"]
+            entities.append(RoomThermalMassSensor(coordinator, config_entry, room_name, optimizer))
+            entities.append(RoomCoolingEfficiencySensor(coordinator, config_entry, room_name, optimizer))
+            entities.append(RoomLearningConfidenceSensor(coordinator, config_entry, room_name, optimizer))
+            entities.append(RoomDataPointsSensor(coordinator, config_entry, room_name, optimizer))
+            entities.append(RoomOvershootRateSensor(coordinator, config_entry, room_name, optimizer))
+
     # Add main fan speed recommendation debug sensor if configured
     if optimizer.main_fan_entity:
         entities.append(MainFanSpeedRecommendationSensor(coordinator, config_entry))
@@ -1396,4 +1406,234 @@ class SensorDataQualitySensor(AirconManagerSensorBase):
                 else "fair" if quality_pct >= 75
                 else "poor"
             ),
+        }
+
+
+# Adaptive Learning Sensors
+
+class RoomThermalMassSensor(AirconManagerSensorBase):
+    """Sensor showing learned thermal mass for a room."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry, optimizer)
+        self._room_name = room_name
+        room_id = room_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_thermal_mass"
+        self._attr_name = f"{room_name} Thermal Mass"
+        self._attr_icon = "mdi:heat-wave"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the learned thermal mass (0.0-1.0)."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return None
+
+        profile = self._optimizer.learning_manager.get_profile(self._room_name)
+        return profile.thermal_mass if profile else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return {}
+
+        profile = self._optimizer.learning_manager.get_profile(self._room_name)
+        if not profile:
+            return {"status": "learning_not_started"}
+
+        return {
+            "description": "Higher = slower temperature change (more thermal inertia)",
+            "scale": "0.0 (fast response) to 1.0 (slow response)",
+            "last_updated": profile.last_updated,
+            "confidence": profile.confidence,
+        }
+
+
+class RoomCoolingEfficiencySensor(AirconManagerSensorBase):
+    """Sensor showing learned cooling efficiency for a room."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry, optimizer)
+        self._room_name = room_name
+        room_id = room_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_cooling_efficiency"
+        self._attr_name = f"{room_name} Cooling Efficiency"
+        self._attr_icon = "mdi:fan-speed-3"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the learned cooling efficiency (0.0-1.0)."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return None
+
+        profile = self._optimizer.learning_manager.get_profile(self._room_name)
+        return profile.cooling_efficiency if profile else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return {}
+
+        profile = self._optimizer.learning_manager.get_profile(self._room_name)
+        if not profile:
+            return {"status": "learning_not_started"}
+
+        return {
+            "description": "How effectively fan speed controls temperature",
+            "scale": "0.0 (ineffective) to 1.0 (very effective)",
+            "last_updated": profile.last_updated,
+            "confidence": profile.confidence,
+        }
+
+
+class RoomLearningConfidenceSensor(AirconManagerSensorBase):
+    """Sensor showing learning confidence score for a room."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry, optimizer)
+        self._room_name = room_name
+        room_id = room_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_learning_confidence"
+        self._attr_name = f"{room_name} Learning Confidence"
+        self._attr_icon = "mdi:chart-line"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the learning confidence percentage."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return None
+
+        profile = self._optimizer.learning_manager.get_profile(self._room_name)
+        if not profile:
+            return 0.0
+
+        return round(profile.confidence * 100, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return {}
+
+        profile = self._optimizer.learning_manager.get_profile(self._room_name)
+        threshold = self._optimizer.learning_manager.confidence_threshold * 100
+
+        if not profile:
+            return {
+                "status": "learning_not_started",
+                "threshold_for_activation": f"{threshold}%",
+            }
+
+        return {
+            "status": (
+                "active" if profile.confidence >= self._optimizer.learning_manager.confidence_threshold
+                else "collecting_data"
+            ),
+            "threshold_for_activation": f"{threshold}%",
+            "last_updated": profile.last_updated,
+            "data_points_needed": max(0, int(200 * self._optimizer.learning_manager.confidence_threshold) - 
+                                     self._optimizer.learning_manager.tracker.get_data_point_count(self._room_name)),
+        }
+
+
+class RoomDataPointsSensor(AirconManagerSensorBase):
+    """Sensor showing number of data points collected for a room."""
+
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry, optimizer)
+        self._room_name = room_name
+        room_id = room_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_data_points"
+        self._attr_name = f"{room_name} Data Points Collected"
+        self._attr_icon = "mdi:database"
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of data points collected."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return 0
+
+        return self._optimizer.learning_manager.tracker.get_data_point_count(self._room_name)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return {}
+
+        count = self.native_value
+        max_points = self._optimizer.learning_manager.tracker._max_data_points_per_room
+
+        return {
+            "max_capacity": max_points,
+            "utilization": f"{round((count / max_points) * 100, 1)}%",
+            "status": (
+                "full" if count >= max_points
+                else "collecting" if count > 0
+                else "empty"
+            ),
+        }
+
+
+class RoomOvershootRateSensor(AirconManagerSensorBase):
+    """Sensor showing overshoot rate for a room."""
+
+    _attr_native_unit_of_measurement = "overshoots/day"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry, optimizer)
+        self._room_name = room_name
+        room_id = room_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_overshoot_rate"
+        self._attr_name = f"{room_name} Overshoot Rate"
+        self._attr_icon = "mdi:sine-wave"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the overshoot rate (overshoots per day)."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return None
+
+        profile = self._optimizer.learning_manager.get_profile(self._room_name)
+        return profile.overshoot_rate_per_day if profile else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self._optimizer or not self._optimizer.learning_manager:
+            return {}
+
+        profile = self._optimizer.learning_manager.get_profile(self._room_name)
+        if not profile:
+            return {"status": "learning_not_started"}
+
+        rate = profile.overshoot_rate_per_day or 0
+
+        return {
+            "description": "How often temperature overshoots target",
+            "status": (
+                "excellent" if rate < 0.5
+                else "good" if rate < 1.0
+                else "fair" if rate < 2.0
+                else "poor"
+            ),
+            "optimal_smoothing_factor": profile.optimal_smoothing_factor,
+            "optimal_smoothing_threshold": profile.optimal_smoothing_threshold,
+            "last_updated": profile.last_updated,
         }

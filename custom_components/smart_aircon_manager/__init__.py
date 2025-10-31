@@ -211,6 +211,103 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(DOMAIN, "reset_error_count", async_reset_error_count_service)
         _LOGGER.debug("Registered reset_error_count service")
 
+        # Register analyze_learning service
+        async def async_analyze_learning_service(call):
+            """Handle analyze_learning service call."""
+            config_entry_id = call.data.get("config_entry_id")
+            if config_entry_id:
+                if config_entry_id in hass.data[DOMAIN]:
+                    optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                    if optimizer.learning_manager:
+                        await optimizer.learning_manager.async_update_profiles()
+                        _LOGGER.info("Analyzed learning profiles for entry %s", config_entry_id)
+                    else:
+                        _LOGGER.warning("Learning not enabled for entry %s", config_entry_id)
+                else:
+                    _LOGGER.error("Config entry %s not found", config_entry_id)
+            else:
+                # Analyze all entries
+                _LOGGER.info("Analyzing learning profiles for all entries")
+                for entry_id in hass.data[DOMAIN]:
+                    optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
+                    if optimizer.learning_manager:
+                        await optimizer.learning_manager.async_update_profiles()
+
+        hass.services.async_register(DOMAIN, "analyze_learning", async_analyze_learning_service)
+        _LOGGER.debug("Registered analyze_learning service")
+
+        # Register reset_learning service
+        async def async_reset_learning_service(call):
+            """Handle reset_learning service call."""
+            config_entry_id = call.data.get("config_entry_id")
+            room_name = call.data.get("room_name")
+
+            if config_entry_id:
+                if config_entry_id in hass.data[DOMAIN]:
+                    optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                    if optimizer.learning_manager:
+                        if room_name:
+                            optimizer.learning_manager.tracker.clear_room_data(room_name)
+                            _LOGGER.info("Reset learning data for room %s in entry %s", room_name, config_entry_id)
+                        else:
+                            optimizer.learning_manager.tracker.clear_all_data()
+                            _LOGGER.info("Reset all learning data for entry %s", config_entry_id)
+                    else:
+                        _LOGGER.warning("Learning not enabled for entry %s", config_entry_id)
+                else:
+                    _LOGGER.error("Config entry %s not found", config_entry_id)
+            else:
+                # Reset all entries
+                _LOGGER.info("Resetting learning data for all entries")
+                for entry_id in hass.data[DOMAIN]:
+                    optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
+                    if optimizer.learning_manager:
+                        if room_name:
+                            optimizer.learning_manager.tracker.clear_room_data(room_name)
+                        else:
+                            optimizer.learning_manager.tracker.clear_all_data()
+
+        hass.services.async_register(DOMAIN, "reset_learning", async_reset_learning_service)
+        _LOGGER.debug("Registered reset_learning service")
+
+        # Register enable_learning service
+        async def async_enable_learning_service(call):
+            """Handle enable_learning service call."""
+            config_entry_id = call.data.get("config_entry_id")
+            mode = call.data.get("mode", "passive")
+
+            if config_entry_id and config_entry_id in hass.data[DOMAIN]:
+                optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                if optimizer.learning_manager:
+                    optimizer.learning_manager.enabled = True
+                    optimizer.learning_manager.learning_mode = mode
+                    _LOGGER.info("Enabled learning in %s mode for entry %s", mode, config_entry_id)
+                else:
+                    _LOGGER.warning("Learning manager not available for entry %s", config_entry_id)
+            else:
+                _LOGGER.error("Config entry %s not found", config_entry_id)
+
+        hass.services.async_register(DOMAIN, "enable_learning", async_enable_learning_service)
+        _LOGGER.debug("Registered enable_learning service")
+
+        # Register disable_learning service
+        async def async_disable_learning_service(call):
+            """Handle disable_learning service call."""
+            config_entry_id = call.data.get("config_entry_id")
+
+            if config_entry_id and config_entry_id in hass.data[DOMAIN]:
+                optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                if optimizer.learning_manager:
+                    optimizer.learning_manager.enabled = False
+                    _LOGGER.info("Disabled learning for entry %s (data preserved)", config_entry_id)
+                else:
+                    _LOGGER.warning("Learning manager not available for entry %s", config_entry_id)
+            else:
+                _LOGGER.error("Config entry %s not found", config_entry_id)
+
+        hass.services.async_register(DOMAIN, "disable_learning", async_disable_learning_service)
+        _LOGGER.debug("Registered disable_learning service")
+
     return True
 
 
@@ -231,6 +328,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.services.async_remove(DOMAIN, "reset_smoothing")
             hass.services.async_remove(DOMAIN, "set_room_override")
             hass.services.async_remove(DOMAIN, "reset_error_count")
+            hass.services.async_remove(DOMAIN, "analyze_learning")
+            hass.services.async_remove(DOMAIN, "reset_learning")
+            hass.services.async_remove(DOMAIN, "enable_learning")
+            hass.services.async_remove(DOMAIN, "disable_learning")
             _LOGGER.debug("Unregistered all services")
 
     return unload_ok
