@@ -98,6 +98,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(seconds=DEFAULT_DATA_POLL_INTERVAL),
     )
 
+    # Setup optimizer (initializes learning manager with config)
+    await optimizer.async_setup()
+
     # Store the optimizer and coordinator
     hass.data[DOMAIN][entry.entry_id] = {
         "optimizer": optimizer,
