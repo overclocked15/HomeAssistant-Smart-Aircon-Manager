@@ -97,6 +97,18 @@ DEFAULT_LEARNING_MODE = "passive"  # passive (collect only) or active (apply adj
 DEFAULT_LEARNING_CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence to apply learning (0.0-1.0)
 DEFAULT_LEARNING_MAX_ADJUSTMENT = 0.10  # Maximum parameter adjustment per update (10%)
 
+# Inter-room balancing configuration
+CONF_ENABLE_ROOM_BALANCING = "enable_room_balancing"
+CONF_TARGET_ROOM_VARIANCE = "target_room_variance"
+CONF_BALANCING_AGGRESSIVENESS = "balancing_aggressiveness"
+CONF_MIN_AIRFLOW_PERCENT = "min_airflow_percent"
+
+# Balancing defaults
+DEFAULT_ENABLE_ROOM_BALANCING = True  # Enabled by default for better whole-house comfort
+DEFAULT_TARGET_ROOM_VARIANCE = 1.5  # Target maximum temperature variance between rooms (°C)
+DEFAULT_BALANCING_AGGRESSIVENESS = 0.2  # How aggressively to balance (0.0-0.5, higher = more aggressive)
+DEFAULT_MIN_AIRFLOW_PERCENT = 15  # Minimum airflow to any room (%), ensures circulation
+
 # Days of week for scheduling
 SCHEDULE_DAYS_OPTIONS = [
     "monday",

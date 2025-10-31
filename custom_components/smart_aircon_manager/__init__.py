@@ -26,6 +26,10 @@ from .const import (
     DEFAULT_OVERSHOOT_TIER1_THRESHOLD,
     DEFAULT_OVERSHOOT_TIER2_THRESHOLD,
     DEFAULT_OVERSHOOT_TIER3_THRESHOLD,
+    DEFAULT_ENABLE_ROOM_BALANCING,
+    DEFAULT_TARGET_ROOM_VARIANCE,
+    DEFAULT_BALANCING_AGGRESSIVENESS,
+    DEFAULT_MIN_AIRFLOW_PERCENT,
 )
 from .optimizer import AirconOptimizer
 
@@ -41,7 +45,7 @@ def get_device_info(config_entry: ConfigEntry) -> dict:
         "name": "Smart Aircon Manager",
         "manufacturer": "Smart Aircon Manager",
         "model": "Logic-Based HVAC Controller",
-        "sw_version": "1.8.3",
+        "sw_version": "2.1.0",
     }
 
 
@@ -76,6 +80,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         overshoot_tier1_threshold=entry.data.get("overshoot_tier1_threshold", DEFAULT_OVERSHOOT_TIER1_THRESHOLD),
         overshoot_tier2_threshold=entry.data.get("overshoot_tier2_threshold", DEFAULT_OVERSHOOT_TIER2_THRESHOLD),
         overshoot_tier3_threshold=entry.data.get("overshoot_tier3_threshold", DEFAULT_OVERSHOOT_TIER3_THRESHOLD),
+        enable_room_balancing=entry.data.get("enable_room_balancing", DEFAULT_ENABLE_ROOM_BALANCING),
+        target_room_variance=entry.data.get("target_room_variance", DEFAULT_TARGET_ROOM_VARIANCE),
+        balancing_aggressiveness=entry.data.get("balancing_aggressiveness", DEFAULT_BALANCING_AGGRESSIVENESS),
+        min_airflow_percent=entry.data.get("min_airflow_percent", DEFAULT_MIN_AIRFLOW_PERCENT),
     )
 
     # Get update interval from config (for AI optimization)

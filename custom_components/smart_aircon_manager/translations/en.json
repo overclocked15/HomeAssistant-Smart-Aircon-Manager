@@ -47,6 +47,7 @@
           "weather": "Weather Integration (outdoor temperature adjustments)",
           "schedules": "Time-Based Scheduling (different temps for different times)",
           "learning": "Adaptive Learning (100% local statistical learning)",
+          "balancing": "Room Balancing (equalize temperatures across all rooms)",
           "advanced": "Advanced Settings (fine-tune thresholds and behavior)"
         }
       },
@@ -160,6 +161,22 @@
           "learning_confidence_threshold": "Minimum confidence score (0.5-0.95) required before applying learned adjustments in active mode. Default: 0.7 (70%)",
           "learning_max_adjustment": "Maximum allowed adjustment to parameters (0.05-0.30) for safety. Prevents aggressive changes. Default: 0.10 (10%)",
           "smoothing_factor": "Controls how smoothly fan speeds transition (0.5-0.95). Higher values = smoother but slower response. Default: 0.7"
+        }
+      },
+      "balancing": {
+        "title": "Room Balancing Configuration",
+        "description": "Configure inter-room temperature balancing to equalize temperatures across all rooms. Works for both heating and cooling modes. Maintains minimum airflow for circulation.",
+        "data": {
+          "enable_room_balancing": "Enable Room Balancing",
+          "target_room_variance": "Target Room Variance (maximum acceptable temperature spread between rooms)",
+          "balancing_aggressiveness": "Balancing Aggressiveness (how strongly to equalize temperatures)",
+          "min_airflow_percent": "Minimum Airflow (ensures all rooms maintain circulation)"
+        },
+        "data_description": {
+          "enable_room_balancing": "Enable automatic balancing to equalize room temperatures. Works with both cooling and heating.",
+          "target_room_variance": "Maximum acceptable temperature variance (standard deviation) between rooms in °C. Default: 1.5°C",
+          "balancing_aggressiveness": "How aggressively to balance (0.0-0.5). Higher = faster equalization. Default: 0.2",
+          "min_airflow_percent": "Minimum airflow percentage to any room (5-50%). Ensures circulation even when balancing. Default: 15%"
         }
       },
       "advanced": {

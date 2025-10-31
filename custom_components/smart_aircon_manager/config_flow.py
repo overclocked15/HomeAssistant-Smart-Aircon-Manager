@@ -60,6 +60,14 @@ from .const import (
     DEFAULT_LEARNING_CONFIDENCE_THRESHOLD,
     DEFAULT_LEARNING_MAX_ADJUSTMENT,
     DEFAULT_SMOOTHING_FACTOR,
+    CONF_ENABLE_ROOM_BALANCING,
+    CONF_TARGET_ROOM_VARIANCE,
+    CONF_BALANCING_AGGRESSIVENESS,
+    CONF_MIN_AIRFLOW_PERCENT,
+    DEFAULT_ENABLE_ROOM_BALANCING,
+    DEFAULT_TARGET_ROOM_VARIANCE,
+    DEFAULT_BALANCING_AGGRESSIVENESS,
+    DEFAULT_MIN_AIRFLOW_PERCENT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -251,7 +259,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options - show menu."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "schedules", "learning", "advanced"],
+            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "schedules", "learning", "balancing", "advanced"],
         )
 
     async def async_step_settings(
@@ -829,6 +837,75 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             max=0.95,
                             step=0.05,
                             mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_balancing(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle inter-room balancing configuration."""
+        if user_input is not None:
+            # Merge with existing data and update the config entry
+            new_data = {**self.config_entry.data, **user_input}
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+            # Reload the integration to apply changes
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        return self.async_show_form(
+            step_id="balancing",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_ENABLE_ROOM_BALANCING,
+                        default=self.config_entry.data.get(
+                            CONF_ENABLE_ROOM_BALANCING, DEFAULT_ENABLE_ROOM_BALANCING
+                        ),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_TARGET_ROOM_VARIANCE,
+                        default=self.config_entry.data.get(
+                            CONF_TARGET_ROOM_VARIANCE, DEFAULT_TARGET_ROOM_VARIANCE
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.5,
+                            max=5.0,
+                            step=0.5,
+                            unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_BALANCING_AGGRESSIVENESS,
+                        default=self.config_entry.data.get(
+                            CONF_BALANCING_AGGRESSIVENESS, DEFAULT_BALANCING_AGGRESSIVENESS
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0,
+                            max=0.5,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_MIN_AIRFLOW_PERCENT,
+                        default=self.config_entry.data.get(
+                            CONF_MIN_AIRFLOW_PERCENT, DEFAULT_MIN_AIRFLOW_PERCENT
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=5,
+                            max=50,
+                            step=5,
+                            unit_of_measurement="%",
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                 }

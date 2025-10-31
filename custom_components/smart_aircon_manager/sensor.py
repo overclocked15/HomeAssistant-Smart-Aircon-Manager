@@ -144,6 +144,12 @@ async def async_setup_entry(
         entities.append(ActiveScheduleSensor(coordinator, config_entry))
         entities.append(EffectiveTargetTemperatureSensor(coordinator, config_entry))
 
+    # Add balancing sensors if balancing is enabled
+    if optimizer.enable_room_balancing and len(optimizer.room_configs) > 1:
+        entities.append(HouseAverageTemperatureSensor(coordinator, config_entry))
+        entities.append(RoomTemperatureVarianceSensor(coordinator, config_entry))
+        entities.append(BalancingActiveSensor(coordinator, config_entry))
+
     _LOGGER.info("Total entities to add: %d", len(entities))
     _LOGGER.info("Entity unique_ids: %s", [e.unique_id for e in entities if hasattr(e, 'unique_id')])
 
@@ -1645,3 +1651,149 @@ class RoomOvershootRateSensor(AirconManagerSensorBase):
             "optimal_smoothing_threshold": profile.optimal_smoothing_threshold,
             "last_updated": profile.last_updated,
         }
+
+
+class HouseAverageTemperatureSensor(AirconManagerSensorBase):
+    """Sensor showing the average temperature across all rooms."""
+
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_house_average_temperature"
+        self._attr_name = "House Average Temperature"
+        self._attr_icon = "mdi:home-thermometer"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the house average temperature."""
+        # Get optimizer from hass data
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not hasattr(optimizer, '_house_avg_temp'):
+            return None
+
+        return round(optimizer._house_avg_temp, 1) if optimizer._house_avg_temp is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer:
+            return {}
+
+        return {
+            "room_count": len(optimizer.room_configs) if optimizer.room_configs else 0,
+            "target_temperature": optimizer.target_temperature,
+            "deviation_from_target": round(optimizer._house_avg_temp - optimizer.target_temperature, 2) if optimizer._house_avg_temp is not None else None,
+        }
+
+
+class RoomTemperatureVarianceSensor(AirconManagerSensorBase):
+    """Sensor showing the standard deviation of room temperatures."""
+
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_room_temperature_variance"
+        self._attr_name = "Room Temperature Variance"
+        self._attr_icon = "mdi:chart-bell-curve"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the room temperature variance (standard deviation)."""
+        # Get optimizer from hass data
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not hasattr(optimizer, '_house_temp_variance'):
+            return None
+
+        return round(optimizer._house_temp_variance, 2) if optimizer._house_temp_variance is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer:
+            return {}
+
+        variance = optimizer._house_temp_variance if hasattr(optimizer, '_house_temp_variance') else None
+        target = optimizer.target_room_variance
+
+        return {
+            "target_variance": target,
+            "variance_status": (
+                "excellent" if variance and variance < target * 0.5
+                else "good" if variance and variance < target
+                else "needs_balancing" if variance and variance >= target
+                else "unknown"
+            ),
+            "balancing_enabled": optimizer.enable_room_balancing,
+        }
+
+
+class BalancingActiveSensor(AirconManagerSensorBase):
+    """Sensor showing whether room balancing is currently active."""
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_balancing_active"
+        self._attr_name = "Room Balancing Active"
+        self._attr_icon = "mdi:scale-balance"
+
+    @property
+    def native_value(self) -> str:
+        """Return whether balancing is active."""
+        # Get optimizer from hass data
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not hasattr(optimizer, '_balancing_active'):
+            return "unknown"
+
+        return "active" if optimizer._balancing_active else "inactive"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer:
+            return {}
+
+        attrs = {
+            "balancing_enabled": optimizer.enable_room_balancing,
+            "target_variance": optimizer.target_room_variance,
+            "aggressiveness": optimizer.balancing_aggressiveness,
+            "min_airflow_percent": optimizer.min_airflow_percent,
+        }
+
+        if hasattr(optimizer, '_house_avg_temp') and optimizer._house_avg_temp is not None:
+            attrs["current_house_avg"] = round(optimizer._house_avg_temp, 1)
+            attrs["target_temperature"] = optimizer.target_temperature
+            attrs["house_deviation"] = round(optimizer._house_avg_temp - optimizer.target_temperature, 2)
+
+        if hasattr(optimizer, '_house_temp_variance') and optimizer._house_temp_variance is not None:
+            attrs["current_variance"] = round(optimizer._house_temp_variance, 2)
+
+        return attrs

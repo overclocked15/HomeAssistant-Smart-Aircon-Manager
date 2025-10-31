@@ -49,6 +49,10 @@ class AirconOptimizer:
         overshoot_tier1_threshold: float = 1.0,
         overshoot_tier2_threshold: float = 2.0,
         overshoot_tier3_threshold: float = 3.0,
+        enable_room_balancing: bool = True,
+        target_room_variance: float = 1.5,
+        balancing_aggressiveness: float = 0.2,
+        min_airflow_percent: int = 15,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -78,6 +82,18 @@ class AirconOptimizer:
         self.overshoot_tier1_threshold = self._validate_positive_float(overshoot_tier1_threshold, "overshoot_tier1_threshold", 0.1, 10.0)
         self.overshoot_tier2_threshold = self._validate_positive_float(overshoot_tier2_threshold, "overshoot_tier2_threshold", 0.1, 10.0)
         self.overshoot_tier3_threshold = self._validate_positive_float(overshoot_tier3_threshold, "overshoot_tier3_threshold", 0.1, 10.0)
+
+        # Inter-room balancing configuration
+        self.enable_room_balancing = enable_room_balancing
+        self.target_room_variance = self._validate_positive_float(target_room_variance, "target_room_variance", 0.5, 5.0)
+        self.balancing_aggressiveness = self._validate_positive_float(balancing_aggressiveness, "balancing_aggressiveness", 0.0, 0.5)
+        self.min_airflow_percent = max(5, min(50, int(min_airflow_percent)))  # Clamp to 5-50%
+
+        # Balancing state tracking
+        self._house_avg_temp = None
+        self._house_temp_variance = None
+        self._balancing_active = False
+
         self._last_optimization_response = None
         self._last_error = None
         self._error_count = 0
@@ -692,6 +708,10 @@ class AirconOptimizer:
                 fan_speed
             )
 
+        # Apply inter-room balancing if enabled
+        if self.enable_room_balancing and len(recommendations) > 1:
+            recommendations = self._apply_room_balancing(recommendations, room_states, effective_target)
+
         if self.auto_control_ac_temperature and self.main_climate_entity:
             ac_temp = self._calculate_ac_temperature(room_states, effective_target)
             recommendations["ac_temperature"] = ac_temp
@@ -823,6 +843,102 @@ class AirconOptimizer:
                 return 42
             else:
                 return 35
+
+    def _apply_room_balancing(
+        self,
+        recommendations: dict[str, int],
+        room_states: dict[str, dict[str, Any]],
+        effective_target: float
+    ) -> dict[str, int]:
+        """Apply inter-room temperature balancing adjustments.
+
+        When rooms are unbalanced but house average is near target, this applies
+        adjustments to equalize temperatures across all rooms. Works for both
+        heating and cooling modes.
+
+        Args:
+            recommendations: Initial fan speed recommendations per room
+            room_states: Current state of all rooms
+            effective_target: Target temperature
+
+        Returns:
+            Adjusted recommendations with balancing applied
+        """
+        import statistics
+
+        # Get all valid temperatures
+        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        if len(temps) < 2:
+            return recommendations  # Need at least 2 rooms to balance
+
+        # Calculate house statistics
+        avg_temp = statistics.mean(temps)
+        temp_variance = statistics.stdev(temps) if len(temps) > 1 else 0.0
+
+        # Store for diagnostics
+        self._house_avg_temp = avg_temp
+        self._house_temp_variance = temp_variance
+
+        # Check if balancing is needed
+        house_deviation_from_target = abs(avg_temp - effective_target)
+        needs_balancing = (
+            temp_variance > self.target_room_variance and  # Rooms are unbalanced
+            house_deviation_from_target < 1.0  # House average is reasonably close to target
+        )
+
+        if not needs_balancing:
+            self._balancing_active = False
+            return recommendations
+
+        self._balancing_active = True
+        _LOGGER.debug(
+            "Applying room balancing: avg=%.1f°C, variance=%.2f°C, target_variance=%.2f°C",
+            avg_temp, temp_variance, self.target_room_variance
+        )
+
+        # Apply balancing adjustments
+        balanced_recommendations = {}
+        for room_name, base_fan_speed in recommendations.items():
+            state = room_states.get(room_name)
+            if not state or state["current_temperature"] is None:
+                balanced_recommendations[room_name] = base_fan_speed
+                continue
+
+            room_temp = state["current_temperature"]
+            deviation_from_avg = room_temp - avg_temp
+
+            # Calculate balancing adjustment
+            # Positive deviation = hotter than average
+            # Negative deviation = cooler than average
+            balancing_bias = deviation_from_avg * self.balancing_aggressiveness * 100
+
+            # In cooling mode: hot rooms need MORE cooling (higher fan)
+            # In heating mode: cold rooms need MORE heating (higher fan)
+            # The bias sign naturally handles this because:
+            # - Cool mode: hot room (+bias) → increase fan → more cooling ✓
+            # - Cool mode: cold room (-bias) → decrease fan → less cooling (warms up) ✓
+            # - Heat mode: cold room (-bias from avg, but temp_diff is negative) → handled by base calc
+
+            # However, we need to flip the bias for heating mode because
+            # a hot room in heating mode should get LESS heating (lower fan)
+            if self.hvac_mode == "heat":
+                balancing_bias = -balancing_bias
+
+            # Apply adjustment
+            adjusted_speed = base_fan_speed + balancing_bias
+
+            # Enforce minimum airflow and bounds
+            final_speed = max(self.min_airflow_percent, min(100, int(adjusted_speed)))
+
+            balanced_recommendations[room_name] = final_speed
+
+            _LOGGER.debug(
+                "  %s: %.1f°C (avg %+.1f°C) → base=%d%% + bias=%+.1f%% = %d%% (final=%d%%)",
+                room_name, room_temp, deviation_from_avg,
+                base_fan_speed, balancing_bias, int(adjusted_speed), final_speed
+            )
+
+        return balanced_recommendations
 
     def _calculate_ac_temperature(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> float:
         """Calculate optimal AC temperature setpoint."""
