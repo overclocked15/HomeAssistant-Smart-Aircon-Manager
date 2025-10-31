@@ -4,9 +4,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+
+from .learning import LearningManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,6 +97,10 @@ class AirconOptimizer:
         self._optimization_start_time = None
         self._last_cycle_time_ms = None
 
+        # Adaptive learning
+        self.learning_manager = None  # Will be initialized in async_setup
+        self._last_room_temps = {}  # Track temps for learning
+
     def _validate_temperature(self, value: float, name: str, min_val: float, max_val: float) -> float:
         """Validate temperature value is within acceptable range."""
         try:
@@ -154,6 +161,15 @@ class AirconOptimizer:
         """Set up the optimizer."""
         self._startup_time = time.time()
         _LOGGER.info("Smart Aircon Manager optimizer initialized (logic-based, no AI required)")
+
+        # Initialize learning manager
+        storage_path = Path(self.hass.config.path(".storage"))
+        config_entry_id = self.config_entry.entry_id if self.config_entry else "default"
+        self.learning_manager = LearningManager(self.hass, config_entry_id, storage_path)
+
+        # Load existing learning profiles
+        await self.learning_manager.async_load_profiles()
+        _LOGGER.info("Adaptive learning initialized (mode: %s)", self.learning_manager.learning_mode)
 
     async def _retry_service_call(
         self,
@@ -504,6 +520,32 @@ class AirconOptimizer:
         uptime_hours = (cycle_end - self._startup_time) / 3600 if self._startup_time else 1
         error_rate = self._error_count / uptime_hours if uptime_hours > 0 else 0
 
+        # Track performance data for adaptive learning
+        if self.learning_manager and self.learning_manager.enabled:
+            for room_name, state in room_states.items():
+                current_temp = state.get("current_temperature")
+                if current_temp is None:
+                    continue
+
+                # Get previous temperature for this room
+                previous_temp = self._last_room_temps.get(room_name)
+
+                # Get fan speed applied
+                fan_speed = recommendations.get(room_name, 50)
+
+                # Track this cycle
+                self.learning_manager.tracker.track_cycle(
+                    room_name=room_name,
+                    temp_before=previous_temp if previous_temp else current_temp,
+                    temp_after=current_temp,
+                    fan_speed=fan_speed,
+                    target_temp=state.get("target_temperature", self.target_temperature),
+                    cycle_duration=cycle_time_ms / 1000.0,  # Convert to seconds
+                )
+
+                # Store current temp for next cycle
+                self._last_room_temps[room_name] = current_temp
+
         return {
             "room_states": room_states,
             "recommendations": recommendations,
@@ -624,8 +666,21 @@ class AirconOptimizer:
     def _smooth_fan_speed(self, room_name: str, new_speed: int, smoothing_threshold: int = 10) -> int:
         """Smooth fan speed transitions to prevent rapid oscillation.
 
-        Only applies smoothing when near band boundaries (within threshold).
+        Uses learned smoothing parameters if adaptive learning is active.
         """
+        # Get learned smoothing parameters if available
+        if self.learning_manager and self.learning_manager.should_apply_learning(room_name):
+            profile = self.learning_manager.get_profile(room_name)
+            smoothing_factor = profile.optimal_smoothing_factor
+            smoothing_threshold = profile.optimal_smoothing_threshold
+            _LOGGER.debug(
+                "Using learned smoothing for %s: factor=%.2f, threshold=%d",
+                room_name, smoothing_factor, smoothing_threshold
+            )
+        else:
+            # Use default values
+            smoothing_factor = 0.7  # 70% new, 30% old
+
         if room_name not in self._last_fan_speeds:
             self._last_fan_speeds[room_name] = new_speed
             return new_speed
@@ -635,8 +690,8 @@ class AirconOptimizer:
 
         # If change is small (within threshold), dampen it
         if speed_diff <= smoothing_threshold:
-            # Use weighted average: 70% new, 30% old
-            smoothed = int(0.7 * new_speed + 0.3 * last_speed)
+            # Use weighted average with learned factor
+            smoothed = int(smoothing_factor * new_speed + (1 - smoothing_factor) * last_speed)
             _LOGGER.debug(
                 "Smoothing fan speed for %s: %d%% -> %d%% (dampened to %d%%)",
                 room_name, last_speed, new_speed, smoothed
@@ -1051,4 +1106,10 @@ class AirconOptimizer:
     async def async_cleanup(self) -> None:
         """Cleanup resources on unload."""
         _LOGGER.debug("Cleaning up AirconOptimizer resources")
+
+        # Save learning profiles before shutdown
+        if self.learning_manager:
+            await self.learning_manager.async_save_profiles()
+            _LOGGER.info("Saved learning profiles")
+
         _LOGGER.info("AirconOptimizer cleanup completed")
