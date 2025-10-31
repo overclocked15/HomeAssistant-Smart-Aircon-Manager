@@ -45,7 +45,7 @@ def get_device_info(config_entry: ConfigEntry) -> dict:
         "name": "Smart Aircon Manager",
         "manufacturer": "Smart Aircon Manager",
         "model": "Logic-Based HVAC Controller",
-        "sw_version": "2.1.0",
+        "sw_version": "2.1.1",
     }
 
 
