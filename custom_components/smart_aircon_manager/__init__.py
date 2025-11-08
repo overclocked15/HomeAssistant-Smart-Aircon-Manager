@@ -34,6 +34,11 @@ from .const import (
     DEFAULT_TARGET_HUMIDITY,
     DEFAULT_HUMIDITY_DEADBAND,
     DEFAULT_DRY_MODE_HUMIDITY_THRESHOLD,
+    DEFAULT_MODE_CHANGE_HYSTERESIS_TIME,
+    DEFAULT_MODE_CHANGE_HYSTERESIS_TEMP,
+    DEFAULT_ENABLE_OCCUPANCY_CONTROL,
+    DEFAULT_VACANT_ROOM_SETBACK,
+    DEFAULT_VACANCY_TIMEOUT,
 )
 from .optimizer import AirconOptimizer
 
@@ -49,7 +54,7 @@ def get_device_info(config_entry: ConfigEntry) -> dict:
         "name": "Smart Aircon Manager",
         "manufacturer": "Smart Aircon Manager",
         "model": "Logic-Based HVAC Controller",
-        "sw_version": "2.2.0",
+        "sw_version": "2.3.0",
     }
 
 
@@ -92,6 +97,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         target_humidity=entry.data.get("target_humidity", DEFAULT_TARGET_HUMIDITY),
         humidity_deadband=entry.data.get("humidity_deadband", DEFAULT_HUMIDITY_DEADBAND),
         dry_mode_humidity_threshold=entry.data.get("dry_mode_humidity_threshold", DEFAULT_DRY_MODE_HUMIDITY_THRESHOLD),
+        mode_change_hysteresis_time=entry.data.get("mode_change_hysteresis_time", DEFAULT_MODE_CHANGE_HYSTERESIS_TIME),
+        mode_change_hysteresis_temp=entry.data.get("mode_change_hysteresis_temp", DEFAULT_MODE_CHANGE_HYSTERESIS_TEMP),
+        enable_occupancy_control=entry.data.get("enable_occupancy_control", DEFAULT_ENABLE_OCCUPANCY_CONTROL),
+        occupancy_sensors=entry.data.get("occupancy_sensors", {}),
+        vacant_room_setback=entry.data.get("vacant_room_setback", DEFAULT_VACANT_ROOM_SETBACK),
+        vacancy_timeout=entry.data.get("vacancy_timeout", DEFAULT_VACANCY_TIMEOUT),
     )
 
     # Get update interval from config

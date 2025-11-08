@@ -58,6 +58,12 @@ class AirconOptimizer:
         target_humidity: float = 60.0,
         humidity_deadband: float = 5.0,
         dry_mode_humidity_threshold: float = 65.0,
+        mode_change_hysteresis_time: float = 300.0,
+        mode_change_hysteresis_temp: float = 0.3,
+        enable_occupancy_control: bool = False,
+        occupancy_sensors: dict[str, str] | None = None,
+        vacant_room_setback: float = 2.0,
+        vacancy_timeout: float = 300.0,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -109,6 +115,19 @@ class AirconOptimizer:
         self._house_avg_humidity = None
         self._dry_mode_active = False
         self._fan_only_mode_active = False
+
+        # HVAC mode change hysteresis configuration
+        self.mode_change_hysteresis_time = max(0, float(mode_change_hysteresis_time))
+        self.mode_change_hysteresis_temp = self._validate_positive_float(mode_change_hysteresis_temp, "mode_change_hysteresis_temp", 0.0, 2.0)
+        self._last_hvac_mode = None
+        self._last_mode_change_time = None
+
+        # Occupancy-based control configuration
+        self.enable_occupancy_control = enable_occupancy_control
+        self.occupancy_sensors = occupancy_sensors or {}
+        self.vacant_room_setback = self._validate_positive_float(vacant_room_setback, "vacant_room_setback", 0.0, 5.0)
+        self.vacancy_timeout = max(0, float(vacancy_timeout))
+        self._room_occupancy_state = {}  # room_name -> {"occupied": bool, "last_seen": timestamp}
 
         self._last_optimization_response = None
         self._last_error = None
@@ -353,11 +372,12 @@ class AirconOptimizer:
     def _determine_optimal_hvac_mode(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> str:
         """Determine optimal HVAC mode based on temperature and humidity conditions.
 
-        Logic-based decision making:
+        Logic-based decision making with hysteresis to prevent mode thrashing:
         1. Temperature ALWAYS has priority over humidity
         2. If temperature needs attention (>deadband from target) -> cool/heat mode
         3. If temperature is OK but humidity is high -> dry mode
         4. If both temperature and humidity are OK -> fan_only mode for circulation
+        5. Hysteresis prevents rapid mode switching unless deviation is severe
 
         Returns: "cool", "heat", "dry", or "fan_only"
         """
@@ -387,57 +407,98 @@ class AirconOptimizer:
             # No valid humidity data - clear the average to prevent stale data
             self._house_avg_humidity = None
 
+        # Determine the optimal mode (before hysteresis)
+        optimal_mode = None
+
         # Priority 1: Temperature needs attention (outside deadband)
         if abs_deviation > self.temperature_deadband:
             if self.hvac_mode == "cool" or (self.hvac_mode == "auto" and temp_deviation > 0):
+                optimal_mode = "cool"
                 _LOGGER.debug(
-                    "Temperature priority: %.1f°C deviation → COOL mode",
+                    "Temperature priority: %.1f°C deviation → COOL mode (candidate)",
                     temp_deviation
                 )
-                self._dry_mode_active = False
-                self._fan_only_mode_active = False
-                return "cool"
             elif self.hvac_mode == "heat" or (self.hvac_mode == "auto" and temp_deviation < 0):
+                optimal_mode = "heat"
                 _LOGGER.debug(
-                    "Temperature priority: %.1f°C deviation → HEAT mode",
+                    "Temperature priority: %.1f°C deviation → HEAT mode (candidate)",
                     temp_deviation
                 )
-                self._dry_mode_active = False
-                self._fan_only_mode_active = False
-                return "heat"
             else:
                 # Temperature deviation exists but mode unclear - use fallback
                 _LOGGER.warning(
                     "Temperature deviation %.1f°C but unclear HVAC mode (%s), using fallback",
                     temp_deviation, self.hvac_mode
                 )
-                self._dry_mode_active = False
-                self._fan_only_mode_active = False
-                return self.hvac_mode if self.hvac_mode != "auto" else "cool"
+                optimal_mode = self.hvac_mode if self.hvac_mode != "auto" else "cool"
 
         # Priority 2: Temperature OK, check humidity
-        if avg_humidity is not None:
+        elif avg_humidity is not None:
             humidity_excess = avg_humidity - self.target_humidity
 
             # High humidity - use dry mode
             if avg_humidity >= self.dry_mode_humidity_threshold or humidity_excess > self.humidity_deadband:
-                _LOGGER.info(
-                    "Humidity control: %.1f%% (target: %.1f%%, threshold: %.1f%%) → DRY mode",
+                optimal_mode = "dry"
+                _LOGGER.debug(
+                    "Humidity control: %.1f%% (target: %.1f%%, threshold: %.1f%%) → DRY mode (candidate)",
                     avg_humidity, self.target_humidity, self.dry_mode_humidity_threshold
                 )
-                self._dry_mode_active = True
-                self._fan_only_mode_active = False
-                return "dry"
 
         # Priority 3: Both temperature and humidity OK - use fan only for circulation
-        _LOGGER.debug(
-            "Temperature and humidity within targets (temp: %.1f°C/%.1f°C, humidity: %.1f%%/%.1f%%) → FAN_ONLY mode",
-            avg_temp, effective_target,
-            avg_humidity if avg_humidity else 0, self.target_humidity
-        )
-        self._dry_mode_active = False
-        self._fan_only_mode_active = True
-        return "fan_only"
+        if optimal_mode is None:
+            optimal_mode = "fan_only"
+            _LOGGER.debug(
+                "Temperature and humidity within targets (temp: %.1f°C/%.1f°C, humidity: %.1f%%/%.1f%%) → FAN_ONLY mode (candidate)",
+                avg_temp, effective_target,
+                avg_humidity if avg_humidity else 0, self.target_humidity
+            )
+
+        # Apply hysteresis logic to prevent mode thrashing
+        current_time = time.time()
+        should_change_mode = True
+
+        if self._last_hvac_mode is not None and optimal_mode != self._last_hvac_mode:
+            # We want to change mode - check hysteresis
+            time_since_last_change = (
+                current_time - self._last_mode_change_time
+                if self._last_mode_change_time is not None
+                else float('inf')
+            )
+
+            if time_since_last_change < self.mode_change_hysteresis_time:
+                # Within hysteresis period - only change if deviation is severe
+                hysteresis_threshold = self.temperature_deadband + self.mode_change_hysteresis_temp
+
+                if abs_deviation < hysteresis_threshold:
+                    # Deviation not severe enough to override hysteresis
+                    should_change_mode = False
+                    _LOGGER.info(
+                        "Mode change hysteresis active: keeping %s mode (wanted %s, but only %.1f°C deviation, need %.1f°C to override, %ds since last change)",
+                        self._last_hvac_mode, optimal_mode, abs_deviation, hysteresis_threshold,
+                        int(time_since_last_change)
+                    )
+                    optimal_mode = self._last_hvac_mode
+                else:
+                    _LOGGER.info(
+                        "Overriding hysteresis due to severe deviation: %.1f°C (threshold: %.1f°C) - switching to %s",
+                        abs_deviation, hysteresis_threshold, optimal_mode
+                    )
+
+        # Update mode tracking
+        if optimal_mode != self._last_hvac_mode:
+            _LOGGER.info("HVAC mode change: %s → %s", self._last_hvac_mode or "unknown", optimal_mode)
+            self._last_hvac_mode = optimal_mode
+            self._last_mode_change_time = current_time
+        elif self._last_hvac_mode is None:
+            # First run
+            self._last_hvac_mode = optimal_mode
+            self._last_mode_change_time = current_time
+
+        # Update mode state flags
+        self._dry_mode_active = (optimal_mode == "dry")
+        self._fan_only_mode_active = (optimal_mode == "fan_only")
+
+        return optimal_mode
 
     async def _get_outdoor_temperature(self) -> float | None:
         """Get outdoor temperature from weather entity or outdoor sensor."""
@@ -488,6 +549,93 @@ class AirconOptimizer:
 
         adjusted = base_target + adjustment
         return round(adjusted, 1)
+
+    async def _update_occupancy_state(self) -> None:
+        """Update occupancy state for all rooms with occupancy sensors."""
+        if not self.enable_occupancy_control or not self.occupancy_sensors:
+            return
+
+        current_time = time.time()
+
+        for room_name, sensor_entity in self.occupancy_sensors.items():
+            # Get occupancy sensor state
+            state = self.hass.states.get(sensor_entity)
+            if not state:
+                _LOGGER.debug("Occupancy sensor %s not found for room %s", sensor_entity, room_name)
+                continue
+
+            is_occupied = state.state in ["on", "home", "occupied", "detected", "motion", "true"]
+
+            # Initialize room occupancy tracking if needed
+            if room_name not in self._room_occupancy_state:
+                self._room_occupancy_state[room_name] = {
+                    "occupied": is_occupied,
+                    "last_seen": current_time if is_occupied else None,
+                }
+                continue
+
+            # Update occupancy state
+            room_state = self._room_occupancy_state[room_name]
+
+            if is_occupied:
+                # Room is occupied
+                room_state["occupied"] = True
+                room_state["last_seen"] = current_time
+            else:
+                # Room shows no occupancy - check vacancy timeout
+                if room_state["occupied"]:
+                    # Was occupied, now vacant - check timeout
+                    last_seen = room_state.get("last_seen", current_time)
+                    time_vacant = current_time - last_seen
+
+                    if time_vacant >= self.vacancy_timeout:
+                        # Vacancy timeout reached - mark as vacant
+                        room_state["occupied"] = False
+                        _LOGGER.info(
+                            "Room %s marked as vacant after %d seconds of no activity",
+                            room_name, int(time_vacant)
+                        )
+
+    def _get_room_effective_target(self, room_name: str, base_target: float) -> float:
+        """Get effective target temperature for a room considering occupancy.
+
+        For vacant rooms:
+        - In cooling mode: increase target by setback amount (less cooling)
+        - In heating mode: decrease target by setback amount (less heating)
+
+        Args:
+            room_name: Name of the room
+            base_target: Base target temperature
+
+        Returns:
+            Effective target temperature for the room
+        """
+        if not self.enable_occupancy_control:
+            return base_target
+
+        # Check occupancy state
+        room_state = self._room_occupancy_state.get(room_name)
+        if not room_state or room_state.get("occupied", True):
+            # Room is occupied or no occupancy tracking - use base target
+            return base_target
+
+        # Room is vacant - apply setback
+        if self.hvac_mode == "cool" or (self.hvac_mode == "auto" and self.target_temperature < 24):
+            # Cooling mode - increase target (reduce cooling)
+            effective_target = base_target + self.vacant_room_setback
+            _LOGGER.debug(
+                "Room %s is vacant - applying +%.1f°C setback (cooling mode): %.1f°C → %.1f°C",
+                room_name, self.vacant_room_setback, base_target, effective_target
+            )
+        else:
+            # Heating mode - decrease target (reduce heating)
+            effective_target = base_target - self.vacant_room_setback
+            _LOGGER.debug(
+                "Room %s is vacant - applying -%.1f°C setback (heating mode): %.1f°C → %.1f°C",
+                room_name, self.vacant_room_setback, base_target, effective_target
+            )
+
+        return effective_target
 
     async def async_optimize(self) -> dict[str, Any]:
         """Run optimization cycle with error handling."""
@@ -549,6 +697,9 @@ class AirconOptimizer:
                     weather_adjustment,
                     effective_target
                 )
+
+        # Update occupancy state before collecting room states
+        await self._update_occupancy_state()
 
         room_states = await self._collect_room_states(effective_target)
 
@@ -810,18 +961,21 @@ class AirconOptimizer:
         """Calculate logic-based recommendations for cover positions and AC temperature."""
         recommendations = {}
 
-        effective_target = self.target_temperature
+        base_effective_target = self.target_temperature
         if room_states:
             first_room = next(iter(room_states.values()))
             if 'target_temperature' in first_room and first_room['target_temperature'] is not None:
-                effective_target = first_room['target_temperature']
+                base_effective_target = first_room['target_temperature']
 
         for room_name, state in room_states.items():
             current_temp = state["current_temperature"]
             if current_temp is None:
                 continue
 
-            temp_diff = current_temp - effective_target
+            # Get room-specific effective target (considers occupancy setback)
+            room_effective_target = self._get_room_effective_target(room_name, base_effective_target)
+
+            temp_diff = current_temp - room_effective_target
             abs_temp_diff = abs(temp_diff)
 
             # Calculate raw fan speed
@@ -835,17 +989,17 @@ class AirconOptimizer:
                 "Room %s: temp=%.1f°C, target=%.1f°C, diff=%+.1f°C → fan=%d%%",
                 room_name,
                 current_temp,
-                effective_target,
+                room_effective_target,
                 temp_diff,
                 fan_speed
             )
 
         # Apply inter-room balancing if enabled
         if self.enable_room_balancing and len(recommendations) > 1:
-            recommendations = self._apply_room_balancing(recommendations, room_states, effective_target)
+            recommendations = self._apply_room_balancing(recommendations, room_states, base_effective_target)
 
         if self.auto_control_ac_temperature and self.main_climate_entity:
-            ac_temp = self._calculate_ac_temperature(room_states, effective_target)
+            ac_temp = self._calculate_ac_temperature(room_states, base_effective_target)
             recommendations["ac_temperature"] = ac_temp
 
         self._last_optimization_response = self._build_optimization_summary(recommendations, room_states)

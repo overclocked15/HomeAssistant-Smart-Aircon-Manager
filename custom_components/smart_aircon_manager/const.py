@@ -124,6 +124,21 @@ DEFAULT_TARGET_ROOM_VARIANCE = 1.5  # Target maximum temperature variance betwee
 DEFAULT_BALANCING_AGGRESSIVENESS = 0.2  # How aggressively to balance (0.0-0.5, higher = more aggressive)
 DEFAULT_MIN_AIRFLOW_PERCENT = 15  # Minimum airflow to any room (%), ensures circulation
 
+# HVAC mode change hysteresis (prevents rapid mode switching)
+CONF_MODE_CHANGE_HYSTERESIS_TIME = "mode_change_hysteresis_time"
+CONF_MODE_CHANGE_HYSTERESIS_TEMP = "mode_change_hysteresis_temp"
+DEFAULT_MODE_CHANGE_HYSTERESIS_TIME = 300  # seconds (5 minutes) - minimum time between mode changes
+DEFAULT_MODE_CHANGE_HYSTERESIS_TEMP = 0.3  # degrees C - extra deviation required to override hysteresis
+
+# Occupancy-based control
+CONF_ENABLE_OCCUPANCY_CONTROL = "enable_occupancy_control"
+CONF_OCCUPANCY_SENSORS = "occupancy_sensors"  # Dict mapping room_name -> occupancy sensor entity
+CONF_VACANT_ROOM_SETBACK = "vacant_room_setback"
+CONF_VACANCY_TIMEOUT = "vacancy_timeout"
+DEFAULT_ENABLE_OCCUPANCY_CONTROL = False  # Disabled by default (opt-in)
+DEFAULT_VACANT_ROOM_SETBACK = 2.0  # degrees C to add/subtract from target for vacant rooms
+DEFAULT_VACANCY_TIMEOUT = 300  # seconds (5 minutes) - time before considering room vacant
+
 # Days of week for scheduling
 SCHEDULE_DAYS_OPTIONS = [
     "monday",

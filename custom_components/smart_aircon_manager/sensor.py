@@ -159,6 +159,7 @@ async def async_setup_entry(
         entities.append(HouseAverageHumiditySensor(coordinator, config_entry))
         entities.append(DryModeActiveSensor(coordinator, config_entry))
         entities.append(FanOnlyModeActiveSensor(coordinator, config_entry))
+        entities.append(ComfortIndexSensor(coordinator, config_entry))
 
     _LOGGER.info("Total entities to add: %d", len(entities))
     _LOGGER.info("Entity unique_ids: %s", [e.unique_id for e in entities if hasattr(e, 'unique_id')])
@@ -2032,5 +2033,141 @@ class FanOnlyModeActiveSensor(AirconManagerSensorBase):
             attrs["current_humidity"] = round(optimizer._house_avg_humidity, 1)
             attrs["target_humidity"] = optimizer.target_humidity
             attrs["humidity_within_threshold"] = optimizer._house_avg_humidity < optimizer.dry_mode_humidity_threshold
+
+        return attrs
+
+
+class ComfortIndexSensor(AirconManagerSensorBase):
+    """Sensor showing the comfort index (feels-like temperature) combining temperature and humidity."""
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_comfort_index"
+        self._attr_name = "Comfort Index"
+        self._attr_icon = "mdi:weather-partly-cloudy"
+        self._attr_device_class = "temperature"
+        self._attr_native_unit_of_measurement = "°C"
+
+    def _calculate_heat_index(self, temp_c: float, humidity: float) -> float:
+        """Calculate heat index (feels-like temperature) from temperature and humidity.
+
+        Uses the simplified Steadman formula for heat index.
+        Only applies when temperature >= 27°C, otherwise returns actual temperature.
+        """
+        # Heat index only applies at higher temperatures
+        if temp_c < 27.0:
+            return temp_c
+
+        # Simplified Steadman heat index formula
+        # HI = c1 + c2*T + c3*RH + c4*T*RH + c5*T² + c6*RH² + c7*T²*RH + c8*T*RH² + c9*T²*RH²
+        # Coefficients for Celsius version
+        c1 = -8.78469475556
+        c2 = 1.61139411
+        c3 = 2.33854883889
+        c4 = -0.14611605
+        c5 = -0.012308094
+        c6 = -0.0164248277778
+        c7 = 0.002211732
+        c8 = 0.00072546
+        c9 = -0.000003582
+
+        T = temp_c
+        RH = humidity
+
+        heat_index = (
+            c1 + c2*T + c3*RH + c4*T*RH + c5*T*T + c6*RH*RH +
+            c7*T*T*RH + c8*T*RH*RH + c9*T*T*RH*RH
+        )
+
+        return heat_index
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the comfort index (feels-like temperature)."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not self.coordinator.data:
+            return None
+
+        room_states = self.coordinator.data.get("room_states", {})
+
+        # Get average temperature
+        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        if not temps:
+            return None
+        avg_temp = sum(temps) / len(temps)
+
+        # Get average humidity if available
+        avg_humidity = None
+        if hasattr(optimizer, '_house_avg_humidity') and optimizer._house_avg_humidity is not None:
+            avg_humidity = optimizer._house_avg_humidity
+        else:
+            # Try to get from room states
+            humidities = [s["current_humidity"] for s in room_states.values() if s["current_humidity"] is not None]
+            if humidities:
+                avg_humidity = sum(humidities) / len(humidities)
+
+        # Calculate comfort index
+        if avg_humidity is not None:
+            comfort_index = self._calculate_heat_index(avg_temp, avg_humidity)
+        else:
+            # No humidity data - just use temperature
+            comfort_index = avg_temp
+
+        return round(comfort_index, 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not self.coordinator.data:
+            return {}
+
+        room_states = self.coordinator.data.get("room_states", {})
+
+        # Get average temperature
+        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        humidities = [s["current_humidity"] for s in room_states.values() if s["current_humidity"] is not None]
+
+        attrs = {
+            "description": "Feels-like temperature combining temp + humidity",
+        }
+
+        if temps:
+            avg_temp = sum(temps) / len(temps)
+            attrs["actual_temperature"] = round(avg_temp, 1)
+            attrs["target_temperature"] = optimizer.target_temperature
+
+        if humidities or (hasattr(optimizer, '_house_avg_humidity') and optimizer._house_avg_humidity is not None):
+            avg_humidity = (
+                optimizer._house_avg_humidity if hasattr(optimizer, '_house_avg_humidity') and optimizer._house_avg_humidity is not None
+                else (sum(humidities) / len(humidities) if humidities else None)
+            )
+            if avg_humidity is not None:
+                attrs["humidity"] = round(avg_humidity, 1)
+
+                # Calculate difference from actual temp
+                if temps:
+                    comfort_index = self._calculate_heat_index(avg_temp, avg_humidity)
+                    diff = comfort_index - avg_temp
+                    attrs["heat_index_adjustment"] = round(diff, 1)
+
+                    # Provide comfort guidance
+                    if comfort_index - optimizer.target_temperature > 3:
+                        attrs["comfort_level"] = "Very uncomfortable - hot & humid"
+                    elif comfort_index - optimizer.target_temperature > 1.5:
+                        attrs["comfort_level"] = "Uncomfortable - warm & humid"
+                    elif abs(comfort_index - optimizer.target_temperature) <= 1.5:
+                        attrs["comfort_level"] = "Comfortable"
+                    else:
+                        attrs["comfort_level"] = "Cool"
+        else:
+            attrs["note"] = "No humidity data - showing actual temperature"
 
         return attrs

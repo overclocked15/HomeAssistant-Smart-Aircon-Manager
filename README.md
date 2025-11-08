@@ -24,8 +24,14 @@ A Home Assistant integration that uses **intelligent logic-based algorithms** to
 - **Heating/Cooling Modes**: Support for both heating and cooling with mode-aware optimizations
 - **HVAC Mode Auto-Detection**: Can automatically detect heating/cooling from main climate entity
 - **Hysteresis Control**: Prevents rapid AC on/off cycling with configurable thresholds
+- **HVAC Mode Change Hysteresis** *(NEW in v2.3.0)*: Prevents rapid mode switching (cool/heat/dry/fan_only) unless temperature deviation is severe, reducing wear on equipment
 - **Startup Delay**: Grace period during Home Assistant startup to prevent false alarms
 - **Persistent Notifications**: Optional notifications for important events (AC control, errors)
+- **Comfort Index Sensor** *(NEW in v2.3.0)*: Shows "feels-like" temperature combining temperature and humidity using heat index calculation
+- **Occupancy-Based Control** *(NEW in v2.3.0)*: Automatically applies temperature setbacks to vacant rooms for energy savings
+  - Configurable occupancy sensors per room
+  - Vacancy timeout prevents premature setback
+  - Setback amount: ±2°C from target (increases in cooling, decreases in heating)
 
 ### Smart Automation Features
 - **Weather Integration**: Automatically adjusts target temperature based on outdoor conditions
@@ -277,6 +283,13 @@ The integration creates comprehensive diagnostic sensors:
 #### Scheduling Sensors (if enabled)
 - `sensor.active_schedule` - Currently active schedule name
 - `sensor.effective_target_temperature` - Final target after schedule and weather adjustments
+
+#### Humidity Control Sensors (if enabled)
+- `sensor.hvac_mode_recommendation` - Recommended HVAC mode based on temperature and humidity
+- `sensor.house_average_humidity` - Average humidity across all rooms
+- `sensor.dry_mode_active` - Whether dry mode is currently active
+- `sensor.fan_only_mode_active` - Whether fan-only mode is currently active
+- `sensor.comfort_index` *(NEW in v2.3.0)* - Feels-like temperature combining temp + humidity (heat index)
 
 ## Automation Example
 
