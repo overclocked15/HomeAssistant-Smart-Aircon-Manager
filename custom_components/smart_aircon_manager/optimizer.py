@@ -54,6 +54,10 @@ class AirconOptimizer:
         target_room_variance: float = 1.5,
         balancing_aggressiveness: float = 0.2,
         min_airflow_percent: int = 15,
+        enable_humidity_control: bool = False,
+        target_humidity: float = 60.0,
+        humidity_deadband: float = 5.0,
+        dry_mode_humidity_threshold: float = 65.0,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -94,6 +98,17 @@ class AirconOptimizer:
         self._house_avg_temp = None
         self._house_temp_variance = None
         self._balancing_active = False
+
+        # Humidity control configuration
+        self.enable_humidity_control = enable_humidity_control
+        self.target_humidity = self._validate_positive_float(target_humidity, "target_humidity", 30.0, 80.0)
+        self.humidity_deadband = self._validate_positive_float(humidity_deadband, "humidity_deadband", 1.0, 15.0)
+        self.dry_mode_humidity_threshold = self._validate_positive_float(dry_mode_humidity_threshold, "dry_mode_humidity_threshold", 50.0, 90.0)
+
+        # Humidity state tracking
+        self._house_avg_humidity = None
+        self._dry_mode_active = False
+        self._fan_only_mode_active = False
 
         self._last_optimization_response = None
         self._last_error = None
@@ -335,6 +350,95 @@ class AirconOptimizer:
 
         return None
 
+    def _determine_optimal_hvac_mode(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> str:
+        """Determine optimal HVAC mode based on temperature and humidity conditions.
+
+        Logic-based decision making:
+        1. Temperature ALWAYS has priority over humidity
+        2. If temperature needs attention (>deadband from target) -> cool/heat mode
+        3. If temperature is OK but humidity is high -> dry mode
+        4. If both temperature and humidity are OK -> fan_only mode for circulation
+
+        Returns: "cool", "heat", "dry", or "fan_only"
+        """
+        if not self.enable_humidity_control:
+            # No humidity control - return based on hvac_mode setting
+            return self.hvac_mode if self.hvac_mode != "auto" else "cool"
+
+        # Collect valid temperatures and humidities
+        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        humidities = [s["current_humidity"] for s in room_states.values() if s["current_humidity"] is not None]
+
+        if not temps:
+            # No temperature data - default to current mode
+            return self.hvac_mode if self.hvac_mode != "auto" else "cool"
+
+        # Calculate average temperature deviation from target
+        avg_temp = sum(temps) / len(temps)
+        temp_deviation = avg_temp - effective_target
+        abs_deviation = abs(temp_deviation)
+
+        # Calculate average humidity if available
+        avg_humidity = None
+        if humidities:
+            avg_humidity = sum(humidities) / len(humidities)
+            self._house_avg_humidity = avg_humidity
+        else:
+            # No valid humidity data - clear the average to prevent stale data
+            self._house_avg_humidity = None
+
+        # Priority 1: Temperature needs attention (outside deadband)
+        if abs_deviation > self.temperature_deadband:
+            if self.hvac_mode == "cool" or (self.hvac_mode == "auto" and temp_deviation > 0):
+                _LOGGER.debug(
+                    "Temperature priority: %.1f°C deviation → COOL mode",
+                    temp_deviation
+                )
+                self._dry_mode_active = False
+                self._fan_only_mode_active = False
+                return "cool"
+            elif self.hvac_mode == "heat" or (self.hvac_mode == "auto" and temp_deviation < 0):
+                _LOGGER.debug(
+                    "Temperature priority: %.1f°C deviation → HEAT mode",
+                    temp_deviation
+                )
+                self._dry_mode_active = False
+                self._fan_only_mode_active = False
+                return "heat"
+            else:
+                # Temperature deviation exists but mode unclear - use fallback
+                _LOGGER.warning(
+                    "Temperature deviation %.1f°C but unclear HVAC mode (%s), using fallback",
+                    temp_deviation, self.hvac_mode
+                )
+                self._dry_mode_active = False
+                self._fan_only_mode_active = False
+                return self.hvac_mode if self.hvac_mode != "auto" else "cool"
+
+        # Priority 2: Temperature OK, check humidity
+        if avg_humidity is not None:
+            humidity_excess = avg_humidity - self.target_humidity
+
+            # High humidity - use dry mode
+            if avg_humidity >= self.dry_mode_humidity_threshold or humidity_excess > self.humidity_deadband:
+                _LOGGER.info(
+                    "Humidity control: %.1f%% (target: %.1f%%, threshold: %.1f%%) → DRY mode",
+                    avg_humidity, self.target_humidity, self.dry_mode_humidity_threshold
+                )
+                self._dry_mode_active = True
+                self._fan_only_mode_active = False
+                return "dry"
+
+        # Priority 3: Both temperature and humidity OK - use fan only for circulation
+        _LOGGER.debug(
+            "Temperature and humidity within targets (temp: %.1f°C/%.1f°C, humidity: %.1f%%/%.1f%%) → FAN_ONLY mode",
+            avg_temp, effective_target,
+            avg_humidity if avg_humidity else 0, self.target_humidity
+        )
+        self._dry_mode_active = False
+        self._fan_only_mode_active = True
+        return "fan_only"
+
     async def _get_outdoor_temperature(self) -> float | None:
         """Get outdoor temperature from weather entity or outdoor sensor."""
         if self.outdoor_temp_sensor:
@@ -469,8 +573,14 @@ class AirconOptimizer:
 
         needs_ac = await self._check_if_ac_needed(room_states, main_ac_running)
 
+        # Determine optimal HVAC mode (cool/heat/dry/fan_only)
+        optimal_hvac_mode = self._determine_optimal_hvac_mode(room_states, effective_target)
+
         if self.auto_control_main_ac and self.main_climate_entity:
-            await self._control_main_ac(needs_ac, main_climate_state)
+            await self._control_main_ac(needs_ac, main_climate_state, optimal_hvac_mode)
+        elif self.enable_humidity_control and self.main_climate_entity and main_ac_running:
+            # Even without auto AC control, we can still switch modes if AC is already on
+            await self._set_hvac_mode(optimal_hvac_mode, main_climate_state)
 
         valid_temps = [
             state["current_temperature"]
@@ -621,7 +731,7 @@ class AirconOptimizer:
         }
 
     async def _collect_room_states(self, target_temperature: float | None = None) -> dict[str, dict[str, Any]]:
-        """Collect current temperature and cover state for all rooms."""
+        """Collect current temperature, humidity, and cover state for all rooms."""
         room_states = {}
         effective_target = target_temperature if target_temperature is not None else self.target_temperature
 
@@ -629,6 +739,7 @@ class AirconOptimizer:
             room_name = room["room_name"]
             temp_sensor = room["temperature_sensor"]
             cover_entity = room["cover_entity"]
+            humidity_sensor = room.get("humidity_sensor")  # Optional
 
             temp_state = self.hass.states.get(temp_sensor)
             current_temp = None
@@ -645,6 +756,24 @@ class AirconOptimizer:
                         _LOGGER.debug("Converted temperature for %s from F to C: %.1f°C", room_name, current_temp)
                         # Re-validate after conversion
                         current_temp = self._validate_sensor_temperature(current_temp, room_name)
+
+            # Collect humidity if sensor is configured
+            current_humidity = None
+            if humidity_sensor and self.enable_humidity_control:
+                humidity_state = self.hass.states.get(humidity_sensor)
+                if humidity_state and humidity_state.state not in ["unknown", "unavailable", "none", None]:
+                    try:
+                        current_humidity = float(humidity_state.state)
+                        # Validate humidity is in realistic range (0-100%)
+                        if not (0 <= current_humidity <= 100):
+                            _LOGGER.warning(
+                                "Humidity reading for %s (%.1f%%) outside valid range (0-100%%), ignoring",
+                                room_name, current_humidity
+                            )
+                            current_humidity = None
+                    except (ValueError, TypeError) as e:
+                        _LOGGER.warning("Could not parse humidity for %s: %s", room_name, e)
+                        current_humidity = None
 
             cover_state = self.hass.states.get(cover_entity)
             cover_position = 100  # Default to fully open
@@ -667,9 +796,11 @@ class AirconOptimizer:
 
             room_states[room_name] = {
                 "current_temperature": current_temp,
+                "current_humidity": current_humidity,
                 "target_temperature": effective_target,
                 "cover_position": cover_position,
                 "temperature_sensor": temp_sensor,
+                "humidity_sensor": humidity_sensor,
                 "cover_entity": cover_entity,
             }
 
@@ -1174,8 +1305,80 @@ class AirconOptimizer:
         else:
             return abs(temp_diff) > self.temperature_deadband
 
-    async def _control_main_ac(self, needs_ac: bool, main_climate_state: dict[str, Any] | None) -> None:
-        """Control the main AC on/off."""
+    async def _set_hvac_mode(self, optimal_mode: str, main_climate_state: dict[str, Any] | None) -> None:
+        """Set the HVAC mode on the main climate entity.
+
+        Args:
+            optimal_mode: Desired mode (cool/heat/dry/fan_only)
+            main_climate_state: Current climate entity state
+        """
+        if not main_climate_state or not self.main_climate_entity:
+            return
+
+        current_mode = main_climate_state.get("hvac_mode")
+
+        # Don't change if already in the desired mode
+        if current_mode == optimal_mode:
+            return
+
+        # Get actual climate entity state to check available modes
+        climate_entity = self.hass.states.get(self.main_climate_entity)
+        if not climate_entity:
+            _LOGGER.warning("Climate entity %s not found", self.main_climate_entity)
+            return
+
+        available_modes = climate_entity.attributes.get("hvac_modes", [])
+        if optimal_mode not in available_modes:
+            _LOGGER.debug(
+                "Climate entity doesn't support %s mode (available: %s), using closest alternative",
+                optimal_mode, available_modes
+            )
+            # Fall back to appropriate mode
+            if optimal_mode == "dry" and "cool" in available_modes:
+                _LOGGER.info("Dry mode not supported, using cool mode as fallback")
+                optimal_mode = "cool"  # Use cool mode if dry not available
+            elif optimal_mode == "fan_only" and "fan" in available_modes:
+                _LOGGER.info("Fan-only mode not found, using 'fan' mode instead")
+                optimal_mode = "fan"  # Some devices use "fan" instead of "fan_only"
+            elif optimal_mode == "fan_only" and "cool" in available_modes:
+                _LOGGER.info("Fan-only mode not supported by climate entity, maintaining current mode for energy efficiency")
+                return  # Don't switch if fan_only not available - keep current mode
+            else:
+                _LOGGER.warning("HVAC mode %s not supported by climate entity (available: %s), no change made",
+                              optimal_mode, available_modes)
+                return  # Mode not supported, don't change
+
+        _LOGGER.info(
+            "Switching HVAC mode: %s → %s",
+            current_mode, optimal_mode
+        )
+
+        success = await self._retry_service_call(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": self.main_climate_entity, "hvac_mode": optimal_mode},
+            entity_name=f"Main AC Mode ({self.main_climate_entity})"
+        )
+
+        if success and optimal_mode == "dry":
+            await self._send_notification(
+                "AC Mode Changed",
+                f"Switched to DRY mode for dehumidification (humidity: {self._house_avg_humidity:.1f}%)"
+            )
+        elif success and optimal_mode == "fan_only":
+            await self._send_notification(
+                "AC Mode Changed",
+                "Switched to FAN ONLY mode for energy-efficient circulation"
+            )
+
+    async def _control_main_ac(self, needs_ac: bool, main_climate_state: dict[str, Any] | None, optimal_mode: str = "cool") -> None:
+        """Control the main AC on/off and mode.
+
+        Args:
+            needs_ac: Whether AC is needed
+            main_climate_state: Current climate entity state
+            optimal_mode: Optimal HVAC mode based on temp/humidity
+        """
         if not main_climate_state:
             return
 
@@ -1184,16 +1387,19 @@ class AirconOptimizer:
         # Use retry logic for AC control
         if needs_ac:
             if current_mode == "off":
-                target_mode = self.hvac_mode if self.hvac_mode != "auto" else "cool"
-                _LOGGER.info("Turning ON main AC (mode: %s)", target_mode)
+                # Turn on AC in optimal mode
+                _LOGGER.info("Turning ON main AC (mode: %s)", optimal_mode)
                 success = await self._retry_service_call(
                     "climate",
                     "set_hvac_mode",
-                    {"entity_id": self.main_climate_entity, "hvac_mode": target_mode},
+                    {"entity_id": self.main_climate_entity, "hvac_mode": optimal_mode},
                     entity_name=f"Main AC ({self.main_climate_entity})"
                 )
                 if success:
-                    await self._send_notification("AC Turned On", f"Smart Manager turned on AC in {target_mode} mode")
+                    await self._send_notification("AC Turned On", f"Smart Manager turned on AC in {optimal_mode} mode")
+            else:
+                # AC is already on, just set the optimal mode
+                await self._set_hvac_mode(optimal_mode, main_climate_state)
         else:
             if current_mode and current_mode != "off":
                 _LOGGER.info("Turning OFF main AC")

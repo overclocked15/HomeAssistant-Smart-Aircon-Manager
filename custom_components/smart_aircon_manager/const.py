@@ -8,6 +8,7 @@ CONF_ROOM_CONFIGS = "room_configs"
 CONF_ROOM_NAME = "room_name"
 CONF_TEMPERATURE_SENSOR = "temperature_sensor"
 CONF_COVER_ENTITY = "cover_entity"
+CONF_HUMIDITY_SENSOR = "humidity_sensor"
 CONF_MAIN_CLIMATE_ENTITY = "main_climate_entity"
 CONF_MAIN_FAN_ENTITY = "main_fan_entity"
 CONF_UPDATE_INTERVAL = "update_interval"
@@ -24,6 +25,12 @@ CONF_AC_TURN_OFF_THRESHOLD = "ac_turn_off_threshold"
 CONF_WEATHER_ENTITY = "weather_entity"
 CONF_ENABLE_WEATHER_ADJUSTMENT = "enable_weather_adjustment"
 CONF_OUTDOOR_TEMP_SENSOR = "outdoor_temp_sensor"
+
+# Humidity control
+CONF_ENABLE_HUMIDITY_CONTROL = "enable_humidity_control"
+CONF_TARGET_HUMIDITY = "target_humidity"
+CONF_HUMIDITY_DEADBAND = "humidity_deadband"
+CONF_DRY_MODE_HUMIDITY_THRESHOLD = "dry_mode_humidity_threshold"
 
 # Time-based scheduling
 CONF_ENABLE_SCHEDULING = "enable_scheduling"
@@ -58,6 +65,8 @@ CONF_LEARNING_MAX_ADJUSTMENT = "learning_max_adjustment"
 HVAC_MODE_COOL = "cool"
 HVAC_MODE_HEAT = "heat"
 HVAC_MODE_AUTO = "auto"
+HVAC_MODE_DRY = "dry"
+HVAC_MODE_FAN_ONLY = "fan_only"
 
 # Default values
 DEFAULT_TARGET_TEMPERATURE = 22
@@ -73,6 +82,12 @@ DEFAULT_AC_TURN_ON_THRESHOLD = 1.0  # degrees C above target to turn AC on
 DEFAULT_AC_TURN_OFF_THRESHOLD = 2.0  # degrees C below target to turn AC off
 DEFAULT_ENABLE_WEATHER_ADJUSTMENT = False
 DEFAULT_ENABLE_SCHEDULING = False
+
+# Humidity control defaults
+DEFAULT_ENABLE_HUMIDITY_CONTROL = False  # Disabled by default (opt-in)
+DEFAULT_TARGET_HUMIDITY = 60  # Target relative humidity %
+DEFAULT_HUMIDITY_DEADBAND = 5  # Acceptable range (±) from target before action
+DEFAULT_DRY_MODE_HUMIDITY_THRESHOLD = 65  # Humidity % threshold to activate dry mode
 
 # Weather adjustment parameters
 WEATHER_TEMP_INFLUENCE = 0.5  # How much outdoor temp influences AC setpoint (0.0-1.0)

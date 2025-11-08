@@ -30,6 +30,10 @@ from .const import (
     DEFAULT_TARGET_ROOM_VARIANCE,
     DEFAULT_BALANCING_AGGRESSIVENESS,
     DEFAULT_MIN_AIRFLOW_PERCENT,
+    DEFAULT_ENABLE_HUMIDITY_CONTROL,
+    DEFAULT_TARGET_HUMIDITY,
+    DEFAULT_HUMIDITY_DEADBAND,
+    DEFAULT_DRY_MODE_HUMIDITY_THRESHOLD,
 )
 from .optimizer import AirconOptimizer
 
@@ -45,7 +49,7 @@ def get_device_info(config_entry: ConfigEntry) -> dict:
         "name": "Smart Aircon Manager",
         "manufacturer": "Smart Aircon Manager",
         "model": "Logic-Based HVAC Controller",
-        "sw_version": "2.1.1",
+        "sw_version": "2.2.0",
     }
 
 
@@ -84,6 +88,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         target_room_variance=entry.data.get("target_room_variance", DEFAULT_TARGET_ROOM_VARIANCE),
         balancing_aggressiveness=entry.data.get("balancing_aggressiveness", DEFAULT_BALANCING_AGGRESSIVENESS),
         min_airflow_percent=entry.data.get("min_airflow_percent", DEFAULT_MIN_AIRFLOW_PERCENT),
+        enable_humidity_control=entry.data.get("enable_humidity_control", DEFAULT_ENABLE_HUMIDITY_CONTROL),
+        target_humidity=entry.data.get("target_humidity", DEFAULT_TARGET_HUMIDITY),
+        humidity_deadband=entry.data.get("humidity_deadband", DEFAULT_HUMIDITY_DEADBAND),
+        dry_mode_humidity_threshold=entry.data.get("dry_mode_humidity_threshold", DEFAULT_DRY_MODE_HUMIDITY_THRESHOLD),
     )
 
     # Get update interval from config

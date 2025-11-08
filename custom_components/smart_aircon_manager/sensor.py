@@ -153,6 +153,13 @@ async def async_setup_entry(
         entities.append(RoomTemperatureVarianceSensor(coordinator, config_entry))
         entities.append(BalancingActiveSensor(coordinator, config_entry))
 
+    # Add humidity control sensors if humidity control is enabled
+    if optimizer.enable_humidity_control:
+        entities.append(HVACModeRecommendationSensor(coordinator, config_entry))
+        entities.append(HouseAverageHumiditySensor(coordinator, config_entry))
+        entities.append(DryModeActiveSensor(coordinator, config_entry))
+        entities.append(FanOnlyModeActiveSensor(coordinator, config_entry))
+
     _LOGGER.info("Total entities to add: %d", len(entities))
     _LOGGER.info("Entity unique_ids: %s", [e.unique_id for e in entities if hasattr(e, 'unique_id')])
 
@@ -1798,5 +1805,232 @@ class BalancingActiveSensor(AirconManagerSensorBase):
 
         if hasattr(optimizer, '_house_temp_variance') and optimizer._house_temp_variance is not None:
             attrs["current_variance"] = round(optimizer._house_temp_variance, 2)
+
+        return attrs
+
+
+# Humidity Control Sensors
+
+class HVACModeRecommendationSensor(AirconManagerSensorBase):
+    """Sensor showing the recommended HVAC mode based on temperature and humidity."""
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_hvac_mode_recommendation"
+        self._attr_name = "HVAC Mode Recommendation"
+        self._attr_icon = "mdi:air-conditioner"
+
+    @property
+    def native_value(self) -> str:
+        """Return the recommended HVAC mode."""
+        # Get optimizer from hass data
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not self.coordinator.data:
+            return "unknown"
+
+        room_states = self.coordinator.data.get("room_states", {})
+        effective_target = self.coordinator.data.get("effective_target_temperature", optimizer.target_temperature)
+
+        # Use the optimizer's method to determine optimal mode
+        optimal_mode = optimizer._determine_optimal_hvac_mode(room_states, effective_target)
+        return optimal_mode
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not self.coordinator.data:
+            return {}
+
+        room_states = self.coordinator.data.get("room_states", {})
+
+        # Calculate average temperature and humidity
+        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        humidities = [s.get("current_humidity") for s in room_states.values() if s.get("current_humidity") is not None]
+
+        attrs = {
+            "decision_logic": "Temperature ALWAYS has priority over humidity",
+            "priority_1": "Temperature outside deadband → cool/heat",
+            "priority_2": "Humidity high + temp OK → dry",
+            "priority_3": "Both OK → fan_only for circulation",
+            "humidity_control_enabled": optimizer.enable_humidity_control,
+        }
+
+        if temps:
+            avg_temp = sum(temps) / len(temps)
+            attrs["average_temperature"] = round(avg_temp, 1)
+            attrs["target_temperature"] = optimizer.target_temperature
+            attrs["temp_deviation"] = round(avg_temp - optimizer.target_temperature, 2)
+            attrs["temp_deadband"] = optimizer.temperature_deadband
+
+        if humidities:
+            avg_humidity = sum(humidities) / len(humidities)
+            attrs["average_humidity"] = round(avg_humidity, 1)
+            attrs["target_humidity"] = optimizer.target_humidity
+            attrs["humidity_deadband"] = optimizer.humidity_deadband
+            attrs["dry_mode_threshold"] = optimizer.dry_mode_humidity_threshold
+
+        return attrs
+
+
+class HouseAverageHumiditySensor(AirconManagerSensorBase):
+    """Sensor showing the average humidity across all rooms."""
+
+    _attr_device_class = SensorDeviceClass.HUMIDITY
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_house_average_humidity"
+        self._attr_name = "House Average Humidity"
+        self._attr_icon = "mdi:water-percent"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the house average humidity."""
+        # Get optimizer from hass data
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not hasattr(optimizer, '_house_avg_humidity'):
+            return None
+
+        return round(optimizer._house_avg_humidity, 1) if optimizer._house_avg_humidity is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not self.coordinator.data:
+            return {}
+
+        room_states = self.coordinator.data.get("room_states", {})
+        humidities = [s.get("current_humidity") for s in room_states.values() if s.get("current_humidity") is not None]
+
+        attrs = {
+            "target_humidity": optimizer.target_humidity,
+            "humidity_deadband": optimizer.humidity_deadband,
+            "dry_mode_threshold": optimizer.dry_mode_humidity_threshold,
+            "rooms_with_humidity_sensors": len(humidities),
+            "total_rooms": len(room_states),
+        }
+
+        if optimizer._house_avg_humidity is not None:
+            deviation = optimizer._house_avg_humidity - optimizer.target_humidity
+            attrs["deviation_from_target"] = round(deviation, 1)
+            attrs["needs_dehumidification"] = optimizer._house_avg_humidity >= optimizer.dry_mode_humidity_threshold
+
+        return attrs
+
+
+class DryModeActiveSensor(AirconManagerSensorBase):
+    """Sensor showing whether dry mode is currently active."""
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_dry_mode_active"
+        self._attr_name = "Dry Mode Active"
+        self._attr_icon = "mdi:air-humidifier-off"
+
+    @property
+    def native_value(self) -> str:
+        """Return whether dry mode is active."""
+        # Get optimizer from hass data
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not hasattr(optimizer, '_dry_mode_active'):
+            return "unknown"
+
+        return "active" if optimizer._dry_mode_active else "inactive"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer:
+            return {}
+
+        attrs = {
+            "humidity_control_enabled": optimizer.enable_humidity_control,
+            "dry_mode_threshold": optimizer.dry_mode_humidity_threshold,
+        }
+
+        if hasattr(optimizer, '_house_avg_humidity') and optimizer._house_avg_humidity is not None:
+            attrs["current_humidity"] = round(optimizer._house_avg_humidity, 1)
+            attrs["target_humidity"] = optimizer.target_humidity
+
+        return attrs
+
+
+class FanOnlyModeActiveSensor(AirconManagerSensorBase):
+    """Sensor showing whether fan-only mode is currently active."""
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_fan_only_mode_active"
+        self._attr_name = "Fan Only Mode Active"
+        self._attr_icon = "mdi:fan"
+
+    @property
+    def native_value(self) -> str:
+        """Return whether fan-only mode is active."""
+        # Get optimizer from hass data
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not hasattr(optimizer, '_fan_only_mode_active'):
+            return "unknown"
+
+        return "active" if optimizer._fan_only_mode_active else "inactive"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        from .const import DOMAIN
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+
+        if not optimizer or not self.coordinator.data:
+            return {}
+
+        room_states = self.coordinator.data.get("room_states", {})
+        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+
+        attrs = {
+            "humidity_control_enabled": optimizer.enable_humidity_control,
+            "description": "Fan-only mode saves ~95% energy when temp and humidity are OK",
+        }
+
+        if temps:
+            avg_temp = sum(temps) / len(temps)
+            attrs["current_temperature"] = round(avg_temp, 1)
+            attrs["target_temperature"] = optimizer.target_temperature
+            attrs["temp_within_deadband"] = abs(avg_temp - optimizer.target_temperature) <= optimizer.temperature_deadband
+
+        if hasattr(optimizer, '_house_avg_humidity') and optimizer._house_avg_humidity is not None:
+            attrs["current_humidity"] = round(optimizer._house_avg_humidity, 1)
+            attrs["target_humidity"] = optimizer.target_humidity
+            attrs["humidity_within_threshold"] = optimizer._house_avg_humidity < optimizer.dry_mode_humidity_threshold
 
         return attrs

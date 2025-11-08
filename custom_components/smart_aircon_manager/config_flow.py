@@ -19,6 +19,7 @@ from .const import (
     CONF_ROOM_NAME,
     CONF_TEMPERATURE_SENSOR,
     CONF_COVER_ENTITY,
+    CONF_HUMIDITY_SENSOR,
     CONF_MAIN_CLIMATE_ENTITY,
     CONF_MAIN_FAN_ENTITY,
     CONF_UPDATE_INTERVAL,
@@ -39,6 +40,10 @@ from .const import (
     CONF_SCHEDULE_END_TIME,
     CONF_SCHEDULE_TARGET_TEMP,
     CONF_SCHEDULE_ENABLED,
+    CONF_ENABLE_HUMIDITY_CONTROL,
+    CONF_TARGET_HUMIDITY,
+    CONF_HUMIDITY_DEADBAND,
+    CONF_DRY_MODE_HUMIDITY_THRESHOLD,
     SCHEDULE_DAYS_OPTIONS,
     HVAC_MODE_COOL,
     HVAC_MODE_HEAT,
@@ -50,6 +55,10 @@ from .const import (
     DEFAULT_AUTO_CONTROL_MAIN_AC,
     DEFAULT_AUTO_CONTROL_AC_TEMPERATURE,
     DEFAULT_ENABLE_NOTIFICATIONS,
+    DEFAULT_ENABLE_HUMIDITY_CONTROL,
+    DEFAULT_TARGET_HUMIDITY,
+    DEFAULT_HUMIDITY_DEADBAND,
+    DEFAULT_DRY_MODE_HUMIDITY_THRESHOLD,
     CONF_ENABLE_LEARNING,
     CONF_LEARNING_MODE,
     CONF_LEARNING_CONFIDENCE_THRESHOLD,
@@ -184,13 +193,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors = validation_errors
             else:
                 # Add the current room to the list
-                self._rooms.append(
-                    {
-                        CONF_ROOM_NAME: user_input[CONF_ROOM_NAME],
-                        CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
-                        CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
-                    }
-                )
+                new_room = {
+                    CONF_ROOM_NAME: user_input[CONF_ROOM_NAME],
+                    CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
+                    CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
+                }
+
+                # Add humidity sensor if provided
+                if user_input.get(CONF_HUMIDITY_SENSOR):
+                    new_room[CONF_HUMIDITY_SENSOR] = user_input[CONF_HUMIDITY_SENSOR]
+
+                self._rooms.append(new_room)
 
                 # Check if user wants to add another room
                 if user_input.get("add_another"):
@@ -232,6 +245,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_COVER_ENTITY): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="cover")
                 ),
+                vol.Optional(CONF_HUMIDITY_SENSOR): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
+                ),
                 vol.Required("add_another", default=False): cv.boolean,
             }
         )
@@ -259,7 +275,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options - show menu."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "schedules", "learning", "balancing", "advanced"],
+            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "humidity", "schedules", "learning", "balancing", "advanced"],
         )
 
     async def async_step_settings(
@@ -360,6 +376,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             if user_input.get("action") == "add":
                 return await self.async_step_add_room()
+            elif user_input.get("action") == "edit":
+                return await self.async_step_select_room_to_edit()
             elif user_input.get("action") == "remove":
                 return await self.async_step_remove_room()
             elif user_input.get("action") == "done":
@@ -376,6 +394,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         selector.SelectSelectorConfig(
                             options=[
                                 {"label": "Add new room", "value": "add"},
+                                {"label": "Edit existing room", "value": "edit"},
                                 {"label": "Remove existing room", "value": "remove"},
                                 {"label": "Done", "value": "done"},
                             ],
@@ -432,6 +451,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
                 }
 
+                # Add humidity sensor if provided
+                if user_input.get(CONF_HUMIDITY_SENSOR):
+                    new_room[CONF_HUMIDITY_SENSOR] = user_input[CONF_HUMIDITY_SENSOR]
+
                 current_rooms = list(self.config_entry.data.get(CONF_ROOM_CONFIGS, []))
                 current_rooms.append(new_room)
 
@@ -456,6 +479,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Required(CONF_COVER_ENTITY): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="cover")
+                    ),
+                    vol.Optional(CONF_HUMIDITY_SENSOR): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
                     ),
                 }
             ),
@@ -509,6 +535,127 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 }
             ),
+        )
+
+    async def async_step_select_room_to_edit(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select which room to edit."""
+        current_rooms = self.config_entry.data.get(CONF_ROOM_CONFIGS, [])
+
+        if not current_rooms:
+            return await self.async_step_manage_rooms()
+
+        if user_input is not None:
+            # Store the selected room name and show edit form
+            self._room_to_edit = user_input["room_to_edit"]
+            return await self.async_step_edit_room()
+
+        # Create list of rooms to choose from
+        room_options = [
+            {"label": room[CONF_ROOM_NAME], "value": room[CONF_ROOM_NAME]}
+            for room in current_rooms
+        ]
+
+        return self.async_show_form(
+            step_id="select_room_to_edit",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("room_to_edit"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=room_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_edit_room(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Edit an existing room."""
+        current_rooms = list(self.config_entry.data.get(CONF_ROOM_CONFIGS, []))
+        room_to_edit_name = getattr(self, '_room_to_edit', None)
+
+        # Find the room to edit
+        room_to_edit = next(
+            (room for room in current_rooms if room[CONF_ROOM_NAME] == room_to_edit_name),
+            None
+        )
+
+        if not room_to_edit:
+            return await self.async_step_manage_rooms()
+
+        errors = {}
+
+        if user_input is not None:
+            # Validate entities
+            validation_errors = self._validate_entities(
+                user_input[CONF_TEMPERATURE_SENSOR],
+                user_input[CONF_COVER_ENTITY]
+            )
+
+            if validation_errors:
+                errors = validation_errors
+            else:
+                # Update the room
+                updated_room = {
+                    CONF_ROOM_NAME: user_input[CONF_ROOM_NAME],
+                    CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
+                    CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
+                }
+
+                # Include humidity sensor if provided
+                if user_input.get(CONF_HUMIDITY_SENSOR):
+                    updated_room[CONF_HUMIDITY_SENSOR] = user_input[CONF_HUMIDITY_SENSOR]
+
+                # Replace the old room with updated one
+                updated_rooms = [
+                    updated_room if room[CONF_ROOM_NAME] == room_to_edit_name else room
+                    for room in current_rooms
+                ]
+
+                # Update the config entry
+                new_data = {**self.config_entry.data, CONF_ROOM_CONFIGS: updated_rooms}
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+
+                # Reload the integration
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+
+                return await self.async_step_manage_rooms()
+
+        # Build schema with current values as defaults
+        humidity_sensor = room_to_edit.get(CONF_HUMIDITY_SENSOR)
+        schema_dict = {
+            vol.Required(CONF_ROOM_NAME, default=room_to_edit[CONF_ROOM_NAME]): cv.string,
+            vol.Required(CONF_TEMPERATURE_SENSOR, default=room_to_edit[CONF_TEMPERATURE_SENSOR]): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Required(CONF_COVER_ENTITY, default=room_to_edit[CONF_COVER_ENTITY]): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="cover")
+            ),
+        }
+
+        # Add humidity sensor with default if it exists
+        if humidity_sensor:
+            schema_dict[vol.Optional(CONF_HUMIDITY_SENSOR, default=humidity_sensor)] = selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
+            )
+        else:
+            schema_dict[vol.Optional(CONF_HUMIDITY_SENSOR)] = selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
+            )
+
+        return self.async_show_form(
+            step_id="edit_room",
+            data_schema=vol.Schema(schema_dict),
+            errors=errors,
+            description_placeholders={
+                "room_name": room_to_edit_name,
+            },
         )
 
     async def async_step_room_overrides(
@@ -607,6 +754,59 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema(schema_dict),
             description_placeholders={
                 "info": "Weather integration adjusts target temperature based on outdoor conditions. Provide either a weather entity or outdoor temperature sensor (or both for redundancy)."
+            },
+        )
+
+    async def async_step_humidity(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle humidity control configuration."""
+        if user_input is not None:
+            # Merge with existing data
+            new_data = {**self.config_entry.data, **user_input}
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+            # Reload the integration to apply changes
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        return self.async_show_form(
+            step_id="humidity",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_ENABLE_HUMIDITY_CONTROL,
+                        default=self.config_entry.data.get(CONF_ENABLE_HUMIDITY_CONTROL, DEFAULT_ENABLE_HUMIDITY_CONTROL),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_TARGET_HUMIDITY,
+                        default=self.config_entry.data.get(CONF_TARGET_HUMIDITY, DEFAULT_TARGET_HUMIDITY),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=30, max=80, step=5, mode=selector.NumberSelectorMode.SLIDER, unit_of_measurement="%"
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_HUMIDITY_DEADBAND,
+                        default=self.config_entry.data.get(CONF_HUMIDITY_DEADBAND, DEFAULT_HUMIDITY_DEADBAND),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1, max=15, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="%"
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_DRY_MODE_HUMIDITY_THRESHOLD,
+                        default=self.config_entry.data.get(CONF_DRY_MODE_HUMIDITY_THRESHOLD, DEFAULT_DRY_MODE_HUMIDITY_THRESHOLD),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=50, max=90, step=5, mode=selector.NumberSelectorMode.SLIDER, unit_of_measurement="%"
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={
+                "info": "Humidity control enables intelligent dehumidification. AC will switch to dry mode when humidity exceeds threshold but temperature is near target. Temperature always takes priority over humidity."
             },
         )
 
