@@ -151,6 +151,8 @@ class AirconOptimizer:
         # Adaptive learning
         self.learning_manager = None  # Will be initialized in async_setup
         self._last_room_temps = {}  # Track temps for learning
+        self._last_learning_update = None  # Track when we last updated learning profiles
+        self._learning_update_interval = 3600  # Update learning profiles every hour
 
     def _validate_temperature(self, value: float, name: str, min_val: float, max_val: float) -> float:
         """Validate temperature value is within acceptable range."""
@@ -859,6 +861,26 @@ class AirconOptimizer:
 
                 # Store current temp for next cycle
                 self._last_room_temps[room_name] = current_temp
+
+            # Periodically update learning profiles from collected data
+            current_time = time.time()
+            should_update_learning = (
+                self._last_learning_update is None
+                or (current_time - self._last_learning_update) >= self._learning_update_interval
+            )
+
+            if should_update_learning:
+                _LOGGER.info("Updating learning profiles from collected data...")
+                updated_rooms = await self.learning_manager.async_update_profiles()
+                if updated_rooms:
+                    _LOGGER.info(
+                        "Learning profiles updated for %d rooms: %s",
+                        len(updated_rooms),
+                        ", ".join(updated_rooms)
+                    )
+                else:
+                    _LOGGER.debug("Learning profiles update - insufficient data for any rooms yet (need 50+ data points per room)")
+                self._last_learning_update = current_time
 
         return {
             "room_states": room_states,
