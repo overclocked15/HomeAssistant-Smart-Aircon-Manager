@@ -256,14 +256,18 @@ class LearningProfile:
 
         Returns True if update was successful, False if insufficient data.
         """
+        # Always update confidence based on data points collected
+        data_count = tracker.get_data_point_count(self.room_name)
+        self.confidence = min(1.0, data_count / 200.0)  # Full confidence at 200+ points
+
         # Estimate thermal characteristics
         thermal_mass = tracker.estimate_thermal_mass(self.room_name)
         cooling_efficiency = tracker.estimate_cooling_efficiency(self.room_name)
 
         if thermal_mass is None or cooling_efficiency is None:
             _LOGGER.debug(
-                "Insufficient data to update profile for %s (need 50+ data points)",
-                self.room_name
+                "Insufficient data to update thermal characteristics for %s (need 50+ data points), confidence=%.2f (%d points)",
+                self.room_name, self.confidence, data_count
             )
             return False
 
@@ -290,10 +294,7 @@ class LearningProfile:
             self.optimal_smoothing_factor = max(0.6, self.optimal_smoothing_factor - 0.05)
             self.optimal_smoothing_threshold = max(5, self.optimal_smoothing_threshold - 2)
 
-        # Calculate confidence based on data points
-        data_count = tracker.get_data_point_count(self.room_name)
-        self.confidence = min(1.0, data_count / 200.0)  # Full confidence at 200+ points
-
+        # Confidence was already updated at the start of this method
         self.last_updated = datetime.now(timezone.utc).isoformat()
 
         _LOGGER.info(
@@ -391,16 +392,25 @@ class LearningManager:
         Returns list of room names that were updated.
         """
         updated_rooms = []
+        any_profile_modified = False
 
         for room_name in self.tracker._data_points.keys():
             if room_name not in self.profiles:
                 self.profiles[room_name] = LearningProfile(room_name)
+                any_profile_modified = True
 
             profile = self.profiles[room_name]
+            # update_from_tracker now always updates confidence, even if insufficient data
+            # Returns True only if thermal characteristics were successfully calculated
             if profile.update_from_tracker(self.tracker):
                 updated_rooms.append(room_name)
+                any_profile_modified = True
+            else:
+                # Even if full update failed, confidence was updated - save it
+                any_profile_modified = True
 
-        if updated_rooms:
+        # Save profiles if any were created or modified (including confidence-only updates)
+        if any_profile_modified:
             await self.async_save_profiles()
 
         return updated_rooms

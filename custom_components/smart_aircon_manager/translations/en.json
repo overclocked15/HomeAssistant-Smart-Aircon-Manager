@@ -45,6 +45,7 @@
           "manage_rooms": "Manage Rooms (add/remove rooms)",
           "room_overrides": "Room Overrides (enable/disable control per room)",
           "weather": "Weather Integration (outdoor temperature adjustments)",
+          "humidity": "Humidity Control (dehumidification and comfort)",
           "schedules": "Time-Based Scheduling (different temps for different times)",
           "learning": "Adaptive Learning (100% local statistical learning)",
           "balancing": "Room Balancing (equalize temperatures across all rooms)",
