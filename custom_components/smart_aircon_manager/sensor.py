@@ -161,6 +161,17 @@ async def async_setup_entry(
         entities.append(FanOnlyModeActiveSensor(coordinator, config_entry))
         entities.append(ComfortIndexSensor(coordinator, config_entry))
 
+    # Add critical room protection sensors if any critical rooms are configured
+    from .const import CONF_CRITICAL_ROOMS
+    critical_rooms = config_entry.data.get(CONF_CRITICAL_ROOMS, {})
+    if critical_rooms:
+        _LOGGER.info("Creating critical room sensors for %d room(s)", len(critical_rooms))
+        for room_name in critical_rooms.keys():
+            entities.append(CriticalRoomStatusSensor(coordinator, config_entry, room_name))
+            entities.append(CriticalRoomMarginSensor(coordinator, config_entry, room_name))
+    else:
+        _LOGGER.debug("No critical rooms configured, skipping critical room sensors")
+
     _LOGGER.info("Total entities to add: %d", len(entities))
     _LOGGER.info("Entity unique_ids: %s", [e.unique_id for e in entities if hasattr(e, 'unique_id')])
 
@@ -2187,5 +2198,140 @@ class ComfortIndexSensor(AirconManagerSensorBase):
                         attrs["comfort_level"] = "Cool"
         else:
             attrs["note"] = "No humidity data - showing actual temperature"
+
+        return attrs
+
+
+class CriticalRoomStatusSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing critical room protection status."""
+
+    def __init__(self, coordinator, config_entry, room_name):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._room_name = room_name
+        self._attr_name = f"{room_name} Critical Status"
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_name}_critical_status"
+        self._attr_icon = "mdi:shield-alert"
+        self._attr_device_class = None
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        from . import get_device_info
+        return get_device_info(self._config_entry)
+
+    @property
+    def native_value(self):
+        """Return the status."""
+        # Get critical monitor
+        critical_monitor = self.hass.data[DOMAIN][self._config_entry.entry_id].get("critical_monitor")
+        if not critical_monitor:
+            return "disabled"
+
+        room_state = critical_monitor.get_room_status(self._room_name)
+        if not room_state:
+            return "disabled"
+
+        return room_state.get("status", "unknown")
+
+    @property
+    def extra_state_attributes(self):
+        """Return additional attributes."""
+        critical_monitor = self.hass.data[DOMAIN][self._config_entry.entry_id].get("critical_monitor")
+        if not critical_monitor:
+            return {"protection_enabled": False}
+
+        room_state = critical_monitor.get_room_status(self._room_name)
+        if not room_state:
+            return {"protection_enabled": False}
+
+        # Get critical config
+        from .const import CONF_CRITICAL_ROOMS, CONF_CRITICAL_TEMP_MAX, CONF_CRITICAL_TEMP_SAFE
+        critical_rooms = self._config_entry.data.get(CONF_CRITICAL_ROOMS, {})
+        critical_config = critical_rooms.get(self._room_name, {})
+
+        attrs = {
+            "protection_enabled": True,
+            "current_temperature": room_state.get("temperature"),
+            "critical_threshold": critical_config.get(CONF_CRITICAL_TEMP_MAX),
+            "safe_target": critical_config.get(CONF_CRITICAL_TEMP_SAFE),
+            "last_check": room_state.get("last_check").isoformat() if room_state.get("last_check") else None,
+            "last_notification": room_state.get("last_notification").isoformat() if room_state.get("last_notification") else None,
+        }
+
+        # Add temperature margin
+        margin = critical_monitor.get_temperature_margin(self._room_name)
+        if margin is not None:
+            attrs["temperature_margin"] = round(margin, 1)
+            attrs["temperature_margin_unit"] = "°C"
+
+        return attrs
+
+
+class CriticalRoomMarginSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing degrees until critical threshold."""
+
+    def __init__(self, coordinator, config_entry, room_name):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._room_name = room_name
+        self._attr_name = f"{room_name} Critical Margin"
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_name}_critical_margin"
+        self._attr_icon = "mdi:thermometer-alert"
+        self._attr_device_class = SensorDeviceClass.TEMPERATURE
+        self._attr_native_unit_of_measurement = "°C"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        from . import get_device_info
+        return get_device_info(self._config_entry)
+
+    @property
+    def native_value(self):
+        """Return the margin in degrees C."""
+        critical_monitor = self.hass.data[DOMAIN][self._config_entry.entry_id].get("critical_monitor")
+        if not critical_monitor:
+            return None
+
+        margin = critical_monitor.get_temperature_margin(self._room_name)
+        return round(margin, 1) if margin is not None else None
+
+    @property
+    def extra_state_attributes(self):
+        """Return additional attributes."""
+        critical_monitor = self.hass.data[DOMAIN][self._config_entry.entry_id].get("critical_monitor")
+        if not critical_monitor:
+            return {}
+
+        room_state = critical_monitor.get_room_status(self._room_name)
+        if not room_state:
+            return {}
+
+        from .const import CONF_CRITICAL_ROOMS, CONF_CRITICAL_TEMP_MAX, CONF_CRITICAL_WARNING_OFFSET
+        critical_rooms = self._config_entry.data.get(CONF_CRITICAL_ROOMS, {})
+        critical_config = critical_rooms.get(self._room_name, {})
+
+        margin = critical_monitor.get_temperature_margin(self._room_name)
+
+        attrs = {
+            "current_temperature": room_state.get("temperature"),
+            "critical_threshold": critical_config.get(CONF_CRITICAL_TEMP_MAX),
+            "warning_offset": critical_config.get(CONF_CRITICAL_WARNING_OFFSET),
+            "status": room_state.get("status"),
+        }
+
+        # Add status indicator
+        if margin is not None:
+            warning_offset = critical_config.get(CONF_CRITICAL_WARNING_OFFSET, 2.0)
+            if margin <= 0:
+                attrs["status_text"] = "CRITICAL - Over temperature!"
+            elif margin <= warning_offset:
+                attrs["status_text"] = f"WARNING - Only {margin:.1f}°C from critical"
+            else:
+                attrs["status_text"] = f"Normal - {margin:.1f}°C margin"
 
         return attrs

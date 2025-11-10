@@ -139,6 +139,20 @@ DEFAULT_ENABLE_OCCUPANCY_CONTROL = False  # Disabled by default (opt-in)
 DEFAULT_VACANT_ROOM_SETBACK = 2.0  # degrees C to add/subtract from target for vacant rooms
 DEFAULT_VACANCY_TIMEOUT = 300  # seconds (5 minutes) - time before considering room vacant
 
+# Critical room protection
+CONF_CRITICAL_ROOMS = "critical_rooms"  # Dict mapping room_name -> critical config
+CONF_CRITICAL_TEMP_MAX = "critical_temp_max"
+CONF_CRITICAL_TEMP_SAFE = "critical_temp_safe"
+CONF_CRITICAL_WARNING_OFFSET = "critical_warning_offset"
+CONF_CRITICAL_NOTIFY_SERVICES = "critical_notify_services"
+DEFAULT_CRITICAL_WARNING_OFFSET = 2.0  # degrees C before critical to warn
+
+# Critical room status values
+CRITICAL_STATUS_NORMAL = "normal"
+CRITICAL_STATUS_WARNING = "warning"
+CRITICAL_STATUS_CRITICAL = "critical"
+CRITICAL_STATUS_RECOVERING = "recovering"
+
 # Days of week for scheduling
 SCHEDULE_DAYS_OPTIONS = [
     "monday",

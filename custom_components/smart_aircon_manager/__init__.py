@@ -41,6 +41,7 @@ from .const import (
     DEFAULT_VACANCY_TIMEOUT,
 )
 from .optimizer import AirconOptimizer
+from .critical_monitor import CriticalRoomMonitor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def get_device_info(config_entry: ConfigEntry) -> dict:
         "name": "Smart Aircon Manager",
         "manufacturer": "Smart Aircon Manager",
         "model": "Logic-Based HVAC Controller",
-        "sw_version": "2.3.2",
+        "sw_version": "2.4.0",
     }
 
 
@@ -128,10 +129,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Setup optimizer (initializes learning manager with config)
     await optimizer.async_setup()
 
-    # Store the optimizer and coordinator
+    # Create and start critical room monitor
+    critical_monitor = CriticalRoomMonitor(
+        hass=hass,
+        config_data=entry.data,
+        room_configs=entry.data.get("room_configs", []),
+        main_climate_entity=entry.data.get("main_climate_entity"),
+    )
+    await critical_monitor.async_start()
+
+    # Store the optimizer, coordinator, and critical monitor
     hass.data[DOMAIN][entry.entry_id] = {
         "optimizer": optimizer,
         "coordinator": coordinator,
+        "critical_monitor": critical_monitor,
     }
 
     # Fetch initial data
@@ -346,6 +357,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Cleanup optimizer resources
     optimizer = hass.data[DOMAIN][entry.entry_id]["optimizer"]
     await optimizer.async_cleanup()
+
+    # Stop critical room monitor
+    critical_monitor = hass.data[DOMAIN][entry.entry_id].get("critical_monitor")
+    if critical_monitor:
+        await critical_monitor.async_stop()
 
     # Unload platforms
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):

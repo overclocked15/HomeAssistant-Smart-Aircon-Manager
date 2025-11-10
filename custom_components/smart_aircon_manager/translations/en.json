@@ -49,6 +49,7 @@
           "schedules": "Time-Based Scheduling (different temps for different times)",
           "learning": "Adaptive Learning (100% local statistical learning)",
           "balancing": "Room Balancing (equalize temperatures across all rooms)",
+          "critical_rooms": "Critical Room Protection (automatic safety monitoring)",
           "advanced": "Advanced Settings (fine-tune thresholds and behavior)"
         }
       },
@@ -178,6 +179,31 @@
           "target_room_variance": "Maximum acceptable temperature variance (standard deviation) between rooms in °C. Default: 1.5°C",
           "balancing_aggressiveness": "How aggressively to balance (0.0-0.5). Higher = faster equalization. Default: 0.2",
           "min_airflow_percent": "Minimum airflow percentage to any room (5-50%). Ensures circulation even when balancing. Default: 15%"
+        }
+      },
+      "critical_rooms": {
+        "title": "Critical Room Protection",
+        "description": "Configure automatic temperature monitoring and AC control for critical rooms (e.g., server rooms). The system will automatically turn on the AC if a critical room temperature approaches the danger zone. Select a room to configure or press Submit to go back.",
+        "data": {
+          "configure_room": "Select Room to Configure"
+        }
+      },
+      "configure_critical_room": {
+        "title": "Configure Critical Protection: {room_name}",
+        "description": "Set up automatic temperature monitoring and protection for {room_name}. When enabled, the system will monitor this room's temperature and automatically turn on the AC if it approaches the critical threshold. Notifications will be sent at warning and critical levels.",
+        "data": {
+          "enable_protection": "Enable Critical Protection for this room",
+          "critical_temp_max": "Critical Temperature Threshold (maximum safe temperature)",
+          "critical_temp_safe": "Safe Target Temperature (where to cool down to)",
+          "critical_warning_offset": "Warning Offset (degrees before critical to send warning)",
+          "critical_notify_services": "Notification Services (select one or more notify services)"
+        },
+        "data_description": {
+          "enable_protection": "Enable automatic monitoring and AC control for this room. Uncheck to disable protection.",
+          "critical_temp_max": "Maximum safe temperature for this room. AC will turn on automatically when approaching this limit.",
+          "critical_temp_safe": "Target temperature to cool the room down to when critical protection activates.",
+          "critical_warning_offset": "How many degrees before the critical threshold to send a warning notification. Default: 2°C",
+          "critical_notify_services": "Home Assistant notify services to receive alerts (e.g., mobile_app, telegram). Leave empty for no notifications."
         }
       },
       "advanced": {

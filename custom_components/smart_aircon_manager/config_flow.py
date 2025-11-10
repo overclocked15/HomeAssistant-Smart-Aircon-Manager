@@ -77,6 +77,12 @@ from .const import (
     DEFAULT_TARGET_ROOM_VARIANCE,
     DEFAULT_BALANCING_AGGRESSIVENESS,
     DEFAULT_MIN_AIRFLOW_PERCENT,
+    CONF_CRITICAL_ROOMS,
+    CONF_CRITICAL_TEMP_MAX,
+    CONF_CRITICAL_TEMP_SAFE,
+    CONF_CRITICAL_WARNING_OFFSET,
+    CONF_CRITICAL_NOTIFY_SERVICES,
+    DEFAULT_CRITICAL_WARNING_OFFSET,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -275,7 +281,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options - show menu."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "humidity", "schedules", "learning", "balancing", "advanced"],
+            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "humidity", "schedules", "learning", "balancing", "critical_rooms", "advanced"],
         )
 
     async def async_step_settings(
@@ -1110,6 +1116,166 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 }
             ),
+        )
+
+    async def async_step_critical_rooms(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle critical room protection configuration."""
+        # Get list of all rooms
+        all_rooms = self.config_entry.data.get(CONF_ROOM_CONFIGS, [])
+
+        if not all_rooms:
+            # No rooms configured yet
+            return self.async_show_form(
+                step_id="critical_rooms",
+                data_schema=vol.Schema({}),
+                description_placeholders={"error": "No rooms configured. Please add rooms first."},
+            )
+
+        if user_input is not None:
+            # User selected a room to configure or went back
+            if user_input.get("configure_room"):
+                self._critical_room_to_configure = user_input["configure_room"]
+                return await self.async_step_configure_critical_room()
+            else:
+                # User clicked done/back
+                return self.async_create_entry(title="", data={})
+
+        # Get existing critical room configs
+        critical_rooms = self.config_entry.data.get(CONF_CRITICAL_ROOMS, {})
+
+        # Create list of rooms with their current status
+        room_options = []
+        for room in all_rooms:
+            room_name = room[CONF_ROOM_NAME]
+            if room_name in critical_rooms:
+                label = f"{room_name} (Critical Protection ENABLED)"
+            else:
+                label = f"{room_name} (Protection Disabled)"
+            room_options.append({"label": label, "value": room_name})
+
+        return self.async_show_form(
+            step_id="critical_rooms",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("configure_room"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=room_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={
+                "info": "Select a room to configure critical temperature protection, or press Submit to go back."
+            },
+        )
+
+    async def async_step_configure_critical_room(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure critical protection for a specific room."""
+        room_name = getattr(self, '_critical_room_to_configure', None)
+
+        if not room_name:
+            return await self.async_step_critical_rooms()
+
+        # Get existing critical room configs
+        critical_rooms = dict(self.config_entry.data.get(CONF_CRITICAL_ROOMS, {}))
+        existing_config = critical_rooms.get(room_name, {})
+
+        if user_input is not None:
+            # Check if user wants to disable protection
+            if not user_input.get("enable_protection", False):
+                # Remove this room from critical rooms
+                if room_name in critical_rooms:
+                    del critical_rooms[room_name]
+
+                new_data = {**self.config_entry.data, CONF_CRITICAL_ROOMS: critical_rooms}
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+
+                # Go back to critical rooms menu
+                return await self.async_step_critical_rooms()
+
+            # Save the critical room configuration
+            critical_rooms[room_name] = {
+                CONF_CRITICAL_TEMP_MAX: user_input[CONF_CRITICAL_TEMP_MAX],
+                CONF_CRITICAL_TEMP_SAFE: user_input[CONF_CRITICAL_TEMP_SAFE],
+                CONF_CRITICAL_WARNING_OFFSET: user_input[CONF_CRITICAL_WARNING_OFFSET],
+                CONF_CRITICAL_NOTIFY_SERVICES: user_input.get(CONF_CRITICAL_NOTIFY_SERVICES, []),
+            }
+
+            new_data = {**self.config_entry.data, CONF_CRITICAL_ROOMS: critical_rooms}
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+
+            # Go back to critical rooms menu
+            return await self.async_step_critical_rooms()
+
+        # Show configuration form
+        is_enabled = room_name in critical_rooms
+
+        return self.async_show_form(
+            step_id="configure_critical_room",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("enable_protection", default=is_enabled): cv.boolean,
+                    vol.Optional(
+                        CONF_CRITICAL_TEMP_MAX,
+                        default=existing_config.get(CONF_CRITICAL_TEMP_MAX, 30),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=20,
+                            max=40,
+                            step=0.5,
+                            unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_CRITICAL_TEMP_SAFE,
+                        default=existing_config.get(CONF_CRITICAL_TEMP_SAFE, 24),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=18,
+                            max=35,
+                            step=0.5,
+                            unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_CRITICAL_WARNING_OFFSET,
+                        default=existing_config.get(CONF_CRITICAL_WARNING_OFFSET, DEFAULT_CRITICAL_WARNING_OFFSET),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.5,
+                            max=5.0,
+                            step=0.5,
+                            unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_CRITICAL_NOTIFY_SERVICES,
+                        default=existing_config.get(CONF_CRITICAL_NOTIFY_SERVICES, []),
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="notify",
+                            multiple=True,
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={
+                "room_name": room_name,
+            },
         )
 
     async def async_step_advanced(
