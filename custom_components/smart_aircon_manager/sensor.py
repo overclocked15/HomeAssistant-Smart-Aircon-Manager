@@ -1636,7 +1636,11 @@ class RoomOvershootRateSensor(AirconManagerSensorBase):
             return None
 
         profile = self._optimizer.learning_manager.get_profile(self._room_name)
-        return profile.overshoot_rate_per_day if profile else None
+        if not profile:
+            return None
+
+        # Return 0.0 if overshoot rate hasn't been calculated yet (insufficient data)
+        return profile.overshoot_rate_per_day if profile.overshoot_rate_per_day is not None else 0.0
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -1648,19 +1652,27 @@ class RoomOvershootRateSensor(AirconManagerSensorBase):
         if not profile:
             return {"status": "learning_not_started"}
 
-        rate = profile.overshoot_rate_per_day or 0
+        rate = profile.overshoot_rate_per_day if profile.overshoot_rate_per_day is not None else 0.0
+
+        # Determine status based on whether we have data yet
+        if profile.last_updated is None:
+            status = "collecting_data"
+        elif rate < 0.5:
+            status = "excellent"
+        elif rate < 1.0:
+            status = "good"
+        elif rate < 2.0:
+            status = "fair"
+        else:
+            status = "poor"
 
         return {
             "description": "How often temperature overshoots target",
-            "status": (
-                "excellent" if rate < 0.5
-                else "good" if rate < 1.0
-                else "fair" if rate < 2.0
-                else "poor"
-            ),
+            "status": status,
             "optimal_smoothing_factor": profile.optimal_smoothing_factor,
             "optimal_smoothing_threshold": profile.optimal_smoothing_threshold,
-            "last_updated": profile.last_updated,
+            "last_updated": profile.last_updated if profile.last_updated else "Not yet updated",
+            "confidence": round(profile.confidence * 100, 1) if hasattr(profile, 'confidence') else 0,
         }
 
 
