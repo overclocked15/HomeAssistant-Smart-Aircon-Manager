@@ -25,7 +25,8 @@ class PerformanceTracker:
         self.config_entry_id = config_entry_id
         self.storage_path = storage_path
         self._data_points = {}  # room_name -> list of data points
-        self._max_data_points_per_room = 1000  # Limit memory usage
+        self._max_data_points_per_room = 1000  # Limit in-memory data points
+        self._max_persisted_data_points = 200  # Only persist recent data (reduces file size by 80%)
 
     def track_cycle(
         self,
@@ -231,22 +232,42 @@ class PerformanceTracker:
         _LOGGER.info("Cleared all learning data")
 
     async def async_save_data_points(self) -> None:
-        """Save tracker data points to storage."""
+        """Save tracker data points to storage (only recent data to limit file size)."""
         storage_file = self.storage_path / f"tracker_data_{self.config_entry_id}.json"
 
         try:
             # Ensure directory exists
             storage_file.parent.mkdir(parents=True, exist_ok=True)
 
+            # Only save the most recent N data points per room to limit file size
+            # Older data has diminishing value for learning calculations
+            pruned_data = {}
+            for room_name, points in self._data_points.items():
+                if len(points) > self._max_persisted_data_points:
+                    # Keep only the most recent data points
+                    pruned_data[room_name] = points[-self._max_persisted_data_points:]
+                else:
+                    pruned_data[room_name] = points
+
             # Write to file
-            storage_file.write_text(json.dumps(self._data_points, indent=2))
-            total_points = sum(len(points) for points in self._data_points.values())
-            _LOGGER.debug("Saved %d data points across %d rooms", total_points, len(self._data_points))
+            storage_file.write_text(json.dumps(pruned_data, indent=2))
+            total_points = sum(len(points) for points in pruned_data.values())
+            _LOGGER.debug("Saved %d data points across %d rooms (pruned to recent data)", total_points, len(pruned_data))
         except Exception as e:
             _LOGGER.error("Failed to save tracker data points: %s", e)
 
     async def async_load_data_points(self) -> None:
-        """Load tracker data points from storage."""
+        """Load tracker data points from storage.
+
+        Note: We only persist the most recent 200 data points per room to:
+        - Limit file size (reduces by ~80%)
+        - Minimize startup load time
+        - Reduce SD card wear (important for Raspberry Pi)
+        - Keep relevant data (old data has diminishing value)
+
+        200 points = ~1.6 hours of data at 30-second cycles, which is sufficient
+        for calculating confidence (min 1.0, data_count / 200.0).
+        """
         storage_file = self.storage_path / f"tracker_data_{self.config_entry_id}.json"
 
         if not storage_file.exists():
