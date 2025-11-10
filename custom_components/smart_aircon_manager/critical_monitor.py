@@ -255,15 +255,34 @@ class CriticalRoomMonitor:
                 # Extract service name (remove "notify." prefix if present)
                 service_name = service.replace("notify.", "")
 
-                await self.hass.services.async_call(
-                    "notify",
-                    service_name,
-                    {
-                        "title": title,
-                        "message": message,
-                    },
-                )
-                _LOGGER.debug("Sent notification via %s", service)
+                # Combine title and message for better compatibility
+                # Some services (like ClickSend, Twilio) don't support separate title
+                full_message = f"{title}\n\n{message}"
+
+                # Try to send with both title and message first (for services that support it)
+                # If that fails, send with message only
+                try:
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        {
+                            "title": title,
+                            "message": message,
+                        },
+                    )
+                    _LOGGER.debug("Sent notification via %s (with title)", service)
+                except Exception as title_error:
+                    # Fallback: send as single message without title parameter
+                    _LOGGER.debug("Title parameter not supported for %s, sending as single message", service)
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        {
+                            "message": full_message,
+                        },
+                    )
+                    _LOGGER.debug("Sent notification via %s (message only)", service)
+
             except Exception as e:
                 _LOGGER.error("Failed to send notification via %s: %s", service, e)
 
