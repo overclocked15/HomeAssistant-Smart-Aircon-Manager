@@ -19,10 +19,11 @@ _LOGGER = logging.getLogger(__name__)
 class PerformanceTracker:
     """Tracks performance metrics for adaptive learning."""
 
-    def __init__(self, hass, config_entry_id: str):
+    def __init__(self, hass, config_entry_id: str, storage_path: Path):
         """Initialize performance tracker."""
         self.hass = hass
         self.config_entry_id = config_entry_id
+        self.storage_path = storage_path
         self._data_points = {}  # room_name -> list of data points
         self._max_data_points_per_room = 1000  # Limit memory usage
 
@@ -229,6 +230,36 @@ class PerformanceTracker:
         self._data_points = {}
         _LOGGER.info("Cleared all learning data")
 
+    async def async_save_data_points(self) -> None:
+        """Save tracker data points to storage."""
+        storage_file = self.storage_path / f"tracker_data_{self.config_entry_id}.json"
+
+        try:
+            # Ensure directory exists
+            storage_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write to file
+            storage_file.write_text(json.dumps(self._data_points, indent=2))
+            total_points = sum(len(points) for points in self._data_points.values())
+            _LOGGER.debug("Saved %d data points across %d rooms", total_points, len(self._data_points))
+        except Exception as e:
+            _LOGGER.error("Failed to save tracker data points: %s", e)
+
+    async def async_load_data_points(self) -> None:
+        """Load tracker data points from storage."""
+        storage_file = self.storage_path / f"tracker_data_{self.config_entry_id}.json"
+
+        if not storage_file.exists():
+            _LOGGER.debug("No existing tracker data found")
+            return
+
+        try:
+            self._data_points = json.loads(storage_file.read_text())
+            total_points = sum(len(points) for points in self._data_points.values())
+            _LOGGER.info("Loaded %d data points across %d rooms", total_points, len(self._data_points))
+        except Exception as e:
+            _LOGGER.error("Failed to load tracker data points: %s", e)
+
 
 class LearningProfile:
     """Stores and manages learned parameters for a room."""
@@ -341,7 +372,7 @@ class LearningManager:
         self.hass = hass
         self.config_entry_id = config_entry_id
         self.storage_path = storage_path
-        self.tracker = PerformanceTracker(hass, config_entry_id)
+        self.tracker = PerformanceTracker(hass, config_entry_id, storage_path)
         self.profiles = {}  # room_name -> LearningProfile
 
         # Learning configuration (defaults - will be overridden by config entry)
@@ -351,23 +382,27 @@ class LearningManager:
         self.max_adjustment_per_update = 0.10  # 10% max change
 
     async def async_load_profiles(self) -> None:
-        """Load learning profiles from storage."""
+        """Load learning profiles and tracker data from storage."""
+        # Load profiles
         storage_file = self.storage_path / f"learning_{self.config_entry_id}.json"
 
         if not storage_file.exists():
             _LOGGER.debug("No existing learning profiles found")
-            return
+        else:
+            try:
+                data = json.loads(storage_file.read_text())
+                for room_name, profile_data in data.items():
+                    self.profiles[room_name] = LearningProfile.from_dict(profile_data)
+                _LOGGER.info("Loaded %d learning profiles", len(self.profiles))
+            except Exception as e:
+                _LOGGER.error("Failed to load learning profiles: %s", e)
 
-        try:
-            data = json.loads(storage_file.read_text())
-            for room_name, profile_data in data.items():
-                self.profiles[room_name] = LearningProfile.from_dict(profile_data)
-            _LOGGER.info("Loaded %d learning profiles", len(self.profiles))
-        except Exception as e:
-            _LOGGER.error("Failed to load learning profiles: %s", e)
+        # Load tracker data points
+        await self.tracker.async_load_data_points()
 
     async def async_save_profiles(self) -> None:
-        """Save learning profiles to storage."""
+        """Save learning profiles and tracker data to storage."""
+        # Save profiles
         storage_file = self.storage_path / f"learning_{self.config_entry_id}.json"
 
         try:
@@ -385,6 +420,9 @@ class LearningManager:
             _LOGGER.debug("Saved %d learning profiles", len(self.profiles))
         except Exception as e:
             _LOGGER.error("Failed to save learning profiles: %s", e)
+
+        # Save tracker data points
+        await self.tracker.async_save_data_points()
 
     async def async_update_profiles(self) -> list[str]:
         """Update learning profiles from tracker data.
