@@ -1654,8 +1654,13 @@ class RoomOvershootRateSensor(AirconManagerSensorBase):
 
         rate = profile.overshoot_rate_per_day if profile.overshoot_rate_per_day is not None else 0.0
 
+        # Calculate live confidence based on current data points (not stale saved value)
+        tracker = self._optimizer.learning_manager.tracker
+        data_count = tracker.get_data_point_count(self._room_name)
+        live_confidence = min(1.0, data_count / 200.0) if data_count is not None else 0.0
+
         # Determine status based on whether we have data yet
-        if profile.last_updated is None:
+        if profile.last_updated is None or data_count < 10:
             status = "collecting_data"
         elif rate < 0.5:
             status = "excellent"
@@ -1672,7 +1677,8 @@ class RoomOvershootRateSensor(AirconManagerSensorBase):
             "optimal_smoothing_factor": profile.optimal_smoothing_factor,
             "optimal_smoothing_threshold": profile.optimal_smoothing_threshold,
             "last_updated": profile.last_updated if profile.last_updated else "Not yet updated",
-            "confidence": round(profile.confidence * 100, 1) if hasattr(profile, 'confidence') else 0,
+            "confidence": round(live_confidence * 100, 1),
+            "data_points": data_count if data_count is not None else 0,
         }
 
 
