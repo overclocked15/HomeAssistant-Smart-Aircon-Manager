@@ -196,14 +196,14 @@
           "critical_temp_max": "Critical Temperature Threshold (maximum safe temperature)",
           "critical_temp_safe": "Safe Target Temperature (where to cool down to)",
           "critical_warning_offset": "Warning Offset (degrees before critical to send warning)",
-          "critical_notify_services": "Notification Services (select one or more notify services)"
+          "critical_notify_services": "Notification Services (comma-separated list)"
         },
         "data_description": {
           "enable_protection": "Enable automatic monitoring and AC control for this room. Uncheck to disable protection.",
           "critical_temp_max": "Maximum safe temperature for this room. AC will turn on automatically when approaching this limit.",
           "critical_temp_safe": "Target temperature to cool the room down to when critical protection activates.",
           "critical_warning_offset": "How many degrees before the critical threshold to send a warning notification. Default: 2°C",
-          "critical_notify_services": "Home Assistant notify services to receive alerts (e.g., mobile_app, telegram). Leave empty for no notifications."
+          "critical_notify_services": "Enter notify service names separated by commas. Examples: 'clicksend, pushbullet' or 'mobile_app_phone, telegram'. Available services can be found in Developer Tools → Services (search for 'notify.'). Leave empty for no notifications."
         }
       },
       "advanced": {

@@ -1201,12 +1201,20 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 # Go back to critical rooms menu
                 return await self.async_step_critical_rooms()
 
+            # Parse notify services from comma-separated string
+            notify_services_str = user_input.get(CONF_CRITICAL_NOTIFY_SERVICES, "")
+            if notify_services_str:
+                # Split by comma and strip whitespace
+                notify_services = [s.strip() for s in notify_services_str.split(",") if s.strip()]
+            else:
+                notify_services = []
+
             # Save the critical room configuration
             critical_rooms[room_name] = {
                 CONF_CRITICAL_TEMP_MAX: user_input[CONF_CRITICAL_TEMP_MAX],
                 CONF_CRITICAL_TEMP_SAFE: user_input[CONF_CRITICAL_TEMP_SAFE],
                 CONF_CRITICAL_WARNING_OFFSET: user_input[CONF_CRITICAL_WARNING_OFFSET],
-                CONF_CRITICAL_NOTIFY_SERVICES: user_input.get(CONF_CRITICAL_NOTIFY_SERVICES, []),
+                CONF_CRITICAL_NOTIFY_SERVICES: notify_services,
             }
 
             new_data = {**self.config_entry.data, CONF_CRITICAL_ROOMS: critical_rooms}
@@ -1264,13 +1272,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_CRITICAL_NOTIFY_SERVICES,
-                        default=existing_config.get(CONF_CRITICAL_NOTIFY_SERVICES, []),
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="notify",
-                            multiple=True,
-                        )
-                    ),
+                        default=", ".join(existing_config.get(CONF_CRITICAL_NOTIFY_SERVICES, [])),
+                    ): cv.string,
                 }
             ),
             description_placeholders={
