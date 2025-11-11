@@ -478,7 +478,7 @@ class AirconOptimizer:
                 else:  # dry mode
                     _LOGGER.info(
                         "Exiting fan_only mode immediately due to high humidity %.1f%% (threshold: %.1f%%) - switching to DRY",
-                        avg_humidity if avg_humidity else 0, self.dry_mode_humidity_threshold
+                        avg_humidity if avg_humidity is not None else 0, self.dry_mode_humidity_threshold
                     )
                 # Don't apply hysteresis when exiting fan_only - allow immediate switch
             elif time_since_last_change < self.mode_change_hysteresis_time:
@@ -1058,6 +1058,7 @@ class AirconOptimizer:
         else:
             # Use default values
             smoothing_factor = 0.7  # 70% new, 30% old
+            smoothing_threshold = 10  # Default threshold for smoothing
 
         if room_name not in self._last_fan_speeds:
             self._last_fan_speeds[room_name] = new_speed
