@@ -467,7 +467,21 @@ class AirconOptimizer:
                 else float('inf')
             )
 
-            if time_since_last_change < self.mode_change_hysteresis_time:
+            # CRITICAL: If currently in fan_only and conditions require active mode, switch immediately!
+            # Fan_only doesn't control temperature/humidity, so we must exit it when conditions demand action
+            if self._last_hvac_mode == "fan_only" and optimal_mode in ["cool", "heat", "dry"]:
+                if optimal_mode in ["cool", "heat"]:
+                    _LOGGER.info(
+                        "Exiting fan_only mode immediately due to temperature deviation %.1f°C (deadband: %.1f°C) - switching to %s",
+                        abs_deviation, self.temperature_deadband, optimal_mode
+                    )
+                else:  # dry mode
+                    _LOGGER.info(
+                        "Exiting fan_only mode immediately due to high humidity %.1f%% (threshold: %.1f%%) - switching to DRY",
+                        avg_humidity if avg_humidity else 0, self.dry_mode_humidity_threshold
+                    )
+                # Don't apply hysteresis when exiting fan_only - allow immediate switch
+            elif time_since_last_change < self.mode_change_hysteresis_time:
                 # Within hysteresis period - only change if deviation is severe
                 hysteresis_threshold = self.temperature_deadband + self.mode_change_hysteresis_temp
 
