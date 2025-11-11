@@ -94,6 +94,21 @@ class AirconOptimizer:
         self.overshoot_tier2_threshold = self._validate_positive_float(overshoot_tier2_threshold, "overshoot_tier2_threshold", 0.1, 10.0)
         self.overshoot_tier3_threshold = self._validate_positive_float(overshoot_tier3_threshold, "overshoot_tier3_threshold", 0.1, 10.0)
 
+        # Validate overshoot thresholds are in ascending order
+        if not (self.overshoot_tier1_threshold < self.overshoot_tier2_threshold < self.overshoot_tier3_threshold):
+            _LOGGER.warning(
+                "Overshoot thresholds not in ascending order (%.1f, %.1f, %.1f), auto-correcting...",
+                self.overshoot_tier1_threshold, self.overshoot_tier2_threshold, self.overshoot_tier3_threshold
+            )
+            sorted_thresholds = sorted([self.overshoot_tier1_threshold, self.overshoot_tier2_threshold, self.overshoot_tier3_threshold])
+            self.overshoot_tier1_threshold = sorted_thresholds[0]
+            self.overshoot_tier2_threshold = sorted_thresholds[1]
+            self.overshoot_tier3_threshold = sorted_thresholds[2]
+            _LOGGER.info(
+                "Corrected overshoot thresholds to: tier1=%.1f, tier2=%.1f, tier3=%.1f",
+                self.overshoot_tier1_threshold, self.overshoot_tier2_threshold, self.overshoot_tier3_threshold
+            )
+
         # Inter-room balancing configuration
         self.enable_room_balancing = enable_room_balancing
         self.target_room_variance = self._validate_positive_float(target_room_variance, "target_room_variance", 0.5, 5.0)
@@ -259,6 +274,29 @@ class AirconOptimizer:
             self.learning_manager.enabled,
             self.learning_manager.learning_mode
         )
+
+        # Initialize HVAC mode tracking from current climate entity state
+        if self.main_climate_entity:
+            climate_state = self.hass.states.get(self.main_climate_entity)
+            if climate_state:
+                current_hvac_mode = climate_state.state
+                if current_hvac_mode and current_hvac_mode != "unavailable":
+                    self._last_hvac_mode = current_hvac_mode
+                    _LOGGER.info(
+                        "Initialized HVAC mode tracking: %s (from climate entity %s)",
+                        current_hvac_mode,
+                        self.main_climate_entity
+                    )
+                else:
+                    _LOGGER.debug(
+                        "Climate entity %s state unavailable, HVAC mode tracking will initialize on first optimization",
+                        self.main_climate_entity
+                    )
+            else:
+                _LOGGER.debug(
+                    "Climate entity %s not found, HVAC mode tracking will initialize on first optimization",
+                    self.main_climate_entity
+                )
 
     async def _retry_service_call(
         self,
@@ -1380,19 +1418,23 @@ class AirconOptimizer:
             if avg_temp_diff >= self.main_fan_high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
                 fan_speed = "high"
                 _LOGGER.info("Main fan -> HIGH: Aggressive cooling (avg: +%.1f°C)", avg_temp_diff)
-            elif avg_temp_diff <= -0.5 or (avg_temp_diff < self.main_fan_medium_threshold and max_temp_diff < 2.0):
+            elif avg_temp_diff <= -0.5:
+                # Only set LOW when well below target (overcooled)
                 fan_speed = "low"
-                _LOGGER.info("Main fan -> LOW: At/below target in cool mode")
+                _LOGGER.info("Main fan -> LOW: Well below target in cool mode (avg: %.1f°C)", avg_temp_diff)
             else:
+                # Default to MEDIUM for moderate cooling needs
                 fan_speed = "medium"
         elif self.hvac_mode == "heat":
             if avg_temp_diff <= -self.main_fan_high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
                 fan_speed = "high"
                 _LOGGER.info("Main fan -> HIGH: Aggressive heating (avg: %.1f°C)", avg_temp_diff)
-            elif avg_temp_diff >= 0.5 or (avg_temp_diff > -self.main_fan_medium_threshold and min_temp_diff > -2.0):
+            elif avg_temp_diff >= 0.5:
+                # Only set LOW when well above target (overheated)
                 fan_speed = "low"
-                _LOGGER.info("Main fan -> LOW: At/above target in heat mode")
+                _LOGGER.info("Main fan -> LOW: Well above target in heat mode (avg: %.1f°C)", avg_temp_diff)
             else:
+                # Default to MEDIUM for moderate heating needs
                 fan_speed = "medium"
         else:
             if avg_deviation >= 3.0 or temp_variance >= 3.0:
