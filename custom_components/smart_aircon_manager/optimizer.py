@@ -770,9 +770,10 @@ class AirconOptimizer:
                     "hvac_action": climate_state.attributes.get("hvac_action"),
                 }
                 hvac_action = climate_state.attributes.get("hvac_action")
-                hvac_mode = climate_state.attributes.get("hvac_mode")
+                # Check both hvac_mode attribute and state (some entities use state as hvac_mode)
+                hvac_mode = climate_state.attributes.get("hvac_mode") or climate_state.state
                 main_ac_running = (
-                    hvac_action in ["cooling", "heating"]
+                    hvac_action in ["cooling", "heating", "drying", "fan"]  # Include more actions
                     or (hvac_mode and hvac_mode not in ["off", "unavailable"])
                 )
 
