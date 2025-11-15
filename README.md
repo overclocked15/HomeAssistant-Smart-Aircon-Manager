@@ -20,7 +20,7 @@ A Home Assistant integration that uses **intelligent logic-based algorithms** to
 - **Flexible Configuration**: Easy UI-based setup through Home Assistant config flow with options to reconfigure
 
 ### Advanced Features
-- **Manual Override** *(NEW in v2.4.6)*: Toggle switch to disable automatic optimization for manual control while preserving learning
+- **Manual Override** *(NEW in v2.4.7)*: Toggle switch to disable automatic optimization for manual control while preserving learning
 - **Room Overrides**: Disable control for specific rooms while keeping others active
 - **Heating/Cooling Modes**: Support for both heating and cooling with mode-aware optimizations
 - **HVAC Mode Auto-Detection**: Can automatically detect heating/cooling from main climate entity
@@ -254,7 +254,7 @@ After setup, a climate entity will be created: `climate.smart_aircon_manager`
   - `Cool`: Manual cooling mode
   - `Off`: Management disabled
 
-### Manual Override *(NEW in v2.4.6)*
+### Manual Override *(NEW in v2.4.7)*
 
 The integration includes a **Manual Override** switch that allows you to temporarily disable automatic optimization while retaining full manual control:
 
