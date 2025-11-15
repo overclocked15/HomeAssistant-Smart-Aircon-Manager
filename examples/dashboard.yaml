@@ -1,0 +1,456 @@
+###############################################################################
+# Smart Aircon Manager - Example Dashboard
+###############################################################################
+# This is a comprehensive Lovelace dashboard example for the Smart Aircon Manager
+# integration. Copy sections that are relevant to your setup.
+#
+# BEFORE USING:
+# 1. Replace 'YOUR_CONFIG_ENTRY_ID' with your actual config entry ID
+#    (Find it in: Settings > Devices & Services > Smart Aircon Manager > 3 dots > Download Diagnostics)
+# 2. Replace room names (bedroom, living_room, etc.) with your actual room names
+# 3. Remove sections for features you haven't enabled (humidity, occupancy, weather, etc.)
+# 4. Adjust card layouts to match your Home Assistant theme
+#
+# Card types used: entities, button, gauge, horizontal-stack, vertical-stack, conditional
+# You may need custom cards like: mini-graph-card, mushroom-cards for enhanced visuals
+###############################################################################
+
+type: vertical-stack
+cards:
+  ###############################################################################
+  # MANUAL OVERRIDE - Quick Control
+  ###############################################################################
+  - type: entities
+    title: Quick Controls
+    state_color: true
+    entities:
+      - entity: switch.smart_aircon_manager_manual_override
+        name: Manual Override Mode
+        secondary_info: last-changed
+        icon: mdi:account-wrench
+        tap_action:
+          action: toggle
+      - type: divider
+      - entity: button.smart_aircon_manager_force_optimize
+        name: Force Optimization Now
+        icon: mdi:refresh
+
+  ###############################################################################
+  # SYSTEM STATUS - At a Glance
+  ###############################################################################
+  - type: horizontal-stack
+    cards:
+      - type: gauge
+        entity: sensor.smart_aircon_manager_house_average_temperature
+        name: House Average
+        min: 18
+        max: 28
+        needle: true
+        severity:
+          green: 20
+          yellow: 18
+          red: 16
+
+      - type: entity
+        entity: sensor.smart_aircon_manager_effective_target_temperature
+        name: Target Temperature
+        icon: mdi:target
+
+      - type: entity
+        entity: sensor.smart_aircon_manager_hvac_mode_recommendation
+        name: HVAC Mode
+        icon: mdi:air-conditioner
+
+  ###############################################################################
+  # MAIN AC CONTROL
+  ###############################################################################
+  - type: entities
+    title: Main Air Conditioner
+    state_color: true
+    entities:
+      - entity: climate.YOUR_MAIN_CLIMATE_ENTITY
+        name: Main AC Unit
+      - type: divider
+      - entity: sensor.smart_aircon_manager_main_fan_speed
+        name: Current Fan Speed
+        icon: mdi:fan
+      - entity: sensor.smart_aircon_manager_main_fan_speed_recommendation
+        name: Recommended Fan Speed
+        icon: mdi:fan-alert
+      - entity: sensor.smart_aircon_manager_ac_temperature_recommendation
+        name: Recommended AC Temperature
+        icon: mdi:thermometer-auto
+
+  ###############################################################################
+  # ROOM TEMPERATURES - Overview
+  ###############################################################################
+  - type: entities
+    title: Room Temperatures
+    state_color: true
+    show_header_toggle: false
+    entities:
+      # Living Room
+      - type: custom:fold-entity-row
+        head:
+          entity: sensor.YOUR_LIVING_ROOM_TEMP_SENSOR
+          name: Living Room
+          secondary_info: last-changed
+        entities:
+          - entity: sensor.smart_aircon_manager_living_room_temperature_difference
+            name: Difference from Target
+            icon: mdi:thermometer-lines
+          - entity: sensor.smart_aircon_manager_living_room_fan_recommendation
+            name: Fan Recommendation
+            icon: mdi:fan
+          - entity: fan.YOUR_LIVING_ROOM_FAN
+            name: Fan Control
+          - entity: sensor.smart_aircon_manager_living_room_fan_speed
+            name: Current Fan Speed
+
+      # Bedroom
+      - type: custom:fold-entity-row
+        head:
+          entity: sensor.YOUR_BEDROOM_TEMP_SENSOR
+          name: Bedroom
+          secondary_info: last-changed
+        entities:
+          - entity: sensor.smart_aircon_manager_bedroom_temperature_difference
+            name: Difference from Target
+            icon: mdi:thermometer-lines
+          - entity: sensor.smart_aircon_manager_bedroom_fan_recommendation
+            name: Fan Recommendation
+            icon: mdi:fan
+          - entity: fan.YOUR_BEDROOM_FAN
+            name: Fan Control
+          - entity: sensor.smart_aircon_manager_bedroom_fan_speed
+            name: Current Fan Speed
+
+      # Kitchen
+      - type: custom:fold-entity-row
+        head:
+          entity: sensor.YOUR_KITCHEN_TEMP_SENSOR
+          name: Kitchen
+          secondary_info: last-changed
+        entities:
+          - entity: sensor.smart_aircon_manager_kitchen_temperature_difference
+            name: Difference from Target
+            icon: mdi:thermometer-lines
+          - entity: sensor.smart_aircon_manager_kitchen_fan_recommendation
+            name: Fan Recommendation
+            icon: mdi:fan
+          - entity: fan.YOUR_KITCHEN_FAN
+            name: Fan Control
+          - entity: sensor.smart_aircon_manager_kitchen_fan_speed
+            name: Current Fan Speed
+
+      # Add more rooms as needed...
+
+  ###############################################################################
+  # HUMIDITY CONTROL (if enabled)
+  ###############################################################################
+  - type: conditional
+    conditions:
+      - entity: sensor.smart_aircon_manager_house_average_humidity
+        state_not: unavailable
+    card:
+      type: entities
+      title: Humidity Control
+      state_color: true
+      entities:
+        - entity: sensor.smart_aircon_manager_house_average_humidity
+          name: House Average Humidity
+          icon: mdi:water-percent
+        - entity: binary_sensor.smart_aircon_manager_dry_mode_active
+          name: Dry Mode Active
+          icon: mdi:water-off
+        - entity: sensor.smart_aircon_manager_comfort_index
+          name: Comfort Index (Feels Like)
+          icon: mdi:temperature-celsius
+        - type: divider
+        - type: attribute
+          entity: sensor.smart_aircon_manager_house_average_humidity
+          attribute: target_humidity
+          name: Target Humidity
+        - type: attribute
+          entity: sensor.smart_aircon_manager_house_average_humidity
+          attribute: humidity_deadband
+          name: Humidity Deadband
+
+  ###############################################################################
+  # ROOM BALANCING
+  ###############################################################################
+  - type: entities
+    title: Room Balancing
+    state_color: true
+    entities:
+      - entity: sensor.smart_aircon_manager_room_temperature_variance
+        name: Temperature Variance
+        icon: mdi:chart-bell-curve
+      - entity: binary_sensor.smart_aircon_manager_balancing_active
+        name: Balancing Active
+        icon: mdi:scale-balance
+      - type: divider
+      - type: attribute
+        entity: sensor.smart_aircon_manager_room_temperature_variance
+        attribute: target_variance
+        name: Target Variance
+      - type: attribute
+        entity: binary_sensor.smart_aircon_manager_balancing_active
+        attribute: balancing_aggressiveness
+        name: Aggressiveness
+
+  ###############################################################################
+  # OCCUPANCY STATUS (if enabled)
+  ###############################################################################
+  - type: conditional
+    conditions:
+      - entity: binary_sensor.YOUR_LIVING_ROOM_OCCUPANCY
+        state_not: unavailable
+    card:
+      type: entities
+      title: Occupancy-Based Control
+      state_color: true
+      show_header_toggle: false
+      entities:
+        - entity: binary_sensor.YOUR_LIVING_ROOM_OCCUPANCY
+          name: Living Room
+          icon: mdi:motion-sensor
+        - entity: binary_sensor.YOUR_BEDROOM_OCCUPANCY
+          name: Bedroom
+          icon: mdi:motion-sensor
+        - entity: binary_sensor.YOUR_KITCHEN_OCCUPANCY
+          name: Kitchen
+          icon: mdi:motion-sensor
+        # Add more occupancy sensors as configured...
+
+  ###############################################################################
+  # WEATHER ADJUSTMENT (if enabled)
+  ###############################################################################
+  - type: conditional
+    conditions:
+      - entity: sensor.smart_aircon_manager_outdoor_temperature
+        state_not: unavailable
+    card:
+      type: entities
+      title: Weather Adjustment
+      state_color: true
+      entities:
+        - entity: sensor.smart_aircon_manager_outdoor_temperature
+          name: Outdoor Temperature
+          icon: mdi:weather-partly-cloudy
+        - entity: sensor.smart_aircon_manager_weather_adjustment
+          name: Target Adjustment
+          icon: mdi:thermometer-chevron-up
+        - type: divider
+        - type: attribute
+          entity: sensor.smart_aircon_manager_weather_adjustment
+          attribute: weather_influence_factor
+          name: Influence Factor
+
+  ###############################################################################
+  # SCHEDULING
+  ###############################################################################
+  - type: conditional
+    conditions:
+      - entity: sensor.smart_aircon_manager_active_schedule
+        state_not: "No active schedule"
+    card:
+      type: entities
+      title: Active Schedule
+      state_color: true
+      entities:
+        - entity: sensor.smart_aircon_manager_active_schedule
+          name: Current Schedule
+          icon: mdi:calendar-clock
+        - type: attribute
+          entity: sensor.smart_aircon_manager_active_schedule
+          attribute: schedule_target_temp
+          name: Schedule Target Temperature
+        - type: attribute
+          entity: sensor.smart_aircon_manager_active_schedule
+          attribute: schedule_days
+          name: Active Days
+
+  ###############################################################################
+  # ADAPTIVE LEARNING
+  ###############################################################################
+  - type: entities
+    title: Adaptive Learning
+    state_color: true
+    show_header_toggle: false
+    entities:
+      # Living Room Learning
+      - type: custom:fold-entity-row
+        head:
+          type: section
+          label: Living Room Learning
+        entities:
+          - entity: sensor.smart_aircon_manager_living_room_learning_confidence
+            name: Confidence
+            icon: mdi:brain
+          - entity: sensor.smart_aircon_manager_living_room_data_points
+            name: Data Points Collected
+            icon: mdi:database
+          - entity: sensor.smart_aircon_manager_living_room_thermal_mass
+            name: Thermal Mass
+            icon: mdi:warehouse
+          - entity: sensor.smart_aircon_manager_living_room_cooling_efficiency
+            name: Cooling Efficiency
+            icon: mdi:speedometer
+          - entity: sensor.smart_aircon_manager_living_room_overshoot_rate
+            name: Overshoot Rate
+            icon: mdi:chart-line
+
+      # Bedroom Learning
+      - type: custom:fold-entity-row
+        head:
+          type: section
+          label: Bedroom Learning
+        entities:
+          - entity: sensor.smart_aircon_manager_bedroom_learning_confidence
+            name: Confidence
+            icon: mdi:brain
+          - entity: sensor.smart_aircon_manager_bedroom_data_points
+            name: Data Points Collected
+            icon: mdi:database
+          - entity: sensor.smart_aircon_manager_bedroom_thermal_mass
+            name: Thermal Mass
+            icon: mdi:warehouse
+          - entity: sensor.smart_aircon_manager_bedroom_cooling_efficiency
+            name: Cooling Efficiency
+            icon: mdi:speedometer
+          - entity: sensor.smart_aircon_manager_bedroom_overshoot_rate
+            name: Overshoot Rate
+            icon: mdi:chart-line
+
+      # Add more rooms as needed...
+
+  ###############################################################################
+  # SYSTEM DIAGNOSTICS
+  ###############################################################################
+  - type: entities
+    title: System Diagnostics
+    state_color: true
+    show_header_toggle: false
+    entities:
+      - entity: sensor.smart_aircon_manager_optimization_status
+        name: Optimization Status
+        icon: mdi:state-machine
+      - entity: sensor.smart_aircon_manager_last_optimization_time
+        name: Last Optimization
+        icon: mdi:clock-outline
+      - entity: sensor.smart_aircon_manager_next_optimization_time
+        name: Next Optimization
+        icon: mdi:clock-alert-outline
+      - entity: sensor.smart_aircon_manager_optimization_cycle_time
+        name: Cycle Time
+        icon: mdi:timer-outline
+      - type: divider
+      - entity: sensor.smart_aircon_manager_total_optimizations_run
+        name: Total Optimizations
+        icon: mdi:counter
+      - entity: sensor.smart_aircon_manager_error_tracking
+        name: Error Count
+        icon: mdi:alert-circle
+      - entity: sensor.smart_aircon_manager_error_rate
+        name: Error Rate
+        icon: mdi:percent
+      - entity: sensor.smart_aircon_manager_valid_sensors_count
+        name: Valid Sensors
+        icon: mdi:check-circle
+      - entity: sensor.smart_aircon_manager_sensor_data_quality
+        name: Data Quality
+        icon: mdi:quality-high
+
+  ###############################################################################
+  # ADVANCED DEBUG (Collapsible)
+  ###############################################################################
+  - type: custom:fold-entity-row
+    head:
+      type: section
+      label: Advanced Debug Information
+    entities:
+      - entity: sensor.smart_aircon_manager_system_status_debug
+        name: System Status JSON
+      - entity: sensor.smart_aircon_manager_last_response
+        name: Last Optimization Response
+      - entity: sensor.smart_aircon_manager_last_actual_optimization
+        name: Last Actual Optimization Details
+
+###############################################################################
+# ALTERNATIVE LAYOUT: Compact Grid View (using custom:layout-card)
+###############################################################################
+# Uncomment and customize this section if you prefer a more compact grid layout
+# Requires: https://github.com/thomasloven/lovelace-layout-card
+
+# type: custom:layout-card
+# layout_type: grid
+# layout:
+#   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr))
+#   grid-gap: 10px
+# cards:
+#   - type: entities
+#     title: Quick Controls
+#     # ... (same as above)
+#
+#   - type: gauge
+#     # ... (same as above)
+#
+#   # ... (add other cards in grid format)
+
+###############################################################################
+# ALTERNATIVE: Mobile-Optimized Compact Dashboard
+###############################################################################
+# For mobile devices, consider using mushroom cards for a cleaner look:
+# Requires: https://github.com/piitaya/lovelace-mushroom
+
+# type: vertical-stack
+# cards:
+#   - type: custom:mushroom-entity-card
+#     entity: switch.smart_aircon_manager_manual_override
+#     name: Manual Override
+#     icon: mdi:account-wrench
+#     tap_action:
+#       action: toggle
+#
+#   - type: custom:mushroom-chips-card
+#     chips:
+#       - type: template
+#         entity: sensor.smart_aircon_manager_house_average_temperature
+#         content: '{{ states(entity) }}°C'
+#         icon: mdi:home-thermometer
+#       - type: template
+#         entity: sensor.smart_aircon_manager_hvac_mode_recommendation
+#         content: '{{ states(entity) }}'
+#         icon: mdi:air-conditioner
+#
+#   # ... (add more mushroom cards)
+
+###############################################################################
+# SERVICES - Quick Actions
+###############################################################################
+# You can also add script buttons to call services:
+#
+# - type: button
+#   name: Reset Learning Data
+#   tap_action:
+#     action: call-service
+#     service: smart_aircon_manager.reset_learning
+#     service_data:
+#       config_entry_id: YOUR_CONFIG_ENTRY_ID
+#
+# - type: button
+#   name: Analyze Learning Now
+#   tap_action:
+#     action: call-service
+#     service: smart_aircon_manager.analyze_learning
+#     service_data:
+#       config_entry_id: YOUR_CONFIG_ENTRY_ID
+#
+# - type: button
+#   name: Reset Fan Smoothing
+#   tap_action:
+#     action: call-service
+#     service: smart_aircon_manager.reset_smoothing
+#     service_data:
+#       config_entry_id: YOUR_CONFIG_ENTRY_ID

@@ -20,6 +20,7 @@ A Home Assistant integration that uses **intelligent logic-based algorithms** to
 - **Flexible Configuration**: Easy UI-based setup through Home Assistant config flow with options to reconfigure
 
 ### Advanced Features
+- **Manual Override** *(NEW in v2.4.6)*: Toggle switch to disable automatic optimization for manual control while preserving learning
 - **Room Overrides**: Disable control for specific rooms while keeping others active
 - **Heating/Cooling Modes**: Support for both heating and cooling with mode-aware optimizations
 - **HVAC Mode Auto-Detection**: Can automatically detect heating/cooling from main climate entity
@@ -252,6 +253,38 @@ After setup, a climate entity will be created: `climate.smart_aircon_manager`
   - `Auto`: Management enabled (recommended)
   - `Cool`: Manual cooling mode
   - `Off`: Management disabled
+
+### Manual Override *(NEW in v2.4.6)*
+
+The integration includes a **Manual Override** switch that allows you to temporarily disable automatic optimization while retaining full manual control:
+
+- **Entity**: `switch.smart_aircon_manager_manual_override`
+- **When Enabled**: Automatic optimization is disabled, allowing you to manually control AC and fans
+- **When Disabled**: Normal automatic operation resumes
+- **Use Cases**:
+  - Guest visits requiring custom comfort settings
+  - Maintenance or testing
+  - Temporary preference changes
+  - Movie nights or special events
+
+The system continues to collect learning data even when manual override is active.
+
+### Dashboard Examples
+
+See the [`examples/`](examples/) directory for ready-to-use Lovelace dashboard configurations:
+
+- **[`dashboard.yaml`](examples/dashboard.yaml)** - Comprehensive dashboard with all features
+- **[`dashboard-minimal.yaml`](examples/dashboard-minimal.yaml)** - Clean, simple essentials-only dashboard
+- **[`README.md`](examples/README.md)** - Complete setup guide and customization instructions
+
+Features included in example dashboards:
+- Manual override toggle
+- Real-time temperature monitoring
+- HVAC mode and fan speed controls
+- Humidity and comfort metrics
+- Learning statistics
+- System diagnostics
+- Service call buttons
 
 ### Diagnostic Sensors
 

@@ -1,0 +1,77 @@
+###############################################################################
+# Smart Aircon Manager - Minimal Dashboard
+###############################################################################
+# A simple, clean dashboard with just the essentials.
+#
+# BEFORE USING:
+# Replace entity names with your actual entities:
+# - YOUR_MAIN_CLIMATE_ENTITY
+# - YOUR_LIVING_ROOM_TEMP_SENSOR
+# - YOUR_BEDROOM_TEMP_SENSOR
+# - YOUR_LIVING_ROOM_FAN
+# - YOUR_BEDROOM_FAN
+###############################################################################
+
+type: vertical-stack
+cards:
+  # Manual Override Toggle
+  - type: entities
+    title: Smart Aircon Manager
+    entities:
+      - entity: switch.smart_aircon_manager_manual_override
+        name: Manual Override
+        icon: mdi:account-wrench
+
+  # Current Status
+  - type: horizontal-stack
+    cards:
+      - type: entity
+        entity: sensor.smart_aircon_manager_house_average_temperature
+        name: Average
+        icon: mdi:thermometer
+
+      - type: entity
+        entity: sensor.smart_aircon_manager_effective_target_temperature
+        name: Target
+        icon: mdi:target
+
+      - type: entity
+        entity: sensor.smart_aircon_manager_hvac_mode_recommendation
+        name: Mode
+        icon: mdi:air-conditioner
+
+  # Main Climate Control
+  - type: thermostat
+    entity: climate.YOUR_MAIN_CLIMATE_ENTITY
+    name: Main AC
+
+  # Room Temperatures
+  - type: entities
+    title: Rooms
+    entities:
+      - entity: sensor.YOUR_LIVING_ROOM_TEMP_SENSOR
+        name: Living Room
+        secondary_info: last-changed
+
+      - entity: sensor.YOUR_BEDROOM_TEMP_SENSOR
+        name: Bedroom
+        secondary_info: last-changed
+
+  # Room Fans
+  - type: entities
+    title: Fans
+    entities:
+      - entity: fan.YOUR_LIVING_ROOM_FAN
+        name: Living Room Fan
+
+      - entity: fan.YOUR_BEDROOM_FAN
+        name: Bedroom Fan
+
+  # Quick Status
+  - type: entities
+    title: Status
+    entities:
+      - entity: sensor.smart_aircon_manager_optimization_status
+        name: Status
+      - entity: sensor.smart_aircon_manager_last_optimization_time
+        name: Last Run

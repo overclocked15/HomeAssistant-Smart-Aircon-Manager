@@ -715,6 +715,20 @@ class AirconOptimizer:
 
     async def _async_optimize_impl(self) -> dict[str, Any]:
         """Implementation of optimization cycle."""
+        # Check for manual override - skip optimization if enabled
+        if getattr(self, 'manual_override_enabled', False):
+            _LOGGER.debug("Manual override active - skipping optimization cycle")
+            return {
+                "room_states": {},
+                "recommendations": {},
+                "optimization_response_text": "Manual override active - automatic optimization disabled",
+                "main_climate_state": None,
+                "main_fan_speed": None,
+                "main_ac_running": False,
+                "needs_ac": False,
+                "manual_override": True,
+            }
+
         # Start performance tracking
         import time
         cycle_start = time.time()

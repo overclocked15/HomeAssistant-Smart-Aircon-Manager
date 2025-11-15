@@ -45,7 +45,7 @@ from .critical_monitor import CriticalRoomMonitor
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SWITCH]
 
 
 def get_device_info(config_entry: ConfigEntry) -> dict:
