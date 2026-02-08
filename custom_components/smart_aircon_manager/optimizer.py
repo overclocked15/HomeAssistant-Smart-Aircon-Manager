@@ -376,7 +376,7 @@ class AirconOptimizer:
         This prevents memory leaks when rooms are removed during reconfiguration.
         """
         # Get current room names from config
-        current_rooms = {config["name"] for config in self.room_configs}
+        current_rooms = {config["room_name"] for config in self.room_configs}
 
         # Clean up caches
         caches_to_clean = [
@@ -388,17 +388,18 @@ class AirconOptimizer:
         ]
 
         total_removed = 0
+        stale_rooms = set()
         for cache_name, cache_dict in caches_to_clean:
             rooms_to_remove = [room for room in cache_dict.keys() if room not in current_rooms]
             for room in rooms_to_remove:
                 del cache_dict[room]
                 total_removed += 1
+                stale_rooms.add(room)
                 _LOGGER.debug("Cleaned up %s entry for deleted room: %s", cache_name, room)
 
         if total_removed > 0:
-            _LOGGER.info("Cleaned up %d cache entries for %d deleted rooms",
-                        total_removed, len(set(room for cache_name, cache_dict in caches_to_clean
-                                               for room in cache_dict.keys() if room not in current_rooms)))
+            _LOGGER.info("Cleaned up %d cache entries for %d deleted rooms: %s",
+                        total_removed, len(stale_rooms), ", ".join(stale_rooms))
 
     async def _load_compressor_state(self) -> None:
         """Load persisted compressor protection timestamps from storage."""

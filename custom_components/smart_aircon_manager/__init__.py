@@ -46,6 +46,17 @@ from .const import (
     DEFAULT_PREDICTIVE_LOOKAHEAD_MINUTES,
     DEFAULT_PREDICTIVE_BOOST_FACTOR,
     DEFAULT_NOTIFY_SERVICES,
+    DEFAULT_ENABLE_ADAPTIVE_BANDS,
+    DEFAULT_ENABLE_ADAPTIVE_EFFICIENCY,
+    DEFAULT_ENABLE_ADAPTIVE_PREDICTIVE,
+    DEFAULT_ENABLE_ADAPTIVE_AC_SETPOINT,
+    DEFAULT_ENABLE_ADAPTIVE_BALANCING,
+    DEFAULT_ENABLE_ROOM_COUPLING_DETECTION,
+    DEFAULT_ENABLE_ENHANCED_COMPRESSOR_PROTECTION,
+    DEFAULT_COMPRESSOR_UNDERCOOL_MARGIN,
+    DEFAULT_COMPRESSOR_OVERHEAT_MARGIN,
+    DEFAULT_MIN_MODE_DURATION,
+    DEFAULT_MIN_COMPRESSOR_RUN_CYCLES,
 )
 from .optimizer import AirconOptimizer
 from .critical_monitor import CriticalRoomMonitor
@@ -113,7 +124,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     optimizer = AirconOptimizer(
         hass=hass,
         target_temperature=entry.data.get("target_temperature", 22),
-        room_configs=entry.data.get("room_configs", {}),
+        room_configs=entry.data.get("room_configs", []),
         main_climate_entity=entry.data.get("main_climate_entity"),
         main_fan_entity=entry.data.get("main_fan_entity"),
         temperature_deadband=entry.data.get("temperature_deadband", DEFAULT_TEMPERATURE_DEADBAND),
@@ -157,6 +168,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         predictive_lookahead_minutes=entry.data.get("predictive_lookahead_minutes", DEFAULT_PREDICTIVE_LOOKAHEAD_MINUTES),
         predictive_boost_factor=entry.data.get("predictive_boost_factor", DEFAULT_PREDICTIVE_BOOST_FACTOR),
         notify_services=entry.data.get("notify_services", DEFAULT_NOTIFY_SERVICES),
+        enable_adaptive_bands=entry.data.get("enable_adaptive_bands", DEFAULT_ENABLE_ADAPTIVE_BANDS),
+        enable_adaptive_efficiency=entry.data.get("enable_adaptive_efficiency", DEFAULT_ENABLE_ADAPTIVE_EFFICIENCY),
+        enable_adaptive_predictive=entry.data.get("enable_adaptive_predictive", DEFAULT_ENABLE_ADAPTIVE_PREDICTIVE),
+        enable_adaptive_ac_setpoint=entry.data.get("enable_adaptive_ac_setpoint", DEFAULT_ENABLE_ADAPTIVE_AC_SETPOINT),
+        enable_adaptive_balancing=entry.data.get("enable_adaptive_balancing", DEFAULT_ENABLE_ADAPTIVE_BALANCING),
+        enable_room_coupling_detection=entry.data.get("enable_room_coupling_detection", DEFAULT_ENABLE_ROOM_COUPLING_DETECTION),
+        enable_enhanced_compressor_protection=entry.data.get("enable_enhanced_compressor_protection", DEFAULT_ENABLE_ENHANCED_COMPRESSOR_PROTECTION),
+        compressor_undercool_margin=entry.data.get("compressor_undercool_margin", DEFAULT_COMPRESSOR_UNDERCOOL_MARGIN),
+        compressor_overheat_margin=entry.data.get("compressor_overheat_margin", DEFAULT_COMPRESSOR_OVERHEAT_MARGIN),
+        min_mode_duration=entry.data.get("min_mode_duration", DEFAULT_MIN_MODE_DURATION),
+        min_compressor_run_cycles=entry.data.get("min_compressor_run_cycles", DEFAULT_MIN_COMPRESSOR_RUN_CYCLES),
     )
 
     # Get update interval from config
@@ -498,6 +520,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.services.async_remove(DOMAIN, "reset_learning")
             hass.services.async_remove(DOMAIN, "enable_learning")
             hass.services.async_remove(DOMAIN, "disable_learning")
+            hass.services.async_remove(DOMAIN, "vacation_mode")
+            hass.services.async_remove(DOMAIN, "boost_mode")
+            hass.services.async_remove(DOMAIN, "sleep_mode")
+            hass.services.async_remove(DOMAIN, "party_mode")
             _LOGGER.debug("Unregistered all services")
 
     return unload_ok

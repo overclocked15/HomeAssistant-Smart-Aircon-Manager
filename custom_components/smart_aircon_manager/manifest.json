@@ -8,7 +8,7 @@
   "integration_type": "hub",
   "iot_class": "local_polling",
   "requirements": [],
-  "version": "2.8.1",
+  "version": "2.8.2",
   "issue_tracker": "https://github.com/overclocked15/HomeAssistant-Smart-Aircon-Manager/issues",
   "icon": "mdi:air-conditioner"
 }

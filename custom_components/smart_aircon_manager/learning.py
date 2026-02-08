@@ -328,7 +328,8 @@ class PerformanceTracker:
         mean_y = statistics.mean(y)
 
         # Calculate covariance and standard deviations
-        covariance = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n)) / n
+        # Use n-1 divisor consistently (sample statistics) to match statistics.stdev
+        covariance = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n)) / (n - 1)
 
         std_x = statistics.stdev(x) if len(x) > 1 else 0
         std_y = statistics.stdev(y) if len(y) > 1 else 0
@@ -530,6 +531,11 @@ class LearningProfile:
             "optimal_smoothing_threshold": self.optimal_smoothing_threshold,
             "avg_convergence_time_seconds": self.avg_convergence_time_seconds,
             "overshoot_rate_per_day": self.overshoot_rate_per_day,
+            "balancing_bias": self.balancing_bias,
+            "relative_heat_gain_rate": self.relative_heat_gain_rate,
+            "relative_cool_rate": self.relative_cool_rate,
+            "coupled_rooms": self.coupled_rooms,
+            "coupling_factors": self.coupling_factors,
         }
 
     @classmethod
@@ -544,6 +550,11 @@ class LearningProfile:
         profile.optimal_smoothing_threshold = data.get("optimal_smoothing_threshold", 10)
         profile.avg_convergence_time_seconds = data.get("avg_convergence_time_seconds")
         profile.overshoot_rate_per_day = data.get("overshoot_rate_per_day")
+        profile.balancing_bias = data.get("balancing_bias", 0.0)
+        profile.relative_heat_gain_rate = data.get("relative_heat_gain_rate", 1.0)
+        profile.relative_cool_rate = data.get("relative_cool_rate", 1.0)
+        profile.coupled_rooms = data.get("coupled_rooms", [])
+        profile.coupling_factors = data.get("coupling_factors", {})
         return profile
 
 

@@ -539,7 +539,7 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
         self._attr_unique_id = f"{config_entry.entry_id}_main_fan_recommendation_debug"
-        self._attr_name = "Main Fan Speed Fan Speed Recommendation"
+        self._attr_name = "Main Fan Speed Recommendation"
         self._attr_icon = "mdi:fan-alert"
 
     @property
@@ -1900,8 +1900,12 @@ class HVACModeRecommendationSensor(AirconManagerSensorBase):
 
     @property
     def native_value(self) -> str:
-        """Return the recommended HVAC mode."""
-        # Get optimizer from hass data
+        """Return the recommended HVAC mode.
+
+        Reads the cached result from the optimizer's last optimization cycle
+        instead of calling _determine_optimal_hvac_mode() directly, which has
+        side effects (updates mode tracking, compressor protection state, etc.).
+        """
         from .const import DOMAIN
         entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
         optimizer = entry_data.get("optimizer")
@@ -1909,12 +1913,13 @@ class HVACModeRecommendationSensor(AirconManagerSensorBase):
         if not optimizer or not self.coordinator.data:
             return "unknown"
 
-        room_states = self.coordinator.data.get("room_states", {})
-        effective_target = self.coordinator.data.get("effective_target_temperature", optimizer.target_temperature)
+        # Use the cached mode from the last optimization cycle
+        last_mode = getattr(optimizer, '_last_hvac_mode', None)
+        if last_mode is not None:
+            return last_mode
 
-        # Use the optimizer's method to determine optimal mode
-        optimal_mode = optimizer._determine_optimal_hvac_mode(room_states, effective_target)
-        return optimal_mode
+        # Fallback before first optimization cycle completes
+        return optimizer.hvac_mode if optimizer.hvac_mode != "auto" else "cool"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
