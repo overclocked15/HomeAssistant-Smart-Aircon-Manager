@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from homeassistant.util import dt as dt_util
 from typing import Any
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.components.climate.const import HVACMode
@@ -89,7 +91,6 @@ class CriticalRoomMonitor:
             self._remove_timer = None
         _LOGGER.debug("Critical room monitor stopped")
 
-    @callback
     async def _async_monitor_critical_rooms(self, now=None) -> None:
         """Monitor critical rooms and take action if needed."""
         critical_rooms = self._config_data.get(CONF_CRITICAL_ROOMS, {})
@@ -138,7 +139,7 @@ class CriticalRoomMonitor:
             room_state = self._room_states.get(room_name, {})
             old_status = room_state.get("status", CRITICAL_STATUS_NORMAL)
             room_state["temperature"] = current_temp
-            room_state["last_check"] = datetime.now()
+            room_state["last_check"] = dt_util.now()
 
             # Determine current status
             new_status = self._determine_status(
@@ -244,7 +245,7 @@ class CriticalRoomMonitor:
 
         if message and title:
             await self._send_notifications(notify_services, title, message)
-            self._room_states[room_name]["last_notification"] = datetime.now()
+            self._room_states[room_name]["last_notification"] = dt_util.now()
 
     async def _send_notifications(
         self, notify_services: list[str], title: str, message: str
@@ -300,7 +301,7 @@ class CriticalRoomMonitor:
 
         # Check cooldown to prevent rapid on/off cycling
         if self._last_ac_trigger:
-            time_since_trigger = datetime.now() - self._last_ac_trigger
+            time_since_trigger = dt_util.now() - self._last_ac_trigger
             if time_since_trigger < self._ac_trigger_cooldown:
                 _LOGGER.debug(
                     "AC trigger on cooldown (%.1f seconds remaining)",
@@ -337,7 +338,7 @@ class CriticalRoomMonitor:
                     },
                 )
 
-                self._last_ac_trigger = datetime.now()
+                self._last_ac_trigger = dt_util.now()
                 _LOGGER.info("AC turned on successfully for critical room %s", room_name)
 
             except Exception as e:

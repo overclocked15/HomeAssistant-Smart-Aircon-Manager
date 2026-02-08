@@ -42,7 +42,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Smart Aircon Manager sensor platform."""
-    _LOGGER.info(
+    _LOGGER.debug(
         "Setting up Smart Aircon Manager sensor platform for entry_id: %s",
         config_entry.entry_id
     )
@@ -50,20 +50,18 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
     optimizer = hass.data[DOMAIN][config_entry.entry_id]["optimizer"]
 
-    _LOGGER.info("Room configs: %s", optimizer.room_configs)
+    _LOGGER.debug("Room configs: %s", optimizer.room_configs)
 
     entities = []
 
     # Add room-specific diagnostic sensors
     for room_config in optimizer.room_configs:
         room_name = room_config["room_name"]
-        _LOGGER.info("Creating sensors for room: %s", room_name)
 
         # Temperature difference sensor
         try:
             sensor = RoomTemperatureDifferenceSensor(coordinator, config_entry, room_name, optimizer)
             entities.append(sensor)
-            _LOGGER.info("Created RoomTemperatureDifferenceSensor for %s", room_name)
         except Exception as e:
             _LOGGER.error("Failed to create RoomTemperatureDifferenceSensor for %s: %s", room_name, e, exc_info=True)
 
@@ -71,7 +69,6 @@ async def async_setup_entry(
         try:
             sensor = RoomFanRecommendationSensor(coordinator, config_entry, room_name)
             entities.append(sensor)
-            _LOGGER.info("Created RoomFanRecommendationSensor for %s", room_name)
         except Exception as e:
             _LOGGER.error("Failed to create RoomFanRecommendationSensor for %s: %s", room_name, e, exc_info=True)
 
@@ -79,7 +76,6 @@ async def async_setup_entry(
         try:
             sensor = RoomFanSpeedSensor(coordinator, config_entry, room_name)
             entities.append(sensor)
-            _LOGGER.info("Created RoomFanSpeedSensor for %s", room_name)
         except Exception as e:
             _LOGGER.error("Failed to create RoomFanSpeedSensor for %s: %s", room_name, e, exc_info=True)
 
@@ -114,7 +110,7 @@ async def async_setup_entry(
         optimizer.learning_manager.enabled if optimizer.learning_manager else "N/A"
     )
     if optimizer.learning_manager and optimizer.learning_manager.enabled:
-        _LOGGER.info("Creating learning sensors for %d rooms", len(optimizer.room_configs))
+        _LOGGER.debug("Creating learning sensors for %d rooms", len(optimizer.room_configs))
         for room_config in optimizer.room_configs:
             room_name = room_config["room_name"]
             entities.append(RoomThermalMassSensor(coordinator, config_entry, room_name, optimizer))
@@ -123,7 +119,7 @@ async def async_setup_entry(
             entities.append(RoomDataPointsSensor(coordinator, config_entry, room_name, optimizer))
             entities.append(RoomOvershootRateSensor(coordinator, config_entry, room_name, optimizer))
     else:
-        _LOGGER.info("Learning sensors NOT created - learning is not enabled")
+        _LOGGER.debug("Learning sensors NOT created - learning is not enabled")
 
     # Add main fan speed recommendation debug sensor if configured
     if optimizer.main_fan_entity:
@@ -165,18 +161,17 @@ async def async_setup_entry(
     from .const import CONF_CRITICAL_ROOMS
     critical_rooms = config_entry.data.get(CONF_CRITICAL_ROOMS, {})
     if critical_rooms:
-        _LOGGER.info("Creating critical room sensors for %d room(s)", len(critical_rooms))
+        _LOGGER.debug("Creating critical room sensors for %d room(s)", len(critical_rooms))
         for room_name in critical_rooms.keys():
             entities.append(CriticalRoomStatusSensor(coordinator, config_entry, room_name))
             entities.append(CriticalRoomMarginSensor(coordinator, config_entry, room_name))
     else:
         _LOGGER.debug("No critical rooms configured, skipping critical room sensors")
 
-    _LOGGER.info("Total entities to add: %d", len(entities))
-    _LOGGER.info("Entity unique_ids: %s", [e.unique_id for e in entities if hasattr(e, 'unique_id')])
+    _LOGGER.debug("Total entities to add: %d", len(entities))
 
     async_add_entities(entities)
-    _LOGGER.info("Entities added successfully")
+    _LOGGER.info("Smart Aircon Manager sensor platform setup complete (%d entities)", len(entities))
 
 
 class RoomTemperatureDifferenceSensor(AirconManagerSensorBase):

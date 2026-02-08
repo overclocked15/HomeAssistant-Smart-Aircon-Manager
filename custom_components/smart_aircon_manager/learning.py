@@ -125,8 +125,9 @@ class PerformanceTracker:
             if (prev_diff > 0 and curr_diff < -0.3) or (prev_diff < 0 and curr_diff > 0.3):
                 overshoot_count += 1
 
-        # Convert to overshoots per day
-        hours_observed = len(recent_points) * (recent_points[0]["cycle_duration"] / 3600)
+        # Convert to overshoots per day using actual total duration
+        total_duration_seconds = sum(p["cycle_duration"] for p in recent_points)
+        hours_observed = total_duration_seconds / 3600
         if hours_observed > 0:
             return (overshoot_count / hours_observed) * 24
         return 0.0
@@ -236,8 +237,10 @@ class PerformanceTracker:
         storage_file = self.storage_path / f"tracker_data_{self.config_entry_id}.json"
 
         try:
-            # Ensure directory exists
-            storage_file.parent.mkdir(parents=True, exist_ok=True)
+            # Ensure directory exists (non-blocking)
+            await self.hass.async_add_executor_job(
+                lambda: storage_file.parent.mkdir(parents=True, exist_ok=True)
+            )
 
             # Only save the most recent N data points per room to limit file size
             # Older data has diminishing value for learning calculations
@@ -249,8 +252,9 @@ class PerformanceTracker:
                 else:
                     pruned_data[room_name] = points
 
-            # Write to file
-            storage_file.write_text(json.dumps(pruned_data, indent=2))
+            # Write to file using executor to avoid blocking the event loop
+            data_str = json.dumps(pruned_data, indent=2)
+            await self.hass.async_add_executor_job(storage_file.write_text, data_str)
             total_points = sum(len(points) for points in pruned_data.values())
             _LOGGER.debug("Saved %d data points across %d rooms (pruned to recent data)", total_points, len(pruned_data))
         except Exception as e:
@@ -270,12 +274,14 @@ class PerformanceTracker:
         """
         storage_file = self.storage_path / f"tracker_data_{self.config_entry_id}.json"
 
-        if not storage_file.exists():
+        exists = await self.hass.async_add_executor_job(storage_file.exists)
+        if not exists:
             _LOGGER.debug("No existing tracker data found")
             return
 
         try:
-            self._data_points = json.loads(storage_file.read_text())
+            raw_data = await self.hass.async_add_executor_job(storage_file.read_text)
+            self._data_points = json.loads(raw_data)
             total_points = sum(len(points) for points in self._data_points.values())
             _LOGGER.info("Loaded %d data points across %d rooms", total_points, len(self._data_points))
         except Exception as e:
@@ -407,11 +413,13 @@ class LearningManager:
         # Load profiles
         storage_file = self.storage_path / f"learning_{self.config_entry_id}.json"
 
-        if not storage_file.exists():
+        exists = await self.hass.async_add_executor_job(storage_file.exists)
+        if not exists:
             _LOGGER.debug("No existing learning profiles found")
         else:
             try:
-                data = json.loads(storage_file.read_text())
+                raw_data = await self.hass.async_add_executor_job(storage_file.read_text)
+                data = json.loads(raw_data)
                 for room_name, profile_data in data.items():
                     self.profiles[room_name] = LearningProfile.from_dict(profile_data)
                 _LOGGER.info("Loaded %d learning profiles", len(self.profiles))
@@ -427,8 +435,10 @@ class LearningManager:
         storage_file = self.storage_path / f"learning_{self.config_entry_id}.json"
 
         try:
-            # Ensure directory exists
-            storage_file.parent.mkdir(parents=True, exist_ok=True)
+            # Ensure directory exists (non-blocking)
+            await self.hass.async_add_executor_job(
+                lambda: storage_file.parent.mkdir(parents=True, exist_ok=True)
+            )
 
             # Convert profiles to dict
             data = {
@@ -436,8 +446,9 @@ class LearningManager:
                 for room_name, profile in self.profiles.items()
             }
 
-            # Write to file
-            storage_file.write_text(json.dumps(data, indent=2))
+            # Write to file (non-blocking)
+            data_str = json.dumps(data, indent=2)
+            await self.hass.async_add_executor_job(storage_file.write_text, data_str)
             _LOGGER.debug("Saved %d learning profiles", len(self.profiles))
         except Exception as e:
             _LOGGER.error("Failed to save learning profiles: %s", e)

@@ -114,6 +114,11 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
             self._is_on = True
             self._attr_hvac_mode = hvac_mode
 
+            # Propagate HVAC mode to optimizer so control logic uses the new mode
+            mode_str = hvac_mode.value if hasattr(hvac_mode, 'value') else str(hvac_mode)
+            if mode_str in ("cool", "heat", "auto"):
+                self._optimizer.hvac_mode = mode_str
+
         self.async_write_ha_state()
 
         if self._is_on:

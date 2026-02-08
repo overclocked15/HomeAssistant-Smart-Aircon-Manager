@@ -215,11 +215,6 @@ class AirconOptimizer:
                 )
                 return None
 
-            # Additional check for clearly wrong readings
-            if abs(temp) < 0.01:
-                _LOGGER.warning("Temperature reading for %s suspiciously close to zero, ignoring", room_name)
-                return None
-
             return temp
         except (ValueError, TypeError) as e:
             _LOGGER.warning("Could not parse temperature for %s: %s", room_name, e)
@@ -350,14 +345,22 @@ class AirconOptimizer:
         return False
 
     def _get_active_schedule(self) -> dict[str, Any] | None:
-        """Get the currently active schedule based on time and day."""
+        """Get the currently active schedule based on time and day.
+
+        When multiple schedules match, the most specific day match wins:
+        - Specific day (e.g. "monday") beats "weekdays"/"weekends"
+        - "weekdays"/"weekends" beats "all"
+        """
         if not self.enable_scheduling or not self.schedules:
             return None
 
-        from datetime import datetime
-        now = datetime.now()
+        from homeassistant.util import dt as dt_util
+        now = dt_util.now()
         current_time = now.time()
         current_day = now.strftime("%A").lower()
+
+        best_schedule = None
+        best_priority = -1  # Higher = more specific
 
         for schedule in self.schedules:
             if not schedule.get("schedule_enabled", True):
@@ -367,16 +370,21 @@ class AirconOptimizer:
             if not schedule_days:
                 continue
 
-            # Check day match
+            # Check day match and assign specificity priority
             day_match = False
-            if "all" in schedule_days:
+            priority = 0
+            if current_day in schedule_days:
                 day_match = True
+                priority = 3  # Most specific: exact day name
             elif "weekdays" in schedule_days and current_day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
                 day_match = True
+                priority = 2  # Medium: weekdays group
             elif "weekends" in schedule_days and current_day in ["saturday", "sunday"]:
                 day_match = True
-            elif current_day in schedule_days:
+                priority = 2  # Medium: weekends group
+            elif "all" in schedule_days:
                 day_match = True
+                priority = 1  # Least specific: all days
 
             if not day_match:
                 continue
@@ -395,19 +403,28 @@ class AirconOptimizer:
                 start_t = dt_time(start_hour, start_min)
                 end_t = dt_time(end_hour, end_min)
 
+                time_match = False
                 if start_t <= end_t:
-                    if start_t <= current_time <= end_t:
-                        _LOGGER.info("Active schedule found: %s", schedule.get("schedule_name", "Unnamed"))
-                        return schedule
+                    time_match = start_t <= current_time <= end_t
                 else:
-                    if current_time >= start_t or current_time <= end_t:
-                        _LOGGER.info("Active schedule found: %s (crosses midnight)", schedule.get("schedule_name", "Unnamed"))
-                        return schedule
+                    # Crosses midnight
+                    time_match = current_time >= start_t or current_time <= end_t
+
+                if time_match and priority > best_priority:
+                    best_schedule = schedule
+                    best_priority = priority
             except (ValueError, AttributeError) as e:
                 _LOGGER.warning("Invalid schedule time format: %s", e)
                 continue
 
-        return None
+        if best_schedule:
+            _LOGGER.debug(
+                "Active schedule found: %s (priority: %d)",
+                best_schedule.get("schedule_name", "Unnamed"),
+                best_priority
+            )
+
+        return best_schedule
 
     def _determine_optimal_hvac_mode(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> str:
         """Determine optimal HVAC mode based on temperature and humidity conditions.
@@ -426,7 +443,7 @@ class AirconOptimizer:
             return self.hvac_mode if self.hvac_mode != "auto" else "cool"
 
         # Collect valid temperatures and humidities
-        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        temps = self._valid_temps(room_states)
         humidities = [s["current_humidity"] for s in room_states.values() if s["current_humidity"] is not None]
 
         if not temps:
@@ -691,6 +708,11 @@ class AirconOptimizer:
 
         return effective_target
 
+    @staticmethod
+    def _valid_temps(room_states: dict[str, dict[str, Any]]) -> list[float]:
+        """Extract valid (non-None) temperatures from room states."""
+        return [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+
     async def async_optimize(self) -> dict[str, Any]:
         """Run optimization cycle with error handling."""
         try:
@@ -846,7 +868,7 @@ class AirconOptimizer:
 
         if all_rooms_stable and self._last_recommendations:
             should_run_optimization = False
-            _LOGGER.info(
+            _LOGGER.debug(
                 "Skipping optimization - all rooms stable within deadband (±%.1f°C)",
                 self.temperature_deadband
             )
@@ -881,6 +903,7 @@ class AirconOptimizer:
                     self._last_error = None
                     self._error_count = 0
 
+                self._total_optimizations_run += 1
                 self._last_recommendations = recommendations
                 self._last_main_fan_speed = main_fan_speed
                 self._last_optimization = current_time
@@ -891,13 +914,12 @@ class AirconOptimizer:
                     time_until_next
                 )
         else:
-            _LOGGER.info("Main AC is not running - skipping optimization")
+            _LOGGER.debug("Main AC is not running - skipping optimization")
 
         # End performance tracking
         cycle_end = time.time()
         cycle_time_ms = (cycle_end - cycle_start) * 1000
         self._last_cycle_time_ms = cycle_time_ms
-        self._total_optimizations_run += 1
 
         # Calculate error rate (errors per hour)
         uptime_hours = (cycle_end - self._startup_time) / 3600 if self._startup_time else 1
@@ -937,7 +959,7 @@ class AirconOptimizer:
             )
 
             if should_update_learning:
-                _LOGGER.info("Updating learning profiles from collected data...")
+                _LOGGER.debug("Updating learning profiles from collected data...")
                 updated_rooms = await self.learning_manager.async_update_profiles()
                 if updated_rooms:
                     _LOGGER.info(
@@ -1241,7 +1263,7 @@ class AirconOptimizer:
             Adjusted recommendations with balancing applied
         """
         # Get all valid temperatures
-        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        temps = self._valid_temps(room_states)
         if len(temps) < 2:
             self._balancing_active = False
             return recommendations  # Need at least 2 rooms to balance
@@ -1315,7 +1337,7 @@ class AirconOptimizer:
 
     def _calculate_ac_temperature(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> float:
         """Calculate optimal AC temperature setpoint."""
-        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        temps = self._valid_temps(room_states)
         if not temps:
             return effective_target
 
@@ -1360,16 +1382,21 @@ class AirconOptimizer:
 
     async def _apply_recommendations(self, recommendations: dict[str, int | float]) -> None:
         """Apply the recommended cover positions and AC temperature."""
+        # Check manual override before issuing any commands
+        if getattr(self, 'manual_override_enabled', False):
+            _LOGGER.debug("Manual override active - skipping apply_recommendations")
+            return
+
         if "ac_temperature" in recommendations and self.auto_control_ac_temperature and self.main_climate_entity:
             await self._set_ac_temperature(recommendations["ac_temperature"])
 
         for room_name, position in recommendations.items():
             if room_name == "ac_temperature":
                 continue
-                
+
             room_override = self.room_overrides.get(f"{room_name}_enabled")
             if room_override is False:
-                _LOGGER.info("Skipping %s - control disabled via override", room_name)
+                _LOGGER.debug("Skipping %s - control disabled via override", room_name)
                 continue
 
             room_config = next((r for r in self.room_configs if r["room_name"] == room_name), None)
@@ -1396,7 +1423,7 @@ class AirconOptimizer:
             )
 
             if success:
-                _LOGGER.info("Set cover position for %s (%s) to %d%%", room_name, cover_entity, position)
+                _LOGGER.debug("Set cover position for %s (%s) to %d%%", room_name, cover_entity, position)
             else:
                 await self._send_notification(
                     "Cover Control Error",
@@ -1405,13 +1432,18 @@ class AirconOptimizer:
 
     async def _determine_and_set_main_fan_speed(self, room_states: dict[str, dict[str, Any]]) -> str:
         """Determine and set the main aircon fan speed."""
+        # Check manual override before issuing commands
+        if getattr(self, 'manual_override_enabled', False):
+            _LOGGER.debug("Manual override active - skipping main fan speed control")
+            return self._last_main_fan_speed or "medium"
+
         effective_target = self.target_temperature
         if room_states:
             first_room = next(iter(room_states.values()))
             if 'target_temperature' in first_room and first_room['target_temperature'] is not None:
                 effective_target = first_room['target_temperature']
 
-        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        temps = self._valid_temps(room_states)
         if not temps:
             return "medium"
 
@@ -1428,26 +1460,26 @@ class AirconOptimizer:
 
         if temp_variance <= 1.0 and avg_deviation <= 0.5:
             fan_speed = "low"
-            _LOGGER.info("Main fan -> LOW: Maintaining (variance: %.1f°C)", temp_variance)
+            _LOGGER.debug("Main fan -> LOW: Maintaining (variance: %.1f°C)", temp_variance)
         elif self.hvac_mode == "cool":
             if avg_temp_diff >= self.main_fan_high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
                 fan_speed = "high"
-                _LOGGER.info("Main fan -> HIGH: Aggressive cooling (avg: +%.1f°C)", avg_temp_diff)
+                _LOGGER.debug("Main fan -> HIGH: Aggressive cooling (avg: +%.1f°C)", avg_temp_diff)
             elif avg_temp_diff <= -0.5:
                 # Only set LOW when well below target (overcooled)
                 fan_speed = "low"
-                _LOGGER.info("Main fan -> LOW: Well below target in cool mode (avg: %.1f°C)", avg_temp_diff)
+                _LOGGER.debug("Main fan -> LOW: Well below target in cool mode (avg: %.1f°C)", avg_temp_diff)
             else:
                 # Default to MEDIUM for moderate cooling needs
                 fan_speed = "medium"
         elif self.hvac_mode == "heat":
             if avg_temp_diff <= -self.main_fan_high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
                 fan_speed = "high"
-                _LOGGER.info("Main fan -> HIGH: Aggressive heating (avg: %.1f°C)", avg_temp_diff)
+                _LOGGER.debug("Main fan -> HIGH: Aggressive heating (avg: %.1f°C)", avg_temp_diff)
             elif avg_temp_diff >= 0.5:
                 # Only set LOW when well above target (overheated)
                 fan_speed = "low"
-                _LOGGER.info("Main fan -> LOW: Well above target in heat mode (avg: %.1f°C)", avg_temp_diff)
+                _LOGGER.debug("Main fan -> LOW: Well above target in heat mode (avg: %.1f°C)", avg_temp_diff)
             else:
                 # Default to MEDIUM for moderate heating needs
                 fan_speed = "medium"
@@ -1483,7 +1515,7 @@ class AirconOptimizer:
             )
 
         if success:
-            _LOGGER.info("Set main fan (%s) to %s", self.main_fan_entity, fan_speed)
+            _LOGGER.debug("Set main fan (%s) to %s", self.main_fan_entity, fan_speed)
         else:
             await self._send_notification(
                 "Main Fan Error",
@@ -1518,7 +1550,7 @@ class AirconOptimizer:
             if 'target_temperature' in first_room and first_room['target_temperature'] is not None:
                 effective_target = first_room['target_temperature']
 
-        temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
+        temps = self._valid_temps(room_states)
         if not temps:
             return False
 
@@ -1583,13 +1615,13 @@ class AirconOptimizer:
             )
             # Fall back to appropriate mode
             if optimal_mode == "dry" and "cool" in available_modes:
-                _LOGGER.info("Dry mode not supported, using cool mode as fallback")
+                _LOGGER.debug("Dry mode not supported, using cool mode as fallback")
                 optimal_mode = "cool"  # Use cool mode if dry not available
             elif optimal_mode == "fan_only" and "fan" in available_modes:
-                _LOGGER.info("Fan-only mode not found, using 'fan' mode instead")
+                _LOGGER.debug("Fan-only mode not found, using 'fan' mode instead")
                 optimal_mode = "fan"  # Some devices use "fan" instead of "fan_only"
             elif optimal_mode == "fan_only" and "cool" in available_modes:
-                _LOGGER.info("Fan-only mode not supported by climate entity, maintaining current mode for energy efficiency")
+                _LOGGER.debug("Fan-only mode not supported by climate entity, maintaining current mode for energy efficiency")
                 return  # Don't switch if fan_only not available - keep current mode
             else:
                 _LOGGER.warning("HVAC mode %s not supported by climate entity (available: %s), no change made",
@@ -1628,6 +1660,11 @@ class AirconOptimizer:
             optimal_mode: Optimal HVAC mode based on temp/humidity
         """
         if not main_climate_state:
+            return
+
+        # Check manual override before issuing commands
+        if getattr(self, 'manual_override_enabled', False):
+            _LOGGER.debug("Manual override active - skipping AC control")
             return
 
         current_mode = main_climate_state.get("hvac_mode")
@@ -1676,7 +1713,7 @@ class AirconOptimizer:
                 _LOGGER.debug("Skipping AC temperature update (difference < 0.5°C)")
                 return
 
-            _LOGGER.info("Setting main AC temperature to %.1f°C", temperature)
+            _LOGGER.debug("Setting main AC temperature to %.1f°C", temperature)
             await self._retry_service_call(
                 "climate",
                 "set_temperature",
@@ -1714,6 +1751,6 @@ class AirconOptimizer:
         # Save learning profiles before shutdown
         if self.learning_manager:
             await self.learning_manager.async_save_profiles()
-            _LOGGER.info("Saved learning profiles")
+            _LOGGER.debug("Saved learning profiles")
 
         _LOGGER.info("AirconOptimizer cleanup completed")

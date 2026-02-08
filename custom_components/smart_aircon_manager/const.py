@@ -71,7 +71,7 @@ HVAC_MODE_FAN_ONLY = "fan_only"
 # Default values
 DEFAULT_TARGET_TEMPERATURE = 22
 DEFAULT_UPDATE_INTERVAL = 0.5  # minutes - optimization interval (30 seconds)
-DEFAULT_DATA_POLL_INTERVAL = 10  # seconds - how often to poll sensor data
+DEFAULT_DATA_POLL_INTERVAL = 30  # seconds - how often to poll sensor data
 DEFAULT_TEMPERATURE_DEADBAND = 0.5  # degrees C
 DEFAULT_HVAC_MODE = HVAC_MODE_COOL
 DEFAULT_AUTO_CONTROL_MAIN_AC = False

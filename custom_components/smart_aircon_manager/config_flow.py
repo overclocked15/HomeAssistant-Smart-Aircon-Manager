@@ -125,62 +125,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def _validate_entities(self, temp_sensor: str, cover_entity: str) -> dict[str, str] | None:
         """Validate that entities exist and are available with enhanced checks."""
-        errors = {}
-
-        # Check temperature sensor
-        temp_state = self.hass.states.get(temp_sensor)
-        if not temp_state:
-            errors["temperature_sensor"] = "entity_not_found"
-        elif temp_state.state in ["unavailable", "unknown"]:
-            errors["temperature_sensor"] = "entity_unavailable"
-        else:
-            # Validate temperature sensor has numeric value
-            try:
-                temp_value = float(temp_state.state)
-                # Sanity check: realistic temperature range
-                if not (-50.0 <= temp_value <= 70.0):
-                    _LOGGER.warning(
-                        "Temperature sensor %s has unrealistic value: %.1f°C",
-                        temp_sensor, temp_value
-                    )
-                    errors["temperature_sensor"] = "unrealistic_temperature"
-            except (ValueError, TypeError):
-                _LOGGER.error("Temperature sensor %s has non-numeric state: %s", temp_sensor, temp_state.state)
-                errors["temperature_sensor"] = "non_numeric_temperature"
-
-            # Check for temperature sensor domain
-            if not temp_state.entity_id.startswith("sensor."):
-                _LOGGER.warning("Temperature entity %s is not a sensor domain", temp_sensor)
-                errors["temperature_sensor"] = "invalid_domain"
-
-        # Check cover entity
-        cover_state = self.hass.states.get(cover_entity)
-        if not cover_state:
-            errors["cover_entity"] = "entity_not_found"
-        elif cover_state.state in ["unavailable", "unknown"]:
-            errors["cover_entity"] = "entity_unavailable"
-        else:
-            # Validate cover has position attribute
-            if "current_position" not in cover_state.attributes:
-                _LOGGER.warning("Cover entity %s missing current_position attribute", cover_entity)
-                errors["cover_entity"] = "missing_position_attribute"
-            else:
-                # Validate position is numeric and in range
-                try:
-                    position = int(cover_state.attributes["current_position"])
-                    if not (0 <= position <= 100):
-                        _LOGGER.warning("Cover %s position %d outside valid range (0-100)", cover_entity, position)
-                        errors["cover_entity"] = "invalid_position_range"
-                except (ValueError, TypeError):
-                    _LOGGER.error("Cover %s has non-numeric position", cover_entity)
-                    errors["cover_entity"] = "non_numeric_position"
-
-            # Check for cover domain
-            if not cover_state.entity_id.startswith("cover."):
-                _LOGGER.warning("Cover entity %s is not a cover domain", cover_entity)
-                errors["cover_entity"] = "invalid_domain"
-
-        return errors if errors else None
+        return _validate_entities_common(self.hass, temp_sensor, cover_entity)
 
     async def async_step_add_room(
         self, user_input: dict[str, Any] | None = None
@@ -267,6 +212,63 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return OptionsFlowHandler(config_entry)
 
 
+def _validate_entities_common(hass, temp_sensor: str, cover_entity: str) -> dict[str, str] | None:
+    """Validate that entities exist and are available with thorough checks.
+
+    Shared validation logic used by both ConfigFlow and OptionsFlowHandler.
+    """
+    errors = {}
+
+    # Check temperature sensor
+    temp_state = hass.states.get(temp_sensor)
+    if not temp_state:
+        errors["temperature_sensor"] = "entity_not_found"
+    elif temp_state.state in ["unavailable", "unknown"]:
+        errors["temperature_sensor"] = "entity_unavailable"
+    else:
+        try:
+            temp_value = float(temp_state.state)
+            if not (-50.0 <= temp_value <= 70.0):
+                _LOGGER.warning(
+                    "Temperature sensor %s has unrealistic value: %.1f°C",
+                    temp_sensor, temp_value
+                )
+                errors["temperature_sensor"] = "unrealistic_temperature"
+        except (ValueError, TypeError):
+            _LOGGER.error("Temperature sensor %s has non-numeric state: %s", temp_sensor, temp_state.state)
+            errors["temperature_sensor"] = "non_numeric_temperature"
+
+        if not temp_state.entity_id.startswith("sensor."):
+            _LOGGER.warning("Temperature entity %s is not a sensor domain", temp_sensor)
+            errors["temperature_sensor"] = "invalid_domain"
+
+    # Check cover entity
+    cover_state = hass.states.get(cover_entity)
+    if not cover_state:
+        errors["cover_entity"] = "entity_not_found"
+    elif cover_state.state in ["unavailable", "unknown"]:
+        errors["cover_entity"] = "entity_unavailable"
+    else:
+        if "current_position" not in cover_state.attributes:
+            _LOGGER.warning("Cover entity %s missing current_position attribute", cover_entity)
+            errors["cover_entity"] = "missing_position_attribute"
+        else:
+            try:
+                position = int(cover_state.attributes["current_position"])
+                if not (0 <= position <= 100):
+                    _LOGGER.warning("Cover %s position %d outside valid range (0-100)", cover_entity, position)
+                    errors["cover_entity"] = "invalid_position_range"
+            except (ValueError, TypeError):
+                _LOGGER.error("Cover %s has non-numeric position", cover_entity)
+                errors["cover_entity"] = "non_numeric_position"
+
+        if not cover_state.entity_id.startswith("cover."):
+            _LOGGER.warning("Cover entity %s is not a cover domain", cover_entity)
+            errors["cover_entity"] = "invalid_domain"
+
+    return errors if errors else None
+
+
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow for the integration."""
 
@@ -325,7 +327,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         ),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="minutes"
+                            min=0.5, max=60, step=0.5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="minutes"
                         )
                     ),
                     vol.Optional(
@@ -416,23 +418,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     def _validate_entities(self, temp_sensor: str, cover_entity: str) -> dict[str, str] | None:
         """Validate that entities exist and are available."""
-        errors = {}
-
-        # Check temperature sensor
-        temp_state = self.hass.states.get(temp_sensor)
-        if not temp_state:
-            errors["temperature_sensor"] = "entity_not_found"
-        elif temp_state.state in ["unavailable", "unknown"]:
-            errors["temperature_sensor"] = "entity_unavailable"
-
-        # Check cover entity
-        cover_state = self.hass.states.get(cover_entity)
-        if not cover_state:
-            errors["cover_entity"] = "entity_not_found"
-        elif cover_state.state in ["unavailable", "unknown"]:
-            errors["cover_entity"] = "entity_unavailable"
-
-        return errors if errors else None
+        return _validate_entities_common(self.hass, temp_sensor, cover_entity)
 
     async def async_step_add_room(
         self, user_input: dict[str, Any] | None = None
