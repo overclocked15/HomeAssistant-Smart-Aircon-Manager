@@ -131,3 +131,91 @@ disable_learning:
       example: "abc123def456"
       selector:
         text:
+
+vacation_mode:
+  name: Vacation Mode
+  description: Enable reduced monitoring and energy savings for vacation
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      description: Enable or disable vacation mode
+      required: false
+      default: true
+      selector:
+        boolean:
+
+boost_mode:
+  name: Boost Mode
+  description: Aggressive cooling/heating for quick temperature change
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    duration_minutes:
+      name: Duration (minutes)
+      description: How long to run boost mode
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 10
+          max: 120
+          step: 10
+          unit_of_measurement: "min"
+
+sleep_mode:
+  name: Sleep Mode
+  description: Quieter fan speeds and slight temperature adjustment for sleep
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    duration_minutes:
+      name: Duration (minutes)
+      description: How long to run sleep mode
+      required: false
+      default: 480
+      selector:
+        number:
+          min: 60
+          max: 720
+          step: 30
+          unit_of_measurement: "min"
+
+party_mode:
+  name: Party Mode
+  description: Equalize all room temperatures quickly
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID
+      required: true
+      example: "abc123def456"
+      selector:
+        text:
+    duration_minutes:
+      name: Duration (minutes)
+      description: How long to run party mode
+      required: false
+      default: 120
+      selector:
+        number:
+          min: 30
+          max: 360
+          step: 30
+          unit_of_measurement: "min"

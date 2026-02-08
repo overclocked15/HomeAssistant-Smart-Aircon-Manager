@@ -71,6 +71,12 @@ class AirconOptimizer:
         predictive_lookahead_minutes: float = 5.0,
         predictive_boost_factor: float = 0.3,
         notify_services: list[str] | None = None,
+        enable_adaptive_bands: bool = True,
+        enable_adaptive_efficiency: bool = True,
+        enable_adaptive_predictive: bool = True,
+        enable_adaptive_ac_setpoint: bool = False,
+        enable_adaptive_balancing: bool = True,
+        enable_room_coupling_detection: bool = True,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -169,6 +175,16 @@ class AirconOptimizer:
         self._temp_history = {}  # room_name -> list of (timestamp, temp) tuples
         self._max_history_points = 10  # Keep last 10 readings per room
 
+        # Smart learning improvements
+        self.enable_adaptive_bands = enable_adaptive_bands
+        self.enable_adaptive_efficiency = enable_adaptive_efficiency
+        self.enable_adaptive_predictive = enable_adaptive_predictive
+        self.enable_adaptive_ac_setpoint = enable_adaptive_ac_setpoint
+
+        # Adaptive balancing
+        self.enable_adaptive_balancing = enable_adaptive_balancing
+        self.enable_room_coupling_detection = enable_room_coupling_detection
+
         # Configurable notification services
         self.notify_services = notify_services or []
 
@@ -197,6 +213,11 @@ class AirconOptimizer:
         self._last_room_temps = {}  # Track temps for learning
         self._last_learning_update = None  # Track when we last updated learning profiles
         self._learning_update_interval = 3600  # Update learning profiles every hour
+
+        # Quick action modes
+        self._quick_action_mode = None  # None, "vacation", "boost", "sleep", "party"
+        self._quick_action_expiry = None  # Timestamp when mode expires
+        self._quick_action_original_settings = {}  # Store settings to restore
 
     def _validate_temperature(self, value: float, name: str, min_val: float, max_val: float) -> float:
         """Validate temperature value is within acceptable range."""
@@ -797,6 +818,7 @@ class AirconOptimizer:
 
         If prediction shows the room will overshoot, boost fan speed preemptively.
         If prediction shows the room will undershoot, reduce fan speed.
+        Uses adaptive boost factor based on learned convergence rate if enabled.
         """
         predicted_temp = self._predict_temperature(room_name, current_temp)
         if predicted_temp is None:
@@ -805,23 +827,26 @@ class AirconOptimizer:
         rate = self._get_temp_rate_of_change(room_name)
         predicted_diff = predicted_temp - target_temp
 
+        # Get adaptive predictive boost factor (or default if not available)
+        boost_factor = self._get_adaptive_predictive_boost(room_name)
+
         # In cooling mode: if temp is predicted to rise above target, boost cooling
         # In heating mode: if temp is predicted to fall below target, boost heating
         adjustment = 0
         if self.hvac_mode == "cool":
             if predicted_diff > self.temperature_deadband and rate > 0:
                 # Temperature rising toward/past target - boost cooling
-                adjustment = int(predicted_diff * self.predictive_boost_factor * 20)
+                adjustment = int(predicted_diff * boost_factor * 20)
             elif predicted_diff < -self.temperature_deadband and rate < 0:
                 # Temperature falling well below target - reduce cooling
-                adjustment = -int(abs(predicted_diff) * self.predictive_boost_factor * 15)
+                adjustment = -int(abs(predicted_diff) * boost_factor * 15)
         elif self.hvac_mode == "heat":
             if predicted_diff < -self.temperature_deadband and rate < 0:
                 # Temperature falling away from target - boost heating
-                adjustment = int(abs(predicted_diff) * self.predictive_boost_factor * 20)
+                adjustment = int(abs(predicted_diff) * boost_factor * 20)
             elif predicted_diff > self.temperature_deadband and rate > 0:
                 # Temperature rising past target - reduce heating
-                adjustment = -int(predicted_diff * self.predictive_boost_factor * 15)
+                adjustment = -int(predicted_diff * boost_factor * 15)
 
         if adjustment != 0:
             adjusted = max(5, min(100, base_fan_speed + adjustment))
@@ -1038,6 +1063,10 @@ class AirconOptimizer:
                 )
 
                 recommendations = self._calculate_recommendations(room_states)
+
+                # Apply quick action adjustments if active
+                recommendations = self._apply_quick_action_adjustments(recommendations, room_states)
+
                 await self._apply_recommendations(recommendations)
 
                 if self.main_fan_entity:
@@ -1249,8 +1278,8 @@ class AirconOptimizer:
             temp_diff = current_temp - room_effective_target
             abs_temp_diff = abs(temp_diff)
 
-            # Calculate raw fan speed
-            raw_fan_speed = self._calculate_fan_speed(temp_diff, abs_temp_diff)
+            # Calculate raw fan speed (with adaptive bands and efficiency if enabled)
+            raw_fan_speed = self._calculate_fan_speed(temp_diff, abs_temp_diff, room_name)
 
             # Apply smoothing to prevent oscillation
             fan_speed = self._smooth_fan_speed(room_name, raw_fan_speed)
@@ -1324,86 +1353,122 @@ class AirconOptimizer:
         self._last_fan_speeds[room_name] = new_speed
         return new_speed
 
-    def _calculate_fan_speed(self, temp_diff: float, abs_temp_diff: float) -> int:
+    def _calculate_fan_speed(self, temp_diff: float, abs_temp_diff: float, room_name: str = None) -> int:
         """Calculate fan speed based on temperature difference and HVAC mode.
 
         Uses granular bands for smooth, responsive temperature control.
+        Optionally uses adaptive bands based on learned thermal characteristics.
         """
+        # Get adaptive temperature bands if room_name provided
+        bands = self._get_adaptive_temperature_bands(room_name) if room_name else {
+            'extreme': 4.0, 'very_high': 3.0, 'high': 2.0, 'moderate': 1.5,
+            'slight': 1.0, 'minimal': 0.7, 'very_minimal': 0.5
+        }
+
         # Within deadband - maintain with moderate circulation
         if abs_temp_diff <= self.temperature_deadband:
-            return 50  # Baseline circulation when at target
+            base_speed = 50  # Baseline circulation when at target
+            # Apply efficiency adjustment if room provided
+            if room_name:
+                return self._apply_efficiency_adjustment(base_speed, room_name)
+            return base_speed
 
         if self.hvac_mode == "cool":
             if temp_diff > 0:
-                # Room is too hot - needs cooling (more granular bands)
-                if abs_temp_diff >= 4.0:
-                    return 100  # Extreme heat - maximum cooling
-                elif abs_temp_diff >= 3.0:
-                    return 90   # Very hot - aggressive cooling
-                elif abs_temp_diff >= 2.0:
-                    return 75   # Hot - strong cooling
-                elif abs_temp_diff >= 1.5:
-                    return 65   # Moderately hot - good cooling
-                elif abs_temp_diff >= 1.0:
-                    return 60   # Slightly hot - moderate cooling
+                # Room is too hot - needs cooling (using adaptive bands)
+                if abs_temp_diff >= bands['extreme']:
+                    base_speed = 100  # Extreme heat - maximum cooling
+                elif abs_temp_diff >= bands['very_high']:
+                    base_speed = 90   # Very hot - aggressive cooling
+                elif abs_temp_diff >= bands['high']:
+                    base_speed = 75   # Hot - strong cooling
+                elif abs_temp_diff >= bands['moderate']:
+                    base_speed = 65   # Moderately hot - good cooling
+                elif abs_temp_diff >= bands['slight']:
+                    base_speed = 60   # Slightly hot - moderate cooling
                 else:
-                    return 55   # Just outside deadband - slightly above baseline
+                    base_speed = 55   # Just outside deadband - slightly above baseline
+
+                # Apply efficiency adjustment if room provided
+                if room_name:
+                    return self._apply_efficiency_adjustment(base_speed, room_name)
+                return base_speed
             else:
                 # Room is too cold - overshot target, reduce cooling progressively
                 if abs_temp_diff >= self.overshoot_tier3_threshold:  # 3°C+
-                    return 5    # Severe overshoot - near shutdown
+                    base_speed = 5    # Severe overshoot - near shutdown
                 elif abs_temp_diff >= self.overshoot_tier2_threshold:  # 2-3°C
-                    return 12   # High overshoot - minimal airflow
+                    base_speed = 12   # High overshoot - minimal airflow
                 elif abs_temp_diff >= self.overshoot_tier1_threshold:  # 1-2°C
-                    return 22   # Medium overshoot - reduced cooling
+                    base_speed = 22   # Medium overshoot - reduced cooling
                 elif abs_temp_diff >= 0.7:
-                    return 30   # Small overshoot - gentle reduction
+                    base_speed = 30   # Small overshoot - gentle reduction
                 else:
-                    return 35   # Very small overshoot - slight reduction
+                    base_speed = 35   # Very small overshoot - slight reduction
+
+                # Apply efficiency adjustment if room provided
+                if room_name:
+                    return self._apply_efficiency_adjustment(base_speed, room_name)
+                return base_speed
 
         elif self.hvac_mode == "heat":
             if temp_diff < 0:
-                # Room is too cold - needs heating (more granular bands)
-                if abs_temp_diff >= 4.0:
-                    return 100  # Extreme cold - maximum heating
-                elif abs_temp_diff >= 3.0:
-                    return 90   # Very cold - aggressive heating
-                elif abs_temp_diff >= 2.0:
-                    return 75   # Cold - strong heating
-                elif abs_temp_diff >= 1.5:
-                    return 65   # Moderately cold - good heating
-                elif abs_temp_diff >= 1.0:
-                    return 60   # Slightly cold - moderate heating
+                # Room is too cold - needs heating (using adaptive bands)
+                if abs_temp_diff >= bands['extreme']:
+                    base_speed = 100  # Extreme cold - maximum heating
+                elif abs_temp_diff >= bands['very_high']:
+                    base_speed = 90   # Very cold - aggressive heating
+                elif abs_temp_diff >= bands['high']:
+                    base_speed = 75   # Cold - strong heating
+                elif abs_temp_diff >= bands['moderate']:
+                    base_speed = 65   # Moderately cold - good heating
+                elif abs_temp_diff >= bands['slight']:
+                    base_speed = 60   # Slightly cold - moderate heating
                 else:
-                    return 55   # Just outside deadband - slightly above baseline
+                    base_speed = 55   # Just outside deadband - slightly above baseline
+
+                # Apply efficiency adjustment if room provided
+                if room_name:
+                    return self._apply_efficiency_adjustment(base_speed, room_name)
+                return base_speed
             else:
                 # Room is too warm - overshot target, reduce heating progressively
                 if abs_temp_diff >= self.overshoot_tier3_threshold:  # 3°C+
-                    return 5    # Severe overshoot - near shutdown
+                    base_speed = 5    # Severe overshoot - near shutdown
                 elif abs_temp_diff >= self.overshoot_tier2_threshold:  # 2-3°C
-                    return 12   # High overshoot - minimal airflow
+                    base_speed = 12   # High overshoot - minimal airflow
                 elif abs_temp_diff >= self.overshoot_tier1_threshold:  # 1-2°C
-                    return 22   # Medium overshoot - reduced heating
+                    base_speed = 22   # Medium overshoot - reduced heating
                 elif abs_temp_diff >= 0.7:
-                    return 30   # Small overshoot - gentle reduction
+                    base_speed = 30   # Small overshoot - gentle reduction
                 else:
-                    return 35   # Very small overshoot - slight reduction
+                    base_speed = 35   # Very small overshoot - slight reduction
+
+                # Apply efficiency adjustment if room provided
+                if room_name:
+                    return self._apply_efficiency_adjustment(base_speed, room_name)
+                return base_speed
         else:
-            # Auto mode - use magnitude-based approach with granular control
-            if abs_temp_diff >= 4.0:
-                return 100
-            elif abs_temp_diff >= 3.0:
-                return 85
-            elif abs_temp_diff >= 2.0:
-                return 70
-            elif abs_temp_diff >= 1.5:
-                return 60
-            elif abs_temp_diff >= 1.0:
-                return 50
-            elif abs_temp_diff >= 0.7:
-                return 42
+            # Auto mode - use magnitude-based approach with adaptive bands
+            if abs_temp_diff >= bands['extreme']:
+                base_speed = 100
+            elif abs_temp_diff >= bands['very_high']:
+                base_speed = 85
+            elif abs_temp_diff >= bands['high']:
+                base_speed = 70
+            elif abs_temp_diff >= bands['moderate']:
+                base_speed = 60
+            elif abs_temp_diff >= bands['slight']:
+                base_speed = 50
+            elif abs_temp_diff >= bands['minimal']:
+                base_speed = 42
             else:
-                return 35
+                base_speed = 35
+
+            # Apply efficiency adjustment if room provided
+            if room_name:
+                return self._apply_efficiency_adjustment(base_speed, room_name)
+            return base_speed
 
     def _apply_room_balancing(
         self,
@@ -1472,6 +1537,38 @@ class AirconOptimizer:
             # Negative deviation = room is cooler than house average
             balancing_bias = deviation_from_avg * self.balancing_aggressiveness * 100
 
+            # Apply adaptive balancing adjustments if enabled and learning available
+            if self.enable_adaptive_balancing and self.learning_manager:
+                if self.learning_manager.should_apply_learning(room_name):
+                    profile = self.learning_manager.get_profile(room_name)
+                    if profile:
+                        # 1. Apply learned balancing bias (accumulated historical adjustments)
+                        balancing_bias += profile.balancing_bias * 10
+
+                        # 2. Apply relative convergence rate adjustment
+                        if self.hvac_mode == "cool":
+                            # Fast heating room needs more cooling in cooling mode
+                            balancing_bias *= profile.relative_heat_gain_rate
+                        elif self.hvac_mode == "heat":
+                            # Fast cooling room needs more heating in heating mode
+                            balancing_bias *= (2.0 - profile.relative_cool_rate)
+
+                        # 3. Apply room coupling adjustments if enabled
+                        if self.enable_room_coupling_detection and profile.coupling_factors:
+                            for coupled_room, coupling_factor in profile.coupling_factors.items():
+                                coupled_state = room_states.get(coupled_room)
+                                if coupled_state and coupled_state["current_temperature"] is not None:
+                                    coupled_temp = coupled_state["current_temperature"]
+                                    coupled_deviation = coupled_temp - avg_temp
+                                    # If coupled room is hot, this room likely needs adjustment too
+                                    balancing_bias += coupled_deviation * coupling_factor * 5
+
+                        _LOGGER.debug(
+                            "  %s: Applied adaptive balancing (bias=%.1f, rel_rate=%.2f, %d coupled rooms)",
+                            room_name, profile.balancing_bias, profile.relative_heat_gain_rate,
+                            len(profile.coupled_rooms)
+                        )
+
             # Flip the bias sign for heating mode to ensure correct behavior:
             # Cooling mode (no flip):
             #   - Hot room (+deviation) → +bias → MORE airflow → MORE cooling ✓
@@ -1499,7 +1596,10 @@ class AirconOptimizer:
         return balanced_recommendations
 
     def _calculate_ac_temperature(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> float:
-        """Calculate optimal AC temperature setpoint."""
+        """Calculate optimal AC temperature setpoint.
+
+        Optionally uses adaptive setpoints based on house-wide cooling efficiency.
+        """
         temps = self._valid_temps(room_states)
         if not temps:
             return effective_target
@@ -1507,22 +1607,330 @@ class AirconOptimizer:
         avg_temp = sum(temps) / len(temps)
         temp_diff = avg_temp - effective_target
 
+        # Get base setpoint using standard logic
         if self.hvac_mode == "cool":
             if temp_diff >= 2.0:
-                return 19.0
+                base_setpoint = 19.0
             elif temp_diff >= 0.5:
-                return 21.0
+                base_setpoint = 21.0
             else:
-                return 23.0
+                base_setpoint = 23.0
         elif self.hvac_mode == "heat":
             if temp_diff <= -2.0:
-                return 25.0
+                base_setpoint = 25.0
             elif temp_diff <= -0.5:
-                return 23.0
+                base_setpoint = 23.0
             else:
-                return 21.0
+                base_setpoint = 21.0
         else:
             return effective_target
+
+        # Apply adaptive adjustment if enabled
+        if not self.enable_adaptive_ac_setpoint:
+            return base_setpoint
+
+        if not self.learning_manager:
+            return base_setpoint
+
+        # Calculate average efficiency across all rooms with sufficient confidence
+        efficiencies = []
+        for room_name in room_states.keys():
+            if not self.learning_manager.should_apply_learning(room_name):
+                continue
+
+            profile = self.learning_manager.get_profile(room_name)
+            if profile and profile.confidence >= 0.5:
+                efficiencies.append(profile.cooling_efficiency)
+
+        if not efficiencies:
+            return base_setpoint
+
+        import statistics
+        avg_efficiency = statistics.mean(efficiencies)
+
+        # Adjust setpoint based on house-wide efficiency
+        if avg_efficiency > 0.7:
+            # High efficiency house - less aggressive AC needed
+            adjusted_setpoint = base_setpoint + 1.0
+            _LOGGER.debug(
+                "High house efficiency (%.2f), adjusting AC setpoint from %.1f°C to %.1f°C",
+                avg_efficiency, base_setpoint, adjusted_setpoint
+            )
+            return adjusted_setpoint
+        elif avg_efficiency < 0.4:
+            # Low efficiency house - more aggressive AC needed
+            adjusted_setpoint = base_setpoint - 1.0
+            _LOGGER.debug(
+                "Low house efficiency (%.2f), adjusting AC setpoint from %.1f°C to %.1f°C",
+                avg_efficiency, base_setpoint, adjusted_setpoint
+            )
+            return adjusted_setpoint
+        else:
+            # Medium efficiency - use base setpoint
+            return base_setpoint
+
+    def _apply_quick_action_adjustments(
+        self,
+        recommendations: dict[str, int],
+        room_states: dict[str, dict[str, Any]]
+    ) -> dict[str, int]:
+        """Apply quick action mode adjustments to recommendations."""
+        if not self._quick_action_mode:
+            return recommendations
+
+        # Check expiry
+        import time
+        if self._quick_action_expiry and time.time() > self._quick_action_expiry:
+            self._exit_quick_action_mode()
+            return recommendations
+
+        adjusted = {}
+
+        if self._quick_action_mode == "vacation":
+            # Reduce all fan speeds by 70%, widen deadband
+            for room, speed in recommendations.items():
+                adjusted[room] = max(10, int(speed * 0.3))
+            _LOGGER.debug("Vacation mode: Reduced fan speeds to 30%%")
+
+        elif self._quick_action_mode == "boost":
+            # Aggressive cooling/heating for 30 mins
+            for room, speed in recommendations.items():
+                adjusted[room] = min(100, int(speed * 1.5))
+            _LOGGER.debug("Boost mode: Increased fan speeds by 50%%")
+
+        elif self._quick_action_mode == "sleep":
+            # Quieter fans (cap at 40%)
+            for room, speed in recommendations.items():
+                adjusted[room] = min(40, speed)
+            _LOGGER.debug("Sleep mode: Capped fan speeds at 40%%")
+
+        elif self._quick_action_mode == "party":
+            # Equalize all rooms quickly - set all to median speed (min 60%)
+            import statistics
+            speeds = list(recommendations.values())
+            median_speed = int(statistics.median(speeds)) if speeds else 60
+            target_speed = max(60, median_speed)
+            for room in recommendations.keys():
+                adjusted[room] = target_speed
+            _LOGGER.debug("Party mode: Set all rooms to %d%% for equalization", target_speed)
+
+        else:
+            adjusted = recommendations
+
+        return adjusted
+
+    def _enter_quick_action_mode(self, mode: str, duration_minutes: int = None):
+        """Enter a quick action mode."""
+        import time
+
+        # Validate mode
+        valid_modes = ["vacation", "boost", "sleep", "party"]
+        if mode not in valid_modes:
+            _LOGGER.error("Invalid quick action mode: %s", mode)
+            return
+
+        self._quick_action_mode = mode
+
+        # Set default durations
+        default_durations = {
+            "vacation": None,  # Manual exit only
+            "boost": 30,
+            "sleep": 480,  # 8 hours
+            "party": 120,  # 2 hours
+        }
+
+        duration = duration_minutes if duration_minutes else default_durations.get(mode)
+
+        if duration:
+            self._quick_action_expiry = time.time() + (duration * 60)
+        else:
+            self._quick_action_expiry = None
+
+        # Store original settings
+        self._quick_action_original_settings = {
+            "target_temperature": self.target_temperature,
+            "temperature_deadband": self.temperature_deadband,
+        }
+
+        # Adjust settings for mode
+        if mode == "vacation":
+            self.temperature_deadband = 2.0  # Wider tolerance
+        elif mode == "sleep":
+            # Adjust target slightly for sleep comfort
+            if self.hvac_mode == "cool":
+                self.target_temperature += 1.0
+            elif self.hvac_mode == "heat":
+                self.target_temperature -= 1.0
+
+        expiry_str = f"in {duration}min" if duration else "manual exit only"
+        _LOGGER.info("Entered quick action mode: %s (expires: %s)", mode, expiry_str)
+
+    def _exit_quick_action_mode(self):
+        """Exit quick action mode and restore settings."""
+        if not self._quick_action_mode:
+            return
+
+        mode = self._quick_action_mode
+
+        # Restore original settings
+        if self._quick_action_original_settings:
+            self.target_temperature = self._quick_action_original_settings.get(
+                "target_temperature", self.target_temperature
+            )
+            self.temperature_deadband = self._quick_action_original_settings.get(
+                "temperature_deadband", self.temperature_deadband
+            )
+
+        self._quick_action_mode = None
+        self._quick_action_expiry = None
+        self._quick_action_original_settings = {}
+
+        _LOGGER.info("Exited quick action mode: %s", mode)
+
+    def _get_adaptive_temperature_bands(self, room_name: str) -> dict[str, float]:
+        """Get temperature bands adjusted for room thermal characteristics.
+
+        Uses learned thermal_mass to adjust band thresholds:
+        - High thermal mass (0.7-1.0): Wider bands for slower response rooms
+        - Medium thermal mass (0.4-0.7): Default bands
+        - Low thermal mass (0.0-0.4): Tighter bands for fast response rooms
+        """
+        # Default bands (in degrees from target)
+        default_bands = {
+            'extreme': 4.0,      # 4°C+ away
+            'very_high': 3.0,    # 3-4°C away
+            'high': 2.0,         # 2-3°C away
+            'moderate': 1.5,     # 1.5-2°C away
+            'slight': 1.0,       # 1-1.5°C away
+            'minimal': 0.7,      # 0.7-1°C away
+            'very_minimal': 0.5, # 0.5-0.7°C away
+        }
+
+        # Check if adaptive bands are enabled and learning is available
+        if not self.enable_adaptive_bands:
+            return default_bands
+
+        if not self.learning_manager or not self.learning_manager.should_apply_learning(room_name):
+            return default_bands
+
+        profile = self.learning_manager.get_profile(room_name)
+        if not profile:
+            return default_bands
+
+        thermal_mass = profile.thermal_mass
+
+        # Determine multiplier based on thermal mass
+        if thermal_mass > 0.7:
+            # High thermal inertia - room responds slowly - use wider bands
+            multiplier = 1.2
+            _LOGGER.debug(
+                "Room %s has high thermal mass (%.2f), using wider bands (×%.1f)",
+                room_name, thermal_mass, multiplier
+            )
+        elif thermal_mass < 0.4:
+            # Low thermal inertia - room responds quickly - use tighter bands
+            multiplier = 0.8
+            _LOGGER.debug(
+                "Room %s has low thermal mass (%.2f), using tighter bands (×%.1f)",
+                room_name, thermal_mass, multiplier
+            )
+        else:
+            # Medium thermal mass - use defaults
+            multiplier = 1.0
+
+        # Apply multiplier to all bands
+        adaptive_bands = {k: v * multiplier for k, v in default_bands.items()}
+        return adaptive_bands
+
+    def _apply_efficiency_adjustment(self, base_speed: int, room_name: str) -> int:
+        """Adjust fan speed based on learned cooling/heating efficiency.
+
+        Uses learned cooling_efficiency to optimize fan speeds:
+        - High efficiency (0.7-1.0): Room cools/heats easily - reduce fan speed 15%
+        - Low efficiency (0.0-0.4): Room struggles - increase fan speed 15%
+        - Medium efficiency (0.4-0.7): No adjustment needed
+        """
+        # Check if adaptive efficiency is enabled
+        if not self.enable_adaptive_efficiency:
+            return base_speed
+
+        if not self.learning_manager or not self.learning_manager.should_apply_learning(room_name):
+            return base_speed
+
+        profile = self.learning_manager.get_profile(room_name)
+        if not profile:
+            return base_speed
+
+        efficiency = profile.cooling_efficiency
+
+        # Determine adjustment based on efficiency
+        if efficiency > 0.7:
+            # High efficiency - room responds well - reduce fan speed
+            adjustment = -0.15  # Reduce by 15%
+            _LOGGER.debug(
+                "Room %s has high efficiency (%.2f), reducing fan speed by 15%%",
+                room_name, efficiency
+            )
+        elif efficiency < 0.4:
+            # Low efficiency - room struggles - increase fan speed
+            adjustment = 0.15  # Increase by 15%
+            _LOGGER.debug(
+                "Room %s has low efficiency (%.2f), increasing fan speed by 15%%",
+                room_name, efficiency
+            )
+        else:
+            # Medium efficiency - no adjustment needed
+            adjustment = 0.0
+
+        # Apply adjustment and clamp to valid range
+        adjusted_speed = base_speed * (1 + adjustment)
+        final_speed = max(0, min(100, int(adjusted_speed)))
+
+        return final_speed
+
+    def _get_adaptive_predictive_boost(self, room_name: str) -> float:
+        """Get predictive boost factor adjusted for room convergence rate.
+
+        Uses learned avg_convergence_time to scale predictive adjustments:
+        - Fast convergence (<300s): Reduce boost by 30% - room reaches target quickly
+        - Slow convergence (>900s): Increase boost by 30% - room needs more help
+        - Medium convergence (300-900s): Use default boost factor
+        """
+        base_boost = self.predictive_boost_factor  # Default from config
+
+        # Check if adaptive predictive is enabled
+        if not self.enable_adaptive_predictive:
+            return base_boost
+
+        if not self.learning_manager or not self.learning_manager.should_apply_learning(room_name):
+            return base_boost
+
+        profile = self.learning_manager.get_profile(room_name)
+        if not profile or not profile.avg_convergence_time_seconds:
+            return base_boost
+
+        convergence_time = profile.avg_convergence_time_seconds
+
+        # Adjust boost based on convergence speed
+        if convergence_time < 300:
+            # Fast converging room - reduce predictive boost
+            adaptive_boost = base_boost * 0.7
+            _LOGGER.debug(
+                "Room %s converges quickly (%ds), reducing predictive boost to %.2f",
+                room_name, convergence_time, adaptive_boost
+            )
+        elif convergence_time > 900:
+            # Slow converging room - increase predictive boost
+            adaptive_boost = base_boost * 1.3
+            _LOGGER.debug(
+                "Room %s converges slowly (%ds), increasing predictive boost to %.2f",
+                room_name, convergence_time, adaptive_boost
+            )
+        else:
+            # Medium convergence - use default
+            adaptive_boost = base_boost
+
+        return adaptive_boost
 
     def _build_optimization_summary(self, recommendations: dict[str, int | float], room_states: dict[str, dict[str, Any]]) -> str:
         """Build a human-readable summary."""

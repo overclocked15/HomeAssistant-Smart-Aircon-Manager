@@ -1,87 +1,59 @@
 # Smart Aircon Manager
 
-A Home Assistant integration that uses **intelligent logic-based algorithms** to automatically manage your air conditioning system by adjusting zone fan speeds based on temperature sensors in each room. **No AI API required** - completely free and runs 100% locally!
+A Home Assistant integration that intelligently manages your air conditioning system by automatically adjusting zone fan speeds based on room temperature sensors. **100% local, completely free, and private** - no AI API required!
 
-> **This is the free, logic-based alternative** to the AI-powered version. It uses smart algorithms and rules to achieve similar results without requiring expensive AI API subscriptions.
+Uses smart logic-based algorithms to achieve precise temperature control across your entire home.
 
 ## Features
 
 ### Core Capabilities
-- **Logic-Based Management**: Smart algorithms intelligently manage zone fan speeds
-- **100% Local**: No external API calls, completely private and free
-- **Multi-Room Support**: Configure multiple rooms with individual temperature sensors and zone controls
-- **Temperature Equalization**: Automatically balances temperatures across all rooms
-- **Smart Redistribution**: Increases fan speed in hot rooms, reduces in cold rooms to equalize
-- **Main Aircon Fan Control**: Automatically adjusts your main AC unit's fan speed (low/medium/high) based on system needs
-- **Automatic AC On/Off Control**: Can automatically turn your main AC on/off based on need with hysteresis
-- **Automatic AC Temperature Control**: Can automatically control your main AC's temperature setpoint for fully hands-off operation
-- **Comprehensive Diagnostics**: Detailed sensors for monitoring and troubleshooting
-- **Climate Entity**: Provides a climate entity to view overall system status and set target temperature
-- **Flexible Configuration**: Easy UI-based setup through Home Assistant config flow with options to reconfigure
+- **Smart Zone Control**: Automatically adjusts individual room fan speeds using 8-band temperature logic
+- **Temperature Equalization**: Balances temperatures across all rooms for consistent comfort
+- **Automatic AC Control**: Full automation of AC on/off, fan speed (low/medium/high), and temperature setpoint
+- **Multi-Room Support**: Unlimited rooms with individual temperature sensors and zone controls
+- **100% Local & Free**: No external API calls, completely private, zero cost
+- **Climate Entity Integration**: Full Home Assistant climate entity with UI support
+- **Comprehensive Diagnostics**: 20+ sensors for monitoring, troubleshooting, and automation
+- **Flexible Configuration**: Easy UI-based setup with reconfiguration options
 
 ### Advanced Features
-- **Manual Override** *(NEW in v2.4.7)*: Toggle switch to disable automatic optimization for manual control while preserving learning
-- **Room Overrides**: Disable control for specific rooms while keeping others active
-- **Heating/Cooling Modes**: Support for both heating and cooling with mode-aware optimizations
-- **HVAC Mode Auto-Detection**: Can automatically detect heating/cooling from main climate entity
-- **Hysteresis Control**: Prevents rapid AC on/off cycling with configurable thresholds
-- **HVAC Mode Change Hysteresis** *(NEW in v2.3.0)*: Prevents rapid mode switching (cool/heat/dry/fan_only) unless temperature deviation is severe, reducing wear on equipment
-- **Startup Delay**: Grace period during Home Assistant startup to prevent false alarms
-- **Persistent Notifications**: Optional notifications for important events (AC control, errors)
-- **Comfort Index Sensor** *(NEW in v2.3.0)*: Shows "feels-like" temperature combining temperature and humidity using heat index calculation
-- **Occupancy-Based Control** *(NEW in v2.3.0)*: Automatically applies temperature setbacks to vacant rooms for energy savings
-  - Configurable occupancy sensors per room
-  - Vacancy timeout prevents premature setback
-  - Setback amount: ±2°C from target (increases in cooling, decreases in heating)
+- **Manual Override**: Toggle switch to temporarily disable automation while retaining manual control
+- **Room Overrides**: Selectively disable control for specific rooms
+- **Heating/Cooling Modes**: Full support for both modes with auto-detection from main climate entity
+- **Hysteresis Control**: Prevents rapid AC cycling and mode switching to reduce equipment wear
+- **Startup Protection**: Grace period during HA startup to prevent false alarms
+- **Comfort Index**: Heat index calculation combining temperature and humidity for "feels-like" temperature
+- **Occupancy Control**: Automatic temperature setbacks (±2°C) for vacant rooms with configurable sensors and timeout
+- **Persistent Notifications**: Optional alerts for important events
 
-### Smart Automation Features
-- **Weather Integration**: Automatically adjusts target temperature based on outdoor conditions
-  - Hot weather (>30°C): Sets AC slightly cooler to combat heat
-  - Cold weather (<15°C): Sets AC slightly warmer to prevent overcooling
-  - Supports weather entities and outdoor temperature sensors
-- **Time-Based Scheduling**: Different target temperatures for different times and days
-  - Multiple schedules with individual target temperatures
-  - Day-of-week scheduling (weekdays, weekends, specific days, or all days)
-  - Time range support including cross-midnight schedules (e.g., 22:00-08:00)
-  - Schedule priority over base target temperature
-- **Progressive Overshoot Handling**: Gradual fan reduction for rooms that overshoot target while maintaining air circulation
-  - Small overshoot (<1°C): Reduced to 25-35% for gentle correction
-  - Medium overshoot (1-2°C): Reduced to 15-25% for moderate correction
-  - High overshoot (2-3°C): Reduced to 5-15% for minimal airflow
-  - Severe overshoot (3°C+): Shutdown to 0-5% only in extreme cases
-- **Improved Main Fan Logic**: Smarter thresholds for low/medium/high fan speeds
+### Smart Automation
+- **Weather Integration**: Adjusts target temperature based on outdoor conditions (hot weather: cooler, cold weather: warmer)
+- **Time-Based Scheduling**: Multiple schedules with day-of-week and time-range support (including cross-midnight)
+- **Progressive Overshoot Handling**: Gradual fan reduction (35% → 25% → 15% → 5%) for rooms past target
+- **Predictive Control**: Rate-of-change based adjustments to prevent temperature overshoot
 
 ## How It Works
 
-1. The integration monitors temperature sensors in each configured room
-2. **Fast polling**: Reads sensor data every **10 seconds** for responsive monitoring
-3. **Frequent optimization**: Adjusts fan speeds every **30 seconds** for precise control
-4. **Granular logic-based algorithm** calculates optimal fan speeds with 8 temperature bands:
-   - **4°C+ above target**: 100% fan speed (extreme heat/cold)
-   - **3-4°C above**: 90% fan speed (very hot/cold)
-   - **2-3°C above**: 75% fan speed (hot/cold)
-   - **1.5-2°C above**: 65% fan speed (moderately hot/cold)
-   - **1-1.5°C above**: 55% fan speed (slightly hot/cold)
-   - **0.7-1°C above**: 45% fan speed (just above target)
-   - **0.5-0.7°C above**: 40% fan speed (barely above target)
-   - **Within 0.5°C**: 50% fan speed (at target - maintain circulation)
-5. **Progressive overshoot handling** for rooms that are too cold/warm
-6. **Optional**: Can also set optimal AC temperature setpoint based on room conditions
-7. This creates smooth, responsive temperature equilibrium across your entire house
-8. The fast update cycle (30s) ensures rooms quickly reach and maintain target temperature
+1. **Fast Monitoring**: Reads temperature sensors every 10 seconds
+2. **Frequent Optimization**: Adjusts fan speeds every 30 seconds (configurable)
+3. **8-Band Temperature Logic**: Calculates optimal fan speeds based on deviation from target
+   - 4°C+ away: 100% fan speed (maximum)
+   - 3-4°C: 90% fan speed
+   - 2-3°C: 75% fan speed
+   - 1.5-2°C: 65% fan speed
+   - 1-1.5°C: 55% fan speed
+   - 0.7-1°C: 45% fan speed
+   - 0.5-0.7°C: 40% fan speed
+   - Within ±0.5°C: 50% fan speed (baseline circulation)
+4. **Progressive Overshoot Handling**: Gradual fan reduction for rooms past target (prevents overcooling/overheating)
+5. **Automatic AC Control**: Optimizes AC temperature setpoint, fan speed, and on/off state
+6. **Result**: Smooth temperature equilibrium across your entire home
 
-### Why Logic-Based Instead of AI?
-
-The logic-based approach offers several advantages:
-
-- **Zero Cost**: No monthly API fees (AI version costs $1-4/month)
-- **100% Private**: No data sent to external services
-- **Predictable**: Deterministic behavior you can understand and trust
-- **Fast**: Instant decisions without API latency
-- **Reliable**: No dependency on external services
-- **Transparent**: You can see exactly how decisions are made
-
-The logic algorithms are based on proven HVAC control strategies and have been carefully tuned to provide excellent temperature management.
+### Performance
+- **Response Time**: Typically 5-15 minutes to reach target temperature
+- **Stability**: Maintains ±0.5°C once achieved
+- **Privacy**: 100% local processing, no external API calls
+- **Cost**: Completely free, no ongoing fees
 
 ## Prerequisites
 
@@ -168,78 +140,47 @@ You can change settings after initial setup:
 - **Automatically control AC temperature**: Enable full automation of AC temperature setpoint
 - **Enable notifications**: Get notified of important events
 
-## Logic-Based Algorithm Details
+## Algorithm Details
 
-### Performance Characteristics
-- **Polling Frequency**: Every 10 seconds (sensor monitoring)
-- **Optimization Frequency**: Every 30 seconds (fan speed adjustments)
-- **Response Time**: Typically reaches target temperature in 5-15 minutes
-- **Stability**: Maintains ±0.5°C of target once achieved
-- **Granularity**: 8 temperature bands for smooth, precise control
+<details>
+<summary><b>Click to expand detailed algorithm logic</b></summary>
 
 ### Cooling Mode Strategy
 
-**For rooms ABOVE target** (need cooling) - 8 granular bands:
-- **4°C+ above**: 100% fan (extreme heat - maximum cooling)
-- **3-4°C above**: 90% fan (very hot - aggressive cooling)
-- **2-3°C above**: 75% fan (hot - strong cooling)
-- **1.5-2°C above**: 65% fan (moderately hot - good cooling)
-- **1-1.5°C above**: 55% fan (slightly hot - moderate cooling)
-- **0.7-1°C above**: 45% fan (just above - gentle cooling)
-- **0.5-0.7°C above**: 40% fan (barely above - minimal cooling)
+**Rooms ABOVE target** (need cooling):
+- 4°C+ above → 100% fan (maximum cooling)
+- 3-4°C → 90% fan (aggressive cooling)
+- 2-3°C → 75% fan (strong cooling)
+- 1.5-2°C → 65% fan (good cooling)
+- 1-1.5°C → 55% fan (moderate cooling)
+- 0.7-1°C → 45% fan (gentle cooling)
+- 0.5-0.7°C → 40% fan (minimal cooling)
 
-**For rooms BELOW target** (overshot, too cold) - 5 progressive bands:
-- **3°C+ below**: 5% fan (severe overshoot - near shutdown)
-- **2-3°C below**: 12% fan (high overshoot - minimal airflow)
-- **1-2°C below**: 22% fan (medium overshoot - reduced cooling)
-- **0.7-1°C below**: 30% fan (small overshoot - gentle reduction)
-- **0.5-0.7°C below**: 35% fan (very small overshoot - slight reduction)
+**Rooms BELOW target** (overshot - too cold):
+- 3°C+ below → 5% fan (near shutdown)
+- 2-3°C → 12% fan (minimal airflow)
+- 1-2°C → 22% fan (reduced cooling)
+- 0.7-1°C → 30% fan (gentle reduction)
+- 0.5-0.7°C → 35% fan (slight reduction)
 
-**For rooms AT TARGET** (within ±0.5°C deadband):
-- **50% fan** (baseline circulation - maintains comfort)
+**At target** (±0.5°C): 50% fan (baseline circulation)
 
 ### Heating Mode Strategy
 
-**For rooms BELOW target** (need heating) - 8 granular bands:
-- **4°C+ below**: 100% fan (extreme cold - maximum heating)
-- **3-4°C below**: 90% fan (very cold - aggressive heating)
-- **2-3°C below**: 75% fan (cold - strong heating)
-- **1.5-2°C below**: 65% fan (moderately cold - good heating)
-- **1-1.5°C below**: 55% fan (slightly cold - moderate heating)
-- **0.7-1°C below**: 45% fan (just below - gentle heating)
-- **0.5-0.7°C below**: 40% fan (barely below - minimal heating)
+Same logic as cooling, but inverted (below target = more fan, above target = less fan).
 
-**For rooms ABOVE target** (overshot, too warm) - 5 progressive bands:
-- **3°C+ above**: 5% fan (severe overshoot - near shutdown)
-- **2-3°C above**: 12% fan (high overshoot - minimal airflow)
-- **1-2°C above**: 22% fan (medium overshoot - reduced heating)
-- **0.7-1°C above**: 30% fan (small overshoot - gentle reduction)
-- **0.5-0.7°C above**: 35% fan (very small overshoot - slight reduction)
+### Main AC Fan Control
 
-**For rooms AT TARGET** (within ±0.5°C deadband):
-- **50% fan** (baseline circulation - maintains comfort)
+- **Low**: All rooms near target (≤1°C variance, ≤0.5°C avg deviation)
+- **High**: Significant need (≥2.5°C avg deviation OR ≥3°C max deviation)
+- **Medium**: All other conditions
 
-### Main Fan Control Logic
+### AC Temperature Control
 
-The main AC fan speed is automatically adjusted:
+**Cooling**: 19°C (aggressive) → 21°C (moderate) → 23°C (maintenance)
+**Heating**: 25°C (aggressive) → 23°C (moderate) → 21°C (maintenance)
 
-- **Low Fan Speed**: All rooms at or near target (≤1°C variance, ≤0.5°C average deviation)
-- **High Fan Speed**: Significant heating/cooling needed (≥2.5°C average deviation OR ≥3°C max deviation)
-- **Medium Fan Speed**: All other conditions
-
-### AC Temperature Control Logic
-
-When automatic AC temperature control is enabled:
-
-**Cooling Mode:**
-- Aggressive cooling (rooms 2°C+ too hot): Sets AC to 19°C
-- Moderate cooling (rooms 0.5-2°C too hot): Sets AC to 21°C
-- Maintenance (rooms near target): Sets AC to 23°C
-
-**Heating Mode:**
-- Aggressive heating (rooms 2°C+ too cold): Sets AC to 25°C
-- Moderate heating (rooms 0.5-2°C too cold): Sets AC to 23°C
-- Maintenance (rooms near target): Sets AC to 21°C
+</details>
 
 ## Usage
 
@@ -254,20 +195,15 @@ After setup, a climate entity will be created: `climate.smart_aircon_manager`
   - `Cool`: Manual cooling mode
   - `Off`: Management disabled
 
-### Manual Override *(NEW in v2.4.7)*
+### Manual Override
 
-The integration includes a **Manual Override** switch that allows you to temporarily disable automatic optimization while retaining full manual control:
+A toggle switch (`switch.smart_aircon_manager_manual_override`) allows temporary manual control:
 
-- **Entity**: `switch.smart_aircon_manager_manual_override`
-- **When Enabled**: Automatic optimization is disabled, allowing you to manually control AC and fans
-- **When Disabled**: Normal automatic operation resumes
-- **Use Cases**:
-  - Guest visits requiring custom comfort settings
-  - Maintenance or testing
-  - Temporary preference changes
-  - Movie nights or special events
+- **Enabled**: Automation disabled, manual control of AC and fans
+- **Disabled**: Automatic operation resumes
+- **Use Cases**: Guest visits, maintenance, testing, special events
 
-The system continues to collect learning data even when manual override is active.
+Learning data collection continues even when override is active.
 
 ### Dashboard Examples
 
@@ -295,34 +231,20 @@ The integration creates comprehensive diagnostic sensors:
 - `sensor.{room_name}_recommendation` - System's recommended fan speed
 - `sensor.{room_name}_fan_speed` - Current fan speed percentage
 
-#### Overall System Sensors
-- `sensor.optimization_status` - System status (`maintaining`, `equalizing`, `cooling`, etc.)
-- `sensor.last_optimization_response` - Last optimization decision summary
-- `sensor.last_data_update_time` - When coordinator last polled
-- `sensor.last_optimization` - When optimizer last ran
-- `sensor.next_optimization_time` - When optimizer will run next
+#### System Sensors
+- `sensor.optimization_status` - Current status (maintaining, equalizing, cooling, etc.)
+- `sensor.last_optimization_response` - Last decision summary
+- `sensor.last_data_update_time` / `last_optimization` / `next_optimization_time` - Timing info
 - `sensor.error_tracking` - Error count and details
-- `sensor.valid_sensors_count` - How many temperature sensors are working
-- `sensor.system_status_debug` - Overall system health
+- `sensor.valid_sensors_count` - Working temperature sensors count
+- `sensor.system_status_debug` - Overall health
 
-#### Main Fan Sensors (if configured)
-- `sensor.main_aircon_fan_speed` - Current main fan speed
-- `binary_sensor.main_aircon_running` - Whether main AC is running
-
-#### Weather Integration Sensors (if enabled)
-- `sensor.outdoor_temperature` - Current outdoor temperature
-- `sensor.weather_adjustment` - Temperature adjustment based on outdoor conditions
-
-#### Scheduling Sensors (if enabled)
-- `sensor.active_schedule` - Currently active schedule name
-- `sensor.effective_target_temperature` - Final target after schedule and weather adjustments
-
-#### Humidity Control Sensors (if enabled)
-- `sensor.hvac_mode_recommendation` - Recommended HVAC mode based on temperature and humidity
-- `sensor.house_average_humidity` - Average humidity across all rooms
-- `sensor.dry_mode_active` - Whether dry mode is currently active
-- `sensor.fan_only_mode_active` - Whether fan-only mode is currently active
-- `sensor.comfort_index` *(NEW in v2.3.0)* - Feels-like temperature combining temp + humidity (heat index)
+#### Optional Feature Sensors
+- **Main Fan**: `sensor.main_aircon_fan_speed`, `binary_sensor.main_aircon_running`
+- **Weather**: `sensor.outdoor_temperature`, `sensor.weather_adjustment`
+- **Schedules**: `sensor.active_schedule`, `sensor.effective_target_temperature`
+- **Humidity**: `sensor.hvac_mode_recommendation`, `sensor.house_average_humidity`, `sensor.comfort_index`
+- **Learning**: Multiple learning performance and efficiency sensors
 
 ## Automation Example
 
@@ -385,42 +307,32 @@ This will show:
 - Temperature setpoint changes
 - All diagnostic information
 
-## Comparison: Logic-Based vs AI-Powered
+## Why Choose Smart Aircon Manager?
 
-| Feature | Smart (Logic-Based) | AI (Previous Version) |
-|---------|-------------------|---------------------|
-| Cost | **FREE** | $1-4/month |
-| Privacy | **100% Local** | Sends data to AI APIs |
-| Speed | **Instant** | ~1-2 second API latency |
-| Reliability | **No external dependencies** | Requires internet & API availability |
-| Transparency | **Clear, documented rules** | Black-box AI decisions |
-| Accuracy | **Excellent** (tuned algorithms) | **Excellent** (AI learning) |
-| Customization | **Highly tunable** (thresholds) | Limited (model selection) |
-| Learning | Static rules | Can adapt to usage patterns |
-
-**Bottom Line**: The logic-based version provides excellent performance at zero cost with complete privacy and transparency. Perfect for users who want reliable, predictable HVAC control without ongoing costs.
+- ✅ **Zero Cost**: Completely free, no API fees or subscriptions
+- ✅ **100% Private**: All processing happens locally, no data sent anywhere
+- ✅ **Fast**: Instant decisions without external API latency
+- ✅ **Reliable**: No dependency on internet or external services
+- ✅ **Transparent**: Clear, documented rules you can understand and trust
+- ✅ **Excellent Performance**: 5-15 min response time, ±0.5°C stability
+- ✅ **Highly Tunable**: Extensive configuration options for customization
 
 ## Privacy & Security
 
-- All processing happens locally on your Home Assistant instance
-- No external API calls or data transmission
-- No telemetry or analytics
-- 100% open source - you can review all code
+- ✅ All processing happens locally on your Home Assistant instance
+- ✅ No external API calls or data transmission
+- ✅ No telemetry or analytics
+- ✅ 100% open source - review all code on GitHub
 
-## Support
+## Support & Contributing
 
-For issues or feature requests, please open an issue on GitHub: https://github.com/overclocked15/HomeAssistant-Smart-Aircon-Manager/issues
+- **Issues**: [GitHub Issues](https://github.com/overclocked15/HomeAssistant-Smart-Aircon-Manager/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/overclocked15/HomeAssistant-Smart-Aircon-Manager/discussions)
+- **License**: MIT License
 
-## License
+## Version History
 
-MIT License
-
-## Migration from AI Version
-
-If you're migrating from the AI-powered version:
-
-1. Remove the old AI Aircon Manager integration from Settings → Devices & Services
-2. Install this Smart Aircon Manager integration
-3. Reconfigure with your same rooms and sensors
-4. All features work the same way, just without AI API requirements!
-5. You can keep your same automations - just update entity references from `ai_aircon_manager` to `smart_aircon_manager`
+- **v2.6.0** (Current): 6 new features, 3 logic fixes, 65-test pytest suite
+- **v2.5.0**: 11 bug fixes and 5 optimizations
+- **v2.4.7**: Manual override switch and example dashboards
+- See [CHANGELOG.md](CHANGELOG.md) for full history

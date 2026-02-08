@@ -62,6 +62,16 @@ CONF_LEARNING_MODE = "learning_mode"
 CONF_LEARNING_CONFIDENCE_THRESHOLD = "learning_confidence_threshold"
 CONF_LEARNING_MAX_ADJUSTMENT = "learning_max_adjustment"
 
+# Smart learning improvements
+CONF_ENABLE_ADAPTIVE_BANDS = "enable_adaptive_bands"
+CONF_ENABLE_ADAPTIVE_EFFICIENCY = "enable_adaptive_efficiency"
+CONF_ENABLE_ADAPTIVE_PREDICTIVE = "enable_adaptive_predictive"
+CONF_ENABLE_ADAPTIVE_AC_SETPOINT = "enable_adaptive_ac_setpoint"
+
+# Adaptive balancing
+CONF_ENABLE_ADAPTIVE_BALANCING = "enable_adaptive_balancing"
+CONF_ENABLE_ROOM_COUPLING_DETECTION = "enable_room_coupling_detection"
+
 # HVAC Modes
 HVAC_MODE_COOL = "cool"
 HVAC_MODE_HEAT = "heat"
@@ -112,6 +122,16 @@ DEFAULT_ENABLE_LEARNING = False  # Disabled by default (opt-in feature)
 DEFAULT_LEARNING_MODE = "passive"  # passive (collect only) or active (apply adjustments)
 DEFAULT_LEARNING_CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence to apply learning (0.0-1.0)
 DEFAULT_LEARNING_MAX_ADJUSTMENT = 0.10  # Maximum parameter adjustment per update (10%)
+
+# Smart learning improvement defaults
+DEFAULT_ENABLE_ADAPTIVE_BANDS = True  # Apply learned thermal mass to temperature bands
+DEFAULT_ENABLE_ADAPTIVE_EFFICIENCY = True  # Apply learned efficiency to fan speeds
+DEFAULT_ENABLE_ADAPTIVE_PREDICTIVE = True  # Apply learned convergence to predictive control
+DEFAULT_ENABLE_ADAPTIVE_AC_SETPOINT = False  # Conservative default - requires tuning
+
+# Adaptive balancing defaults
+DEFAULT_ENABLE_ADAPTIVE_BALANCING = True  # Apply learned biases to balancing
+DEFAULT_ENABLE_ROOM_COUPLING_DETECTION = True  # Detect and use thermal coupling
 
 # Inter-room balancing configuration
 CONF_ENABLE_ROOM_BALANCING = "enable_room_balancing"

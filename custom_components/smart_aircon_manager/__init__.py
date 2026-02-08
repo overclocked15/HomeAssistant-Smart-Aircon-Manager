@@ -402,6 +402,73 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(DOMAIN, "disable_learning", async_disable_learning_service)
         _LOGGER.debug("Registered disable_learning service")
 
+        # Register vacation_mode service
+        async def async_vacation_mode_service(call):
+            """Handle vacation_mode service call."""
+            config_entry_id = call.data.get("config_entry_id")
+            enabled = call.data.get("enabled", True)
+
+            if config_entry_id and config_entry_id in hass.data[DOMAIN]:
+                optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                if enabled:
+                    optimizer._enter_quick_action_mode("vacation")
+                else:
+                    optimizer._exit_quick_action_mode()
+                _LOGGER.info("Vacation mode %s for entry %s", "enabled" if enabled else "disabled", config_entry_id)
+            else:
+                _LOGGER.error("Config entry %s not found", config_entry_id)
+
+        hass.services.async_register(DOMAIN, "vacation_mode", async_vacation_mode_service)
+        _LOGGER.debug("Registered vacation_mode service")
+
+        # Register boost_mode service
+        async def async_boost_mode_service(call):
+            """Handle boost_mode service call."""
+            config_entry_id = call.data.get("config_entry_id")
+            duration = call.data.get("duration_minutes", 30)
+
+            if config_entry_id and config_entry_id in hass.data[DOMAIN]:
+                optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                optimizer._enter_quick_action_mode("boost", duration)
+                _LOGGER.info("Boost mode enabled for entry %s (duration: %d min)", config_entry_id, duration)
+            else:
+                _LOGGER.error("Config entry %s not found", config_entry_id)
+
+        hass.services.async_register(DOMAIN, "boost_mode", async_boost_mode_service)
+        _LOGGER.debug("Registered boost_mode service")
+
+        # Register sleep_mode service
+        async def async_sleep_mode_service(call):
+            """Handle sleep_mode service call."""
+            config_entry_id = call.data.get("config_entry_id")
+            duration = call.data.get("duration_minutes", 480)
+
+            if config_entry_id and config_entry_id in hass.data[DOMAIN]:
+                optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                optimizer._enter_quick_action_mode("sleep", duration)
+                _LOGGER.info("Sleep mode enabled for entry %s (duration: %d min)", config_entry_id, duration)
+            else:
+                _LOGGER.error("Config entry %s not found", config_entry_id)
+
+        hass.services.async_register(DOMAIN, "sleep_mode", async_sleep_mode_service)
+        _LOGGER.debug("Registered sleep_mode service")
+
+        # Register party_mode service
+        async def async_party_mode_service(call):
+            """Handle party_mode service call."""
+            config_entry_id = call.data.get("config_entry_id")
+            duration = call.data.get("duration_minutes", 120)
+
+            if config_entry_id and config_entry_id in hass.data[DOMAIN]:
+                optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
+                optimizer._enter_quick_action_mode("party", duration)
+                _LOGGER.info("Party mode enabled for entry %s (duration: %d min)", config_entry_id, duration)
+            else:
+                _LOGGER.error("Config entry %s not found", config_entry_id)
+
+        hass.services.async_register(DOMAIN, "party_mode", async_party_mode_service)
+        _LOGGER.debug("Registered party_mode service")
+
     return True
 
 

@@ -103,6 +103,9 @@ async def async_setup_entry(
     entities.append(TotalOptimizationsRunSensor(coordinator, config_entry))
     entities.append(SensorDataQualitySensor(coordinator, config_entry))
 
+    # Add quick action mode sensor
+    entities.append(QuickActionModeSensor(coordinator, config_entry, optimizer))
+
     # Add adaptive learning sensors (if learning is enabled)
     _LOGGER.debug(
         "Checking learning sensors: learning_manager=%s, enabled=%s",
@@ -391,6 +394,55 @@ class OptimizationStatusSensor(AirconManagerSensorBase):
             "recommendations_count": len(recommendations),
             "last_update_success": self.coordinator.last_update_success,
         }
+
+
+class QuickActionModeSensor(AirconManagerSensorBase):
+    """Sensor showing the currently active quick action mode."""
+
+    def __init__(self, coordinator, config_entry: ConfigEntry, optimizer=None) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry, optimizer)
+        self._attr_unique_id = f"{config_entry.entry_id}_quick_action_mode"
+        self._attr_name = "Quick Action Mode"
+        self._attr_icon = "mdi:lightning-bolt"
+
+    @property
+    def native_value(self) -> str:
+        """Return the quick action mode."""
+        if not self._optimizer:
+            return "off"
+
+        mode = getattr(self._optimizer, '_quick_action_mode', None)
+        return mode if mode else "off"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self._optimizer:
+            return {}
+
+        import time
+        mode = getattr(self._optimizer, '_quick_action_mode', None)
+        expiry = getattr(self._optimizer, '_quick_action_expiry', None)
+
+        attrs = {
+            "mode": mode if mode else "off",
+        }
+
+        if expiry:
+            remaining_seconds = int(expiry - time.time())
+            if remaining_seconds > 0:
+                remaining_minutes = remaining_seconds // 60
+                attrs["expires_in_minutes"] = remaining_minutes
+                attrs["expires_in_seconds"] = remaining_seconds
+            else:
+                attrs["expires_in_minutes"] = 0
+                attrs["expires_in_seconds"] = 0
+        else:
+            attrs["expires_in_minutes"] = None
+            attrs["expires_in_seconds"] = None
+
+        return attrs
 
 
 class LastResponseSensor(AirconManagerSensorBase):

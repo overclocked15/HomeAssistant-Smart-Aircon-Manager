@@ -217,6 +217,128 @@ class PerformanceTracker:
 
         return round(normalized, 2)
 
+    def get_relative_convergence_rate(self, room_name: str) -> float | None:
+        """Calculate room's convergence rate relative to house average.
+
+        Returns:
+            Value relative to 1.0 (house average):
+            - > 1.0: Room converges faster than average
+            - < 1.0: Room converges slower than average
+            - None: Insufficient data
+        """
+        if room_name not in self._data_points:
+            return None
+
+        # Get this room's convergence rate
+        room_rate = self.get_convergence_rate(room_name)
+        if not room_rate:
+            return None
+
+        # Get average convergence rate across all rooms
+        all_rates = []
+        for rname in self._data_points.keys():
+            rate = self.get_convergence_rate(rname)
+            if rate:
+                all_rates.append(rate)
+
+        if len(all_rates) < 2:
+            return None
+
+        avg_rate = statistics.mean(all_rates)
+        if avg_rate == 0:
+            return None
+
+        relative_rate = room_rate / avg_rate
+        return round(relative_rate, 2)
+
+    def detect_room_coupling(self, primary_room: str) -> dict[str, float]:
+        """Detect which rooms are thermally coupled to this room.
+
+        Coupling is detected when rooms' temperatures correlate strongly.
+
+        Returns:
+            Dict of room_name → coupling_factor (0.0-1.0)
+            Higher values indicate stronger thermal coupling
+        """
+        if primary_room not in self._data_points:
+            return {}
+
+        primary_points = self._data_points[primary_room]
+        if len(primary_points) < 50:
+            return {}
+
+        coupled_rooms = {}
+
+        for other_room, other_points in self._data_points.items():
+            if other_room == primary_room or len(other_points) < 50:
+                continue
+
+            # Find overlapping time windows and calculate correlation
+            correlations = []
+
+            for i in range(len(primary_points) - 10):
+                primary_window = primary_points[i:i+10]
+                primary_times = [p["timestamp"] for p in primary_window]
+
+                if not primary_times:
+                    continue
+
+                min_time = min(primary_times)
+                max_time = max(primary_times)
+
+                # Find matching time window in other room
+                matching_points = [
+                    p for p in other_points
+                    if min_time <= p["timestamp"] <= max_time
+                ]
+
+                if len(matching_points) < 5:
+                    continue
+
+                # Calculate temperature change correlation
+                primary_changes = [
+                    p["temp_before"] - primary_window[0]["temp_before"]
+                    for p in primary_window
+                ]
+                other_changes = [
+                    p["temp_before"] - matching_points[0]["temp_before"]
+                    for p in matching_points[:len(primary_changes)]
+                ]
+
+                if len(primary_changes) == len(other_changes) and len(primary_changes) > 0:
+                    # Simple correlation coefficient
+                    correlation = self._calculate_correlation(primary_changes, other_changes)
+                    if correlation is not None:
+                        correlations.append(abs(correlation))
+
+            if correlations:
+                avg_correlation = statistics.mean(correlations)
+                if avg_correlation > 0.5:  # Threshold for significant coupling
+                    coupled_rooms[other_room] = round(avg_correlation, 2)
+
+        return coupled_rooms
+
+    def _calculate_correlation(self, x: list[float], y: list[float]) -> float | None:
+        """Calculate Pearson correlation coefficient between two lists."""
+        if len(x) != len(y) or len(x) < 2:
+            return None
+
+        n = len(x)
+        mean_x = statistics.mean(x)
+        mean_y = statistics.mean(y)
+
+        # Calculate covariance and standard deviations
+        covariance = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n)) / n
+
+        std_x = statistics.stdev(x) if len(x) > 1 else 0
+        std_y = statistics.stdev(y) if len(y) > 1 else 0
+
+        if std_x == 0 or std_y == 0:
+            return None
+
+        correlation = covariance / (std_x * std_y)
+        return correlation
+
     def get_data_point_count(self, room_name: str) -> int:
         """Get number of data points collected for a room."""
         return len(self._data_points.get(room_name, []))
@@ -309,6 +431,13 @@ class LearningProfile:
         self.avg_convergence_time_seconds = None
         self.overshoot_rate_per_day = None
 
+        # Adaptive balancing characteristics
+        self.balancing_bias = 0.0  # Learned bias adjustment (-1.0 to +1.0)
+        self.relative_heat_gain_rate = 1.0  # Relative to house avg (0.5-2.0)
+        self.relative_cool_rate = 1.0  # Relative to house avg (0.5-2.0)
+        self.coupled_rooms = []  # List of thermally coupled room names
+        self.coupling_factors = {}  # Dict: room_name → coupling factor (0.0-1.0)
+
     def update_from_tracker(self, tracker: PerformanceTracker) -> bool:
         """Update profile from performance tracker data.
 
@@ -351,6 +480,33 @@ class LearningProfile:
             # Decrease smoothing for faster response
             self.optimal_smoothing_factor = max(0.6, self.optimal_smoothing_factor - 0.05)
             self.optimal_smoothing_threshold = max(5, self.optimal_smoothing_threshold - 2)
+
+        # Update adaptive balancing characteristics
+        relative_rate = tracker.get_relative_convergence_rate(self.room_name)
+        if relative_rate:
+            self.relative_heat_gain_rate = relative_rate
+            self.relative_cool_rate = relative_rate  # Simplification: use same for both
+
+        # Detect room coupling
+        coupling = tracker.detect_room_coupling(self.room_name)
+        if coupling:
+            self.coupled_rooms = list(coupling.keys())
+            self.coupling_factors = coupling
+            _LOGGER.debug(
+                "Room %s coupled to: %s",
+                self.room_name,
+                ", ".join(f"{room}({factor:.2f})" for room, factor in coupling.items())
+            )
+
+        # Adjust balancing bias based on historical performance
+        # If room consistently overshoots/undershoots, adjust bias
+        if overshoot_freq is not None:
+            if overshoot_freq > 2.0:
+                # High overshoot - reduce balancing aggressiveness
+                self.balancing_bias = max(-1.0, self.balancing_bias - 0.05)
+            elif overshoot_freq < 0.5:
+                # Very stable - can be more aggressive
+                self.balancing_bias = min(1.0, self.balancing_bias + 0.05)
 
         # Confidence was already updated at the start of this method
         self.last_updated = datetime.now(timezone.utc).isoformat()
