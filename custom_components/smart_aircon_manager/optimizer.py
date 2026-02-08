@@ -78,6 +78,11 @@ class AirconOptimizer:
         enable_adaptive_ac_setpoint: bool = False,
         enable_adaptive_balancing: bool = True,
         enable_room_coupling_detection: bool = True,
+        enable_enhanced_compressor_protection: bool = False,
+        compressor_undercool_margin: float = 0.5,
+        compressor_overheat_margin: float = 0.5,
+        min_mode_duration: float = 600.0,
+        min_compressor_run_cycles: int = 3,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -164,6 +169,20 @@ class AirconOptimizer:
         self.compressor_min_off_time = max(0, float(compressor_min_off_time))
         self._ac_last_turned_on = None   # Timestamp when AC was last turned on
         self._ac_last_turned_off = None  # Timestamp when AC was last turned off
+
+        # Enhanced compressor protection (reduces mode change frequency)
+        self.enable_enhanced_compressor_protection = enable_enhanced_compressor_protection
+        self.compressor_undercool_margin = self._validate_positive_float(
+            compressor_undercool_margin, "compressor_undercool_margin", 0.0, 5.0
+        )
+        self.compressor_overheat_margin = self._validate_positive_float(
+            compressor_overheat_margin, "compressor_overheat_margin", 0.0, 5.0
+        )
+        self.min_mode_duration = max(0, float(min_mode_duration))
+        self.min_compressor_run_cycles = max(0, int(min_compressor_run_cycles))
+        self._current_hvac_mode = None  # Track current HVAC mode (cool/heat/fan/off)
+        self._mode_start_time = None  # Timestamp when current mode started
+        self._compressor_run_cycle_count = 0  # Count optimization cycles in compressor mode
 
         # Predictive control
         self.enable_predictive_control = enable_predictive_control
@@ -616,11 +635,38 @@ class AirconOptimizer:
             # No valid humidity data - clear the average to prevent stale data
             self._house_avg_humidity = None
 
-        # Determine the optimal mode (before hysteresis)
+        # Determine the optimal mode (before hysteresis and enhanced protection)
         optimal_mode = None
 
-        # Priority 1: Temperature needs attention (outside deadband)
-        if abs_deviation > self.temperature_deadband:
+        # Enhanced compressor protection: Adjust deadband based on current mode
+        # This creates hysteresis to reduce mode switching frequency
+        effective_deadband = self.temperature_deadband
+
+        if self.enable_enhanced_compressor_protection and self._current_hvac_mode in ["cool", "heat"]:
+            # If currently in compressor mode, require additional margin before switching to fan
+            if self._current_hvac_mode == "cool":
+                # In cooling mode: need to undercool before switching to fan
+                # temp must be BELOW target by (deadband + undercool_margin)
+                if temp_deviation < 0:  # Already below target
+                    # Apply undercool margin - need to be even MORE below target
+                    effective_deadband = self.temperature_deadband + self.compressor_undercool_margin
+                    _LOGGER.debug(
+                        "Enhanced compressor protection (cooling): Temp %.1f°C below target, requiring %.1f°C total deviation before switching to fan",
+                        abs(temp_deviation), effective_deadband
+                    )
+            elif self._current_hvac_mode == "heat":
+                # In heating mode: need to overheat before switching to fan
+                # temp must be ABOVE target by (deadband + overheat_margin)
+                if temp_deviation > 0:  # Already above target
+                    # Apply overheat margin - need to be even MORE above target
+                    effective_deadband = self.temperature_deadband + self.compressor_overheat_margin
+                    _LOGGER.debug(
+                        "Enhanced compressor protection (heating): Temp %.1f°C above target, requiring %.1f°C total deviation before switching to fan",
+                        temp_deviation, effective_deadband
+                    )
+
+        # Priority 1: Temperature needs attention (outside effective deadband)
+        if abs_deviation > effective_deadband:
             if self.hvac_mode == "cool" or (self.hvac_mode == "auto" and temp_deviation > 0):
                 optimal_mode = "cool"
                 _LOGGER.debug(
@@ -674,13 +720,40 @@ class AirconOptimizer:
                 else float('inf')
             )
 
+            # Enhanced compressor protection: Check minimum duration and run cycles
+            # Prevents frequent switching between compressor modes (cool/heat) and fan_only
+            if self.enable_enhanced_compressor_protection:
+                # Check if trying to exit compressor mode to fan_only
+                if self._last_hvac_mode in ["cool", "heat"] and optimal_mode == "fan_only":
+                    # Check minimum mode duration
+                    mode_duration = current_time - self._mode_start_time if self._mode_start_time else 0
+
+                    if mode_duration < self.min_mode_duration:
+                        should_change_mode = False
+                        remaining = self.min_mode_duration - mode_duration
+                        _LOGGER.info(
+                            "Enhanced compressor protection: Minimum mode duration not met - staying in %s mode (%.0fs elapsed, %.0fs required, %.0fs remaining)",
+                            self._last_hvac_mode, mode_duration, self.min_mode_duration, remaining
+                        )
+                        optimal_mode = self._last_hvac_mode
+
+                    # Check minimum run cycles
+                    elif self._compressor_run_cycle_count < self.min_compressor_run_cycles:
+                        should_change_mode = False
+                        remaining_cycles = self.min_compressor_run_cycles - self._compressor_run_cycle_count
+                        _LOGGER.info(
+                            "Enhanced compressor protection: Minimum run cycles not met - staying in %s mode (%d cycles elapsed, %d required, %d remaining)",
+                            self._last_hvac_mode, self._compressor_run_cycle_count, self.min_compressor_run_cycles, remaining_cycles
+                        )
+                        optimal_mode = self._last_hvac_mode
+
             # CRITICAL: If currently in fan_only and conditions require active mode, switch immediately!
             # Fan_only doesn't control temperature/humidity, so we must exit it when conditions demand action
-            if self._last_hvac_mode == "fan_only" and optimal_mode in ["cool", "heat", "dry"]:
+            if should_change_mode and self._last_hvac_mode == "fan_only" and optimal_mode in ["cool", "heat", "dry"]:
                 if optimal_mode in ["cool", "heat"]:
                     _LOGGER.info(
                         "Exiting fan_only mode immediately due to temperature deviation %.1f°C (deadband: %.1f°C) - switching to %s",
-                        abs_deviation, self.temperature_deadband, optimal_mode
+                        abs_deviation, effective_deadband, optimal_mode
                     )
                 else:  # dry mode
                     _LOGGER.info(
@@ -688,7 +761,7 @@ class AirconOptimizer:
                         avg_humidity if avg_humidity is not None else 0, self.dry_mode_humidity_threshold
                     )
                 # Don't apply hysteresis when exiting fan_only - allow immediate switch
-            elif time_since_last_change < self.mode_change_hysteresis_time:
+            elif should_change_mode and time_since_last_change < self.mode_change_hysteresis_time:
                 # Within hysteresis period - only change if deviation is severe
                 hysteresis_threshold = self.temperature_deadband + self.mode_change_hysteresis_temp
 
@@ -712,10 +785,36 @@ class AirconOptimizer:
             _LOGGER.info("HVAC mode change: %s → %s", self._last_hvac_mode or "unknown", optimal_mode)
             self._last_hvac_mode = optimal_mode
             self._last_mode_change_time = current_time
+
+            # Enhanced compressor protection: Reset tracking on mode change
+            if self.enable_enhanced_compressor_protection:
+                # Track when this mode started
+                if optimal_mode != self._current_hvac_mode:
+                    self._current_hvac_mode = optimal_mode
+                    self._mode_start_time = current_time
+                    self._compressor_run_cycle_count = 0
+                    _LOGGER.debug(
+                        "Enhanced compressor protection: Mode change to %s, reset tracking (duration=0s, cycles=0)",
+                        optimal_mode
+                    )
+
         elif self._last_hvac_mode is None:
             # First run
             self._last_hvac_mode = optimal_mode
             self._last_mode_change_time = current_time
+
+            if self.enable_enhanced_compressor_protection:
+                self._current_hvac_mode = optimal_mode
+                self._mode_start_time = current_time
+                self._compressor_run_cycle_count = 0
+
+        # Enhanced compressor protection: Increment cycle count if in compressor mode
+        if self.enable_enhanced_compressor_protection and self._current_hvac_mode in ["cool", "heat"]:
+            self._compressor_run_cycle_count += 1
+            _LOGGER.debug(
+                "Enhanced compressor protection: Cycle count in %s mode: %d (min required: %d)",
+                self._current_hvac_mode, self._compressor_run_cycle_count, self.min_compressor_run_cycles
+            )
 
         # Update mode state flags
         self._dry_mode_active = (optimal_mode == "dry")

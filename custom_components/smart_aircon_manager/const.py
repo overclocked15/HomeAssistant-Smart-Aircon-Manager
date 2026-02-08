@@ -176,6 +176,18 @@ DEFAULT_ENABLE_COMPRESSOR_PROTECTION = True  # Enabled by default to protect har
 DEFAULT_COMPRESSOR_MIN_ON_TIME = 180  # seconds (3 minutes) - minimum time AC stays on
 DEFAULT_COMPRESSOR_MIN_OFF_TIME = 180  # seconds (3 minutes) - minimum time AC stays off
 
+# Enhanced compressor protection (reduces frequency of cooling/fan mode changes)
+CONF_ENABLE_ENHANCED_COMPRESSOR_PROTECTION = "enable_enhanced_compressor_protection"
+CONF_COMPRESSOR_UNDERCOOL_MARGIN = "compressor_undercool_margin"
+CONF_COMPRESSOR_OVERHEAT_MARGIN = "compressor_overheat_margin"
+CONF_MIN_MODE_DURATION = "min_mode_duration"
+CONF_MIN_COMPRESSOR_RUN_CYCLES = "min_compressor_run_cycles"
+DEFAULT_ENABLE_ENHANCED_COMPRESSOR_PROTECTION = False  # Opt-in (changes temperature behavior)
+DEFAULT_COMPRESSOR_UNDERCOOL_MARGIN = 0.5  # degrees C below target before switching to fan (cooling mode)
+DEFAULT_COMPRESSOR_OVERHEAT_MARGIN = 0.5  # degrees C above target before switching to fan (heating mode)
+DEFAULT_MIN_MODE_DURATION = 600  # seconds (10 minutes) - minimum time in cooling/heating before switching to fan
+DEFAULT_MIN_COMPRESSOR_RUN_CYCLES = 3  # minimum optimization cycles before allowing mode change (3 cycles = 90s at 30s/cycle)
+
 # Critical room protection
 CONF_CRITICAL_ROOMS = "critical_rooms"  # Dict mapping room_name -> critical config
 CONF_CRITICAL_TEMP_MAX = "critical_temp_max"
