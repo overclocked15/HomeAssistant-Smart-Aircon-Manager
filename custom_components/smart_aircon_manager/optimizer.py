@@ -64,6 +64,13 @@ class AirconOptimizer:
         occupancy_sensors: dict[str, str] | None = None,
         vacant_room_setback: float = 2.0,
         vacancy_timeout: float = 300.0,
+        enable_compressor_protection: bool = True,
+        compressor_min_on_time: float = 180.0,
+        compressor_min_off_time: float = 180.0,
+        enable_predictive_control: bool = False,
+        predictive_lookahead_minutes: float = 5.0,
+        predictive_boost_factor: float = 0.3,
+        notify_services: list[str] | None = None,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -144,6 +151,27 @@ class AirconOptimizer:
         self.vacancy_timeout = max(0, float(vacancy_timeout))
         self._room_occupancy_state = {}  # room_name -> {"occupied": bool, "last_seen": timestamp}
 
+        # Compressor protection
+        self.enable_compressor_protection = enable_compressor_protection
+        self.compressor_min_on_time = max(0, float(compressor_min_on_time))
+        self.compressor_min_off_time = max(0, float(compressor_min_off_time))
+        self._ac_last_turned_on = None   # Timestamp when AC was last turned on
+        self._ac_last_turned_off = None  # Timestamp when AC was last turned off
+
+        # Predictive control
+        self.enable_predictive_control = enable_predictive_control
+        self.predictive_lookahead_minutes = self._validate_positive_float(
+            predictive_lookahead_minutes, "predictive_lookahead_minutes", 1.0, 30.0
+        )
+        self.predictive_boost_factor = self._validate_positive_float(
+            predictive_boost_factor, "predictive_boost_factor", 0.0, 1.0
+        )
+        self._temp_history = {}  # room_name -> list of (timestamp, temp) tuples
+        self._max_history_points = 10  # Keep last 10 readings per room
+
+        # Configurable notification services
+        self.notify_services = notify_services or []
+
         self._last_optimization_response = None
         self._last_error = None
         self._error_count = 0
@@ -162,6 +190,7 @@ class AirconOptimizer:
         self._total_optimizations_run = 0
         self._optimization_start_time = None
         self._last_cycle_time_ms = None
+        self._last_cycle_timestamp = None  # Track actual wall-clock time between cycles
 
         # Adaptive learning
         self.learning_manager = None  # Will be initialized in async_setup
@@ -708,6 +737,117 @@ class AirconOptimizer:
 
         return effective_target
 
+    def _update_temp_history(self, room_states: dict[str, dict[str, Any]]) -> None:
+        """Update temperature history for rate-of-change calculations."""
+        current_time = time.time()
+        for room_name, state in room_states.items():
+            temp = state.get("current_temperature")
+            if temp is None:
+                continue
+            if room_name not in self._temp_history:
+                self._temp_history[room_name] = []
+            self._temp_history[room_name].append((current_time, temp))
+            # Keep only last N points
+            if len(self._temp_history[room_name]) > self._max_history_points:
+                self._temp_history[room_name] = self._temp_history[room_name][-self._max_history_points:]
+
+    def _get_temp_rate_of_change(self, room_name: str) -> float | None:
+        """Get temperature rate of change in degrees per minute.
+
+        Positive = temperature rising, Negative = temperature falling.
+        Returns None if insufficient data.
+        """
+        history = self._temp_history.get(room_name, [])
+        if len(history) < 3:
+            return None
+
+        # Use linear regression over recent points for a more stable estimate
+        n = len(history)
+        times = [h[0] for h in history]
+        temps = [h[1] for h in history]
+
+        # Calculate slope using least squares
+        t_mean = sum(times) / n
+        temp_mean = sum(temps) / n
+
+        numerator = sum((t - t_mean) * (temp - temp_mean) for t, temp in zip(times, temps))
+        denominator = sum((t - t_mean) ** 2 for t in times)
+
+        if denominator == 0:
+            return 0.0
+
+        # Slope is degrees per second, convert to degrees per minute
+        slope_per_second = numerator / denominator
+        return slope_per_second * 60.0
+
+    def _predict_temperature(self, room_name: str, current_temp: float) -> float | None:
+        """Predict temperature N minutes in the future based on rate of change.
+
+        Returns predicted temperature or None if insufficient data.
+        """
+        rate = self._get_temp_rate_of_change(room_name)
+        if rate is None:
+            return None
+        predicted = current_temp + (rate * self.predictive_lookahead_minutes)
+        return predicted
+
+    def _apply_predictive_adjustment(self, room_name: str, base_fan_speed: int,
+                                      current_temp: float, target_temp: float) -> int:
+        """Adjust fan speed based on predicted future temperature.
+
+        If prediction shows the room will overshoot, boost fan speed preemptively.
+        If prediction shows the room will undershoot, reduce fan speed.
+        """
+        predicted_temp = self._predict_temperature(room_name, current_temp)
+        if predicted_temp is None:
+            return base_fan_speed
+
+        rate = self._get_temp_rate_of_change(room_name)
+        predicted_diff = predicted_temp - target_temp
+
+        # In cooling mode: if temp is predicted to rise above target, boost cooling
+        # In heating mode: if temp is predicted to fall below target, boost heating
+        adjustment = 0
+        if self.hvac_mode == "cool":
+            if predicted_diff > self.temperature_deadband and rate > 0:
+                # Temperature rising toward/past target - boost cooling
+                adjustment = int(predicted_diff * self.predictive_boost_factor * 20)
+            elif predicted_diff < -self.temperature_deadband and rate < 0:
+                # Temperature falling well below target - reduce cooling
+                adjustment = -int(abs(predicted_diff) * self.predictive_boost_factor * 15)
+        elif self.hvac_mode == "heat":
+            if predicted_diff < -self.temperature_deadband and rate < 0:
+                # Temperature falling away from target - boost heating
+                adjustment = int(abs(predicted_diff) * self.predictive_boost_factor * 20)
+            elif predicted_diff > self.temperature_deadband and rate > 0:
+                # Temperature rising past target - reduce heating
+                adjustment = -int(predicted_diff * self.predictive_boost_factor * 15)
+
+        if adjustment != 0:
+            adjusted = max(5, min(100, base_fan_speed + adjustment))
+            _LOGGER.debug(
+                "Predictive adjustment for %s: rate=%.3f°C/min, predicted=%.1f°C, "
+                "base=%d%% → adjusted=%d%% (%+d%%)",
+                room_name, rate, predicted_temp,
+                base_fan_speed, adjusted, adjustment
+            )
+            return adjusted
+
+        return base_fan_speed
+
+    def _is_compressor_protected(self) -> bool:
+        """Check if compressor protection is currently blocking an AC state change."""
+        if not self.enable_compressor_protection:
+            return False
+        current_time = time.time()
+        if self._ac_last_turned_off is not None:
+            if (current_time - self._ac_last_turned_off) < self.compressor_min_off_time:
+                return True
+        if self._ac_last_turned_on is not None:
+            if (current_time - self._ac_last_turned_on) < self.compressor_min_on_time:
+                return True
+        return False
+
     @staticmethod
     def _valid_temps(room_states: dict[str, dict[str, Any]]) -> list[float]:
         """Extract valid (non-None) temperatures from room states."""
@@ -792,6 +932,10 @@ class AirconOptimizer:
         await self._update_occupancy_state()
 
         room_states = await self._collect_room_states(effective_target)
+
+        # Update temperature history for predictive control
+        if self.enable_predictive_control:
+            self._update_temp_history(room_states)
 
         main_climate_state = None
         main_ac_running = False
@@ -927,6 +1071,12 @@ class AirconOptimizer:
 
         # Track performance data for adaptive learning
         if self.learning_manager and self.learning_manager.enabled:
+            # Calculate actual wall-clock interval between cycles (NOT processing time)
+            actual_interval = 0.0
+            if self._last_cycle_timestamp is not None:
+                actual_interval = cycle_end - self._last_cycle_timestamp
+            self._last_cycle_timestamp = cycle_end
+
             for room_name, state in room_states.items():
                 current_temp = state.get("current_temperature")
                 if current_temp is None:
@@ -938,14 +1088,16 @@ class AirconOptimizer:
                 # Get fan speed applied
                 fan_speed = recommendations.get(room_name, 50)
 
-                # Track this cycle
+                # Track this cycle - use actual wall-clock interval, not processing time
+                # On first cycle (no previous timestamp), use optimization_interval as estimate
+                cycle_interval = actual_interval if actual_interval > 0 else self._optimization_interval
                 self.learning_manager.tracker.track_cycle(
                     room_name=room_name,
                     temp_before=previous_temp if previous_temp else current_temp,
                     temp_after=current_temp,
                     fan_speed=fan_speed,
                     target_temp=state.get("target_temperature", self.target_temperature),
-                    cycle_duration=cycle_time_ms / 1000.0,  # Convert to seconds
+                    cycle_duration=cycle_interval,
                 )
 
                 # Store current temp for next cycle
@@ -990,6 +1142,8 @@ class AirconOptimizer:
             "optimization_cycle_time_ms": cycle_time_ms,
             "total_optimizations_run": self._total_optimizations_run,
             "error_rate_per_hour": round(error_rate, 2),
+            # Compressor protection state
+            "compressor_protection_active": self._is_compressor_protected(),
         }
 
     async def _collect_room_states(self, target_temperature: float | None = None) -> dict[str, dict[str, Any]]:
@@ -1002,6 +1156,7 @@ class AirconOptimizer:
             temp_sensor = room["temperature_sensor"]
             cover_entity = room["cover_entity"]
             humidity_sensor = room.get("humidity_sensor")  # Optional
+            room_target_temp = room.get("room_target_temperature")  # Per-room override
 
             temp_state = self.hass.states.get(temp_sensor)
             current_temp = None
@@ -1056,10 +1211,13 @@ class AirconOptimizer:
                         _LOGGER.warning("Could not parse cover position for %s: %s, using default", room_name, e)
                         cover_position = 100
 
+            # Use per-room target if configured, otherwise fall back to global effective target
+            room_effective_target = float(room_target_temp) if room_target_temp is not None else effective_target
+
             room_states[room_name] = {
                 "current_temperature": current_temp,
                 "current_humidity": current_humidity,
-                "target_temperature": effective_target,
+                "target_temperature": room_effective_target,
                 "cover_position": cover_position,
                 "temperature_sensor": temp_sensor,
                 "humidity_sensor": humidity_sensor,
@@ -1083,8 +1241,10 @@ class AirconOptimizer:
             if current_temp is None:
                 continue
 
-            # Get room-specific effective target (considers occupancy setback)
-            room_effective_target = self._get_room_effective_target(room_name, base_effective_target)
+            # Use per-room target from room_states (already includes per-room override)
+            room_base_target = state.get("target_temperature", base_effective_target)
+            # Then apply occupancy setback on top
+            room_effective_target = self._get_room_effective_target(room_name, room_base_target)
 
             temp_diff = current_temp - room_effective_target
             abs_temp_diff = abs(temp_diff)
@@ -1094,6 +1254,13 @@ class AirconOptimizer:
 
             # Apply smoothing to prevent oscillation
             fan_speed = self._smooth_fan_speed(room_name, raw_fan_speed)
+
+            # Apply predictive adjustment if enabled
+            if self.enable_predictive_control:
+                fan_speed = self._apply_predictive_adjustment(
+                    room_name, fan_speed, current_temp, room_effective_target
+                )
+
             recommendations[room_name] = fan_speed
 
             _LOGGER.debug(
@@ -1178,11 +1345,9 @@ class AirconOptimizer:
                 elif abs_temp_diff >= 1.5:
                     return 65   # Moderately hot - good cooling
                 elif abs_temp_diff >= 1.0:
-                    return 55   # Slightly hot - moderate cooling
-                elif abs_temp_diff >= 0.7:
-                    return 45   # Just above target - gentle cooling
+                    return 60   # Slightly hot - moderate cooling
                 else:
-                    return 40   # Barely above - minimal cooling
+                    return 55   # Just outside deadband - slightly above baseline
             else:
                 # Room is too cold - overshot target, reduce cooling progressively
                 if abs_temp_diff >= self.overshoot_tier3_threshold:  # 3°C+
@@ -1208,11 +1373,9 @@ class AirconOptimizer:
                 elif abs_temp_diff >= 1.5:
                     return 65   # Moderately cold - good heating
                 elif abs_temp_diff >= 1.0:
-                    return 55   # Slightly cold - moderate heating
-                elif abs_temp_diff >= 0.7:
-                    return 45   # Just below target - gentle heating
+                    return 60   # Slightly cold - moderate heating
                 else:
-                    return 40   # Barely below - minimal heating
+                    return 55   # Just outside deadband - slightly above baseline
             else:
                 # Room is too warm - overshot target, reduce heating progressively
                 if abs_temp_diff >= self.overshoot_tier3_threshold:  # 3°C+
@@ -1669,6 +1832,34 @@ class AirconOptimizer:
 
         current_mode = main_climate_state.get("hvac_mode")
 
+        # Compressor protection: enforce minimum on/off times
+        if self.enable_compressor_protection:
+            current_time = time.time()
+
+            if needs_ac and current_mode == "off":
+                # Want to turn ON - check minimum off-time
+                if self._ac_last_turned_off is not None:
+                    off_duration = current_time - self._ac_last_turned_off
+                    if off_duration < self.compressor_min_off_time:
+                        remaining = self.compressor_min_off_time - off_duration
+                        _LOGGER.info(
+                            "Compressor protection: delaying AC turn-on (%.0fs remaining of %.0fs min off-time)",
+                            remaining, self.compressor_min_off_time
+                        )
+                        return
+
+            elif not needs_ac and current_mode and current_mode != "off":
+                # Want to turn OFF - check minimum on-time
+                if self._ac_last_turned_on is not None:
+                    on_duration = current_time - self._ac_last_turned_on
+                    if on_duration < self.compressor_min_on_time:
+                        remaining = self.compressor_min_on_time - on_duration
+                        _LOGGER.info(
+                            "Compressor protection: delaying AC turn-off (%.0fs remaining of %.0fs min on-time)",
+                            remaining, self.compressor_min_on_time
+                        )
+                        return
+
         # Use retry logic for AC control
         if needs_ac:
             if current_mode == "off":
@@ -1681,6 +1872,7 @@ class AirconOptimizer:
                     entity_name=f"Main AC ({self.main_climate_entity})"
                 )
                 if success:
+                    self._ac_last_turned_on = time.time()
                     await self._send_notification("AC Turned On", f"Smart Manager turned on AC in {optimal_mode} mode")
             else:
                 # AC is already on, just set the optimal mode
@@ -1695,6 +1887,7 @@ class AirconOptimizer:
                     entity_name=f"Main AC ({self.main_climate_entity})"
                 )
                 if success:
+                    self._ac_last_turned_off = time.time()
                     await self._send_notification("AC Turned Off", "Smart Manager turned off AC (rooms at target)")
 
     async def _set_ac_temperature(self, temperature: float) -> None:
@@ -1726,23 +1919,49 @@ class AirconOptimizer:
             self._error_count += 1
 
     async def _send_notification(self, title: str, message: str) -> None:
-        """Send a persistent notification."""
+        """Send notifications via persistent_notification and configured services."""
         if not self.enable_notifications:
             return
 
+        full_title = f"Smart Aircon Manager: {title}"
+
+        # Always send persistent notification (HA built-in, always available)
         try:
             await self.hass.services.async_call(
                 "persistent_notification",
                 "create",
                 {
-                    "title": f"Smart Aircon Manager: {title}",
+                    "title": full_title,
                     "message": message,
                     "notification_id": f"smart_aircon_manager_{title.lower().replace(' ', '_')}",
                 },
                 blocking=False,
             )
         except Exception as e:
-            _LOGGER.error("Error sending notification: %s", e)
+            _LOGGER.error("Error sending persistent notification: %s", e)
+
+        # Send to configured additional notification services
+        for service in self.notify_services:
+            try:
+                service_name = service.replace("notify.", "")
+                full_message = f"{full_title}\n\n{message}"
+
+                try:
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        {"title": full_title, "message": message},
+                    )
+                except Exception:
+                    # Fallback: some services don't support title
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        {"message": full_message},
+                    )
+                _LOGGER.debug("Sent notification via %s", service)
+            except Exception as e:
+                _LOGGER.error("Failed to send notification via %s: %s", service, e)
 
     async def async_cleanup(self) -> None:
         """Cleanup resources on unload."""

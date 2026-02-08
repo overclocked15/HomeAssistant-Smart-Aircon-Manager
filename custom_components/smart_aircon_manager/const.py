@@ -9,6 +9,7 @@ CONF_ROOM_NAME = "room_name"
 CONF_TEMPERATURE_SENSOR = "temperature_sensor"
 CONF_COVER_ENTITY = "cover_entity"
 CONF_HUMIDITY_SENSOR = "humidity_sensor"
+CONF_ROOM_TARGET_TEMPERATURE = "room_target_temperature"  # Per-room target override
 CONF_MAIN_CLIMATE_ENTITY = "main_climate_entity"
 CONF_MAIN_FAN_ENTITY = "main_fan_entity"
 CONF_UPDATE_INTERVAL = "update_interval"
@@ -139,6 +140,22 @@ DEFAULT_ENABLE_OCCUPANCY_CONTROL = False  # Disabled by default (opt-in)
 DEFAULT_VACANT_ROOM_SETBACK = 2.0  # degrees C to add/subtract from target for vacant rooms
 DEFAULT_VACANCY_TIMEOUT = 300  # seconds (5 minutes) - time before considering room vacant
 
+# Rate-of-change / predictive control
+CONF_ENABLE_PREDICTIVE_CONTROL = "enable_predictive_control"
+CONF_PREDICTIVE_LOOKAHEAD_MINUTES = "predictive_lookahead_minutes"
+CONF_PREDICTIVE_BOOST_FACTOR = "predictive_boost_factor"
+DEFAULT_ENABLE_PREDICTIVE_CONTROL = False  # Opt-in feature
+DEFAULT_PREDICTIVE_LOOKAHEAD_MINUTES = 5.0  # Minutes to project temperature ahead
+DEFAULT_PREDICTIVE_BOOST_FACTOR = 0.3  # How much to boost/reduce fan speed based on prediction (0.0-1.0)
+
+# Compressor protection
+CONF_ENABLE_COMPRESSOR_PROTECTION = "enable_compressor_protection"
+CONF_COMPRESSOR_MIN_ON_TIME = "compressor_min_on_time"
+CONF_COMPRESSOR_MIN_OFF_TIME = "compressor_min_off_time"
+DEFAULT_ENABLE_COMPRESSOR_PROTECTION = True  # Enabled by default to protect hardware
+DEFAULT_COMPRESSOR_MIN_ON_TIME = 180  # seconds (3 minutes) - minimum time AC stays on
+DEFAULT_COMPRESSOR_MIN_OFF_TIME = 180  # seconds (3 minutes) - minimum time AC stays off
+
 # Critical room protection
 CONF_CRITICAL_ROOMS = "critical_rooms"  # Dict mapping room_name -> critical config
 CONF_CRITICAL_TEMP_MAX = "critical_temp_max"
@@ -154,6 +171,10 @@ CRITICAL_STATUS_CRITICAL = "critical"
 CRITICAL_STATUS_RECOVERING = "recovering"
 
 # Days of week for scheduling
+# Configurable notification services for optimizer alerts
+CONF_NOTIFY_SERVICES = "notify_services"  # List of notification service targets
+DEFAULT_NOTIFY_SERVICES = []  # Empty = persistent_notification only (default behavior)
+
 SCHEDULE_DAYS_OPTIONS = [
     "monday",
     "tuesday",

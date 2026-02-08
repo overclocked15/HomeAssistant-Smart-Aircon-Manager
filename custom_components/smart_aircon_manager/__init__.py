@@ -39,6 +39,13 @@ from .const import (
     DEFAULT_ENABLE_OCCUPANCY_CONTROL,
     DEFAULT_VACANT_ROOM_SETBACK,
     DEFAULT_VACANCY_TIMEOUT,
+    DEFAULT_ENABLE_COMPRESSOR_PROTECTION,
+    DEFAULT_COMPRESSOR_MIN_ON_TIME,
+    DEFAULT_COMPRESSOR_MIN_OFF_TIME,
+    DEFAULT_ENABLE_PREDICTIVE_CONTROL,
+    DEFAULT_PREDICTIVE_LOOKAHEAD_MINUTES,
+    DEFAULT_PREDICTIVE_BOOST_FACTOR,
+    DEFAULT_NOTIFY_SERVICES,
 )
 from .optimizer import AirconOptimizer
 from .critical_monitor import CriticalRoomMonitor
@@ -50,13 +57,52 @@ PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR, Platform.BINARY_
 
 def get_device_info(config_entry: ConfigEntry) -> dict:
     """Get device info for all entities."""
+    import json
+    from pathlib import Path
+    try:
+        manifest_path = Path(__file__).parent / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        version = manifest.get("version", "unknown")
+    except Exception:
+        version = "unknown"
     return {
         "identifiers": {(DOMAIN, config_entry.entry_id)},
         "name": "Smart Aircon Manager",
         "manufacturer": "Smart Aircon Manager",
         "model": "Logic-Based HVAC Controller",
-        "sw_version": "2.4.7",
+        "sw_version": version,
     }
+
+
+async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Migrate old config entry to new version."""
+    _LOGGER.debug("Migrating config entry from version %s", config_entry.version)
+
+    if config_entry.version == 1:
+        # Migration from v1 to v2: add new fields with defaults
+        new_data = {**config_entry.data}
+
+        # Add compressor protection defaults if missing
+        from .const import (
+            CONF_ENABLE_COMPRESSOR_PROTECTION,
+            CONF_COMPRESSOR_MIN_ON_TIME,
+            CONF_COMPRESSOR_MIN_OFF_TIME,
+            CONF_ROOM_TARGET_TEMPERATURE,
+        )
+        new_data.setdefault(CONF_ENABLE_COMPRESSOR_PROTECTION, DEFAULT_ENABLE_COMPRESSOR_PROTECTION)
+        new_data.setdefault(CONF_COMPRESSOR_MIN_ON_TIME, DEFAULT_COMPRESSOR_MIN_ON_TIME)
+        new_data.setdefault(CONF_COMPRESSOR_MIN_OFF_TIME, DEFAULT_COMPRESSOR_MIN_OFF_TIME)
+
+        # Add per-room target temperature to existing room configs
+        room_configs = new_data.get("room_configs", [])
+        for room in room_configs:
+            room.setdefault(CONF_ROOM_TARGET_TEMPERATURE, None)
+        new_data["room_configs"] = room_configs
+
+        hass.config_entries.async_update_entry(config_entry, data=new_data, version=2)
+        _LOGGER.info("Migrated config entry from version 1 to 2")
+
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -104,6 +150,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         occupancy_sensors=entry.data.get("occupancy_sensors", {}),
         vacant_room_setback=entry.data.get("vacant_room_setback", DEFAULT_VACANT_ROOM_SETBACK),
         vacancy_timeout=entry.data.get("vacancy_timeout", DEFAULT_VACANCY_TIMEOUT),
+        enable_compressor_protection=entry.data.get("enable_compressor_protection", DEFAULT_ENABLE_COMPRESSOR_PROTECTION),
+        compressor_min_on_time=entry.data.get("compressor_min_on_time", DEFAULT_COMPRESSOR_MIN_ON_TIME),
+        compressor_min_off_time=entry.data.get("compressor_min_off_time", DEFAULT_COMPRESSOR_MIN_OFF_TIME),
+        enable_predictive_control=entry.data.get("enable_predictive_control", DEFAULT_ENABLE_PREDICTIVE_CONTROL),
+        predictive_lookahead_minutes=entry.data.get("predictive_lookahead_minutes", DEFAULT_PREDICTIVE_LOOKAHEAD_MINUTES),
+        predictive_boost_factor=entry.data.get("predictive_boost_factor", DEFAULT_PREDICTIVE_BOOST_FACTOR),
+        notify_services=entry.data.get("notify_services", DEFAULT_NOTIFY_SERVICES),
     )
 
     # Get update interval from config
