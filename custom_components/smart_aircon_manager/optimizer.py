@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import statistics
 import time
@@ -200,6 +201,7 @@ class AirconOptimizer:
         self._last_main_fan_speed = None
         self._current_schedule = None
         self._outdoor_temperature = None
+        self._outdoor_temperature_timestamp = None  # Timestamp when outdoor temp was last fetched
         self._last_fan_speeds = {}  # For smoothing
 
         # Performance metrics tracking
@@ -342,6 +344,106 @@ class AirconOptimizer:
                     "Climate entity %s not found, HVAC mode tracking will initialize on first optimization",
                     self.main_climate_entity
                 )
+
+        # Load persisted compressor protection state
+        await self._load_compressor_state()
+
+        # Clean up any stale cache entries for deleted rooms
+        self._cleanup_room_caches()
+
+    def _cleanup_room_caches(self) -> None:
+        """Remove cache entries for rooms that are no longer configured.
+
+        This prevents memory leaks when rooms are removed during reconfiguration.
+        """
+        # Get current room names from config
+        current_rooms = {config["name"] for config in self.room_configs}
+
+        # Clean up caches
+        caches_to_clean = [
+            ("_last_fan_speeds", self._last_fan_speeds),
+            ("_temp_history", self._temp_history),
+            ("_last_recommendations", self._last_recommendations),
+            ("_last_room_temps", self._last_room_temps),
+            ("_room_occupancy_state", self._room_occupancy_state),
+        ]
+
+        total_removed = 0
+        for cache_name, cache_dict in caches_to_clean:
+            rooms_to_remove = [room for room in cache_dict.keys() if room not in current_rooms]
+            for room in rooms_to_remove:
+                del cache_dict[room]
+                total_removed += 1
+                _LOGGER.debug("Cleaned up %s entry for deleted room: %s", cache_name, room)
+
+        if total_removed > 0:
+            _LOGGER.info("Cleaned up %d cache entries for %d deleted rooms",
+                        total_removed, len(set(room for cache_name, cache_dict in caches_to_clean
+                                               for room in cache_dict.keys() if room not in current_rooms)))
+
+    async def _load_compressor_state(self) -> None:
+        """Load persisted compressor protection timestamps from storage."""
+        try:
+            storage_path = Path(self.hass.config.path(".storage"))
+            config_entry_id = self.config_entry.entry_id if self.config_entry else "default"
+            state_file = storage_path / f"smart_aircon_manager.{config_entry_id}.state.json"
+
+            if state_file.exists():
+                def _load():
+                    with open(state_file, 'r') as f:
+                        return json.load(f)
+
+                data = await self.hass.async_add_executor_job(_load)
+
+                # Restore timestamps if they exist and are recent (within last 24 hours)
+                # This prevents using very stale data after long HA downtime
+                current_time = time.time()
+                max_age = 86400  # 24 hours
+
+                if 'ac_last_turned_on' in data and data['ac_last_turned_on']:
+                    if current_time - data['ac_last_turned_on'] < max_age:
+                        self._ac_last_turned_on = data['ac_last_turned_on']
+                        _LOGGER.debug("Restored AC last turned on timestamp: %.0f seconds ago",
+                                     current_time - self._ac_last_turned_on)
+
+                if 'ac_last_turned_off' in data and data['ac_last_turned_off']:
+                    if current_time - data['ac_last_turned_off'] < max_age:
+                        self._ac_last_turned_off = data['ac_last_turned_off']
+                        _LOGGER.debug("Restored AC last turned off timestamp: %.0f seconds ago",
+                                     current_time - self._ac_last_turned_off)
+
+                _LOGGER.info("Compressor protection state loaded successfully")
+            else:
+                _LOGGER.debug("No existing compressor state file found, starting fresh")
+
+        except Exception as e:
+            _LOGGER.warning("Failed to load compressor state: %s", e)
+            # Don't fail startup, just log and continue
+
+    async def _save_compressor_state(self) -> None:
+        """Save compressor protection timestamps to storage."""
+        try:
+            storage_path = Path(self.hass.config.path(".storage"))
+            config_entry_id = self.config_entry.entry_id if self.config_entry else "default"
+            state_file = storage_path / f"smart_aircon_manager.{config_entry_id}.state.json"
+
+            data = {
+                'ac_last_turned_on': self._ac_last_turned_on,
+                'ac_last_turned_off': self._ac_last_turned_off,
+                'saved_at': time.time(),
+            }
+
+            def _save():
+                storage_path.mkdir(parents=True, exist_ok=True)
+                with open(state_file, 'w') as f:
+                    json.dump(data, f, indent=2)
+
+            await self.hass.async_add_executor_job(_save)
+            _LOGGER.debug("Compressor protection state saved")
+
+        except Exception as e:
+            _LOGGER.warning("Failed to save compressor state: %s", e)
+            # Don't fail operation, just log
 
     async def _retry_service_call(
         self,
@@ -622,7 +724,16 @@ class AirconOptimizer:
         return optimal_mode
 
     async def _get_outdoor_temperature(self) -> float | None:
-        """Get outdoor temperature from weather entity or outdoor sensor."""
+        """Get outdoor temperature from weather entity or outdoor sensor.
+
+        Uses 1-hour cache to handle temporary sensor unavailability.
+        """
+        CACHE_MAX_AGE = 3600  # 1 hour in seconds
+        current_time = time.time()
+
+        # Try to get fresh outdoor temperature
+        fresh_temp = None
+
         if self.outdoor_temp_sensor:
             sensor_state = self.hass.states.get(self.outdoor_temp_sensor)
             if sensor_state and sensor_state.state not in ["unknown", "unavailable", "none", None]:
@@ -631,22 +742,36 @@ class AirconOptimizer:
                     unit = sensor_state.attributes.get("unit_of_measurement", "°C")
                     if unit in ["°F", "fahrenheit", "F"]:
                         temp = (temp - 32) * 5.0 / 9.0
-                    self._outdoor_temperature = temp
-                    return temp
+                    fresh_temp = temp
                 except (ValueError, TypeError) as e:
                     _LOGGER.warning("Could not read outdoor temperature sensor: %s", e)
 
-        if self.weather_entity:
+        if fresh_temp is None and self.weather_entity:
             weather_state = self.hass.states.get(self.weather_entity)
             if weather_state:
                 temp = weather_state.attributes.get("temperature")
                 if temp is not None:
                     try:
-                        temp = float(temp)
-                        self._outdoor_temperature = temp
-                        return temp
+                        fresh_temp = float(temp)
                     except (ValueError, TypeError) as e:
                         _LOGGER.warning("Could not read weather temperature: %s", e)
+
+        # If we got fresh temperature, cache it and return
+        if fresh_temp is not None:
+            self._outdoor_temperature = fresh_temp
+            self._outdoor_temperature_timestamp = current_time
+            return fresh_temp
+
+        # No fresh temperature available - check if we have cached value within max age
+        if self._outdoor_temperature is not None and self._outdoor_temperature_timestamp is not None:
+            cache_age = current_time - self._outdoor_temperature_timestamp
+            if cache_age < CACHE_MAX_AGE:
+                _LOGGER.debug("Using cached outdoor temperature (%.1f°C, age: %.0f seconds)",
+                             self._outdoor_temperature, cache_age)
+                return self._outdoor_temperature
+            else:
+                _LOGGER.debug("Cached outdoor temperature expired (age: %.0f seconds > %d max)",
+                             cache_age, CACHE_MAX_AGE)
 
         return None
 
@@ -706,7 +831,8 @@ class AirconOptimizer:
                 # Room shows no occupancy - check vacancy timeout
                 if room_state["occupied"]:
                     # Was occupied, now vacant - check timeout
-                    last_seen = room_state.get("last_seen", current_time)
+                    # Default to distant past to force vacancy if last_seen is missing
+                    last_seen = room_state.get("last_seen", current_time - self.vacancy_timeout - 1)
                     time_vacant = current_time - last_seen
 
                     if time_vacant >= self.vacancy_timeout:
@@ -775,6 +901,7 @@ class AirconOptimizer:
     def _get_temp_rate_of_change(self, room_name: str) -> float | None:
         """Get temperature rate of change in degrees per minute.
 
+        Uses least-squares regression with outlier filtering to handle sensor glitches.
         Positive = temperature rising, Negative = temperature falling.
         Returns None if insufficient data.
         """
@@ -782,12 +909,32 @@ class AirconOptimizer:
         if len(history) < 3:
             return None
 
-        # Use linear regression over recent points for a more stable estimate
-        n = len(history)
+        # Extract times and temperatures
         times = [h[0] for h in history]
         temps = [h[1] for h in history]
 
-        # Calculate slope using least squares
+        # Filter outliers using 2-sigma rule (remove points > 2 std devs from mean)
+        # This prevents sensor glitches from skewing the regression
+        if len(temps) >= 5:  # Only filter if we have enough data
+            temp_mean = sum(temps) / len(temps)
+            temp_variance = sum((t - temp_mean) ** 2 for t in temps) / len(temps)
+            temp_std = temp_variance ** 0.5
+
+            if temp_std > 0.1:  # Only filter if there's meaningful variation
+                filtered_data = [(t, temp) for t, temp in zip(times, temps)
+                                if abs(temp - temp_mean) <= 2 * temp_std]
+
+                if len(filtered_data) >= 3:  # Need at least 3 points after filtering
+                    times = [d[0] for d in filtered_data]
+                    temps = [d[1] for d in filtered_data]
+                    if len(filtered_data) < len(history):
+                        _LOGGER.debug(
+                            "Filtered %d outlier(s) from temperature history for %s",
+                            len(history) - len(filtered_data), room_name
+                        )
+
+        # Calculate slope using least squares regression
+        n = len(times)
         t_mean = sum(times) / n
         temp_mean = sum(temps) / n
 
@@ -804,12 +951,24 @@ class AirconOptimizer:
     def _predict_temperature(self, room_name: str, current_temp: float) -> float | None:
         """Predict temperature N minutes in the future based on rate of change.
 
+        Uses dampening to account for exponential decay (Newton's law of cooling).
+        As temperature approaches target, rate of change slows down.
+
         Returns predicted temperature or None if insufficient data.
         """
         rate = self._get_temp_rate_of_change(room_name)
         if rate is None:
             return None
-        predicted = current_temp + (rate * self.predictive_lookahead_minutes)
+
+        # Apply exponential decay dampening factor
+        # Linear prediction overestimates because it assumes constant rate
+        # Reality: rate slows as temp approaches equilibrium
+        # Dampen by 60% to account for this (empirically determined)
+        DECAY_DAMPING_FACTOR = 0.6
+
+        predicted_change = rate * self.predictive_lookahead_minutes * DECAY_DAMPING_FACTOR
+        predicted = current_temp + predicted_change
+
         return predicted
 
     def _apply_predictive_adjustment(self, room_name: str, base_fan_speed: int,
@@ -958,9 +1117,9 @@ class AirconOptimizer:
 
         room_states = await self._collect_room_states(effective_target)
 
-        # Update temperature history for predictive control
-        if self.enable_predictive_control:
-            self._update_temp_history(room_states)
+        # Always update temperature history (even if predictive control is disabled)
+        # This ensures history is available if user enables predictive control later
+        self._update_temp_history(room_states)
 
         main_climate_state = None
         main_ac_running = False
@@ -1281,14 +1440,17 @@ class AirconOptimizer:
             # Calculate raw fan speed (with adaptive bands and efficiency if enabled)
             raw_fan_speed = self._calculate_fan_speed(temp_diff, abs_temp_diff, room_name)
 
-            # Apply smoothing to prevent oscillation
-            fan_speed = self._smooth_fan_speed(room_name, raw_fan_speed)
-
-            # Apply predictive adjustment if enabled
+            # Apply predictive adjustment BEFORE smoothing to preserve predictive boost effectiveness
+            # Predictive control adds proactive adjustments to prevent overshoot
+            fan_speed_with_prediction = raw_fan_speed
             if self.enable_predictive_control:
-                fan_speed = self._apply_predictive_adjustment(
-                    room_name, fan_speed, current_temp, room_effective_target
+                fan_speed_with_prediction = self._apply_predictive_adjustment(
+                    room_name, raw_fan_speed, current_temp, room_effective_target
                 )
+
+            # Apply smoothing AFTER predictive adjustment to prevent oscillation
+            # This ensures the predictive boost isn't dampened by smoothing
+            fan_speed = self._smooth_fan_speed(room_name, fan_speed_with_prediction)
 
             recommendations[room_name] = fan_speed
 
@@ -1543,15 +1705,23 @@ class AirconOptimizer:
                     profile = self.learning_manager.get_profile(room_name)
                     if profile:
                         # 1. Apply learned balancing bias (accumulated historical adjustments)
-                        balancing_bias += profile.balancing_bias * 10
+                        # Clamp to prevent unbounded accumulation over months
+                        clamped_learned_bias = max(-5.0, min(5.0, profile.balancing_bias))
+                        balancing_bias += clamped_learned_bias * 10
 
-                        # 2. Apply relative convergence rate adjustment
+                        # 2. Apply relative convergence rate adjustment (additive, not multiplicative)
+                        # This prevents the multiplier from affecting the learned bias component
+                        convergence_adjustment = 0.0
                         if self.hvac_mode == "cool":
                             # Fast heating room needs more cooling in cooling mode
-                            balancing_bias *= profile.relative_heat_gain_rate
+                            # relative_heat_gain_rate > 1.0 means faster than average
+                            convergence_adjustment = (profile.relative_heat_gain_rate - 1.0) * deviation_from_avg * 50
                         elif self.hvac_mode == "heat":
                             # Fast cooling room needs more heating in heating mode
-                            balancing_bias *= (2.0 - profile.relative_cool_rate)
+                            # relative_cool_rate > 1.0 means faster than average
+                            convergence_adjustment = (1.0 - profile.relative_cool_rate) * deviation_from_avg * 50
+
+                        balancing_bias += convergence_adjustment
 
                         # 3. Apply room coupling adjustments if enabled
                         if self.enable_room_coupling_detection and profile.coupling_factors:
@@ -1564,8 +1734,8 @@ class AirconOptimizer:
                                     balancing_bias += coupled_deviation * coupling_factor * 5
 
                         _LOGGER.debug(
-                            "  %s: Applied adaptive balancing (bias=%.1f, rel_rate=%.2f, %d coupled rooms)",
-                            room_name, profile.balancing_bias, profile.relative_heat_gain_rate,
+                            "  %s: Applied adaptive balancing (learned_bias=%.1f, convergence_adj=%.1f, %d coupled rooms)",
+                            room_name, clamped_learned_bias, convergence_adjustment,
                             len(profile.coupled_rooms)
                         )
 
@@ -1678,10 +1848,17 @@ class AirconOptimizer:
         if not self._quick_action_mode:
             return recommendations
 
-        # Check expiry
+        # Check expiry with atomic check-and-clear to prevent race conditions
         import time
         if self._quick_action_expiry and time.time() > self._quick_action_expiry:
-            self._exit_quick_action_mode()
+            # Atomically capture and clear expiry to prevent duplicate exits
+            expiry_time = self._quick_action_expiry
+            self._quick_action_expiry = None
+
+            # Only exit if we successfully captured a non-None expiry
+            # This prevents concurrent calls from both exiting
+            if expiry_time:
+                self._exit_quick_action_mode()
             return recommendations
 
         adjusted = {}
@@ -1772,14 +1949,34 @@ class AirconOptimizer:
 
         mode = self._quick_action_mode
 
-        # Restore original settings
+        # Restore original settings only if they haven't been changed externally
         if self._quick_action_original_settings:
-            self.target_temperature = self._quick_action_original_settings.get(
-                "target_temperature", self.target_temperature
-            )
-            self.temperature_deadband = self._quick_action_original_settings.get(
-                "temperature_deadband", self.temperature_deadband
-            )
+            original_temp = self._quick_action_original_settings.get("target_temperature")
+            original_deadband = self._quick_action_original_settings.get("temperature_deadband")
+
+            # Check if current values match what the mode would have set
+            # If they don't match, user likely changed them manually - don't restore
+            mode_changed_temp = False
+            mode_changed_deadband = False
+
+            if mode == "vacation":
+                mode_changed_deadband = (self.temperature_deadband == 2.0)
+            elif mode == "sleep":
+                if self.hvac_mode == "cool" and original_temp:
+                    mode_changed_temp = abs(self.target_temperature - (original_temp + 1.0)) < 0.1
+                elif self.hvac_mode == "heat" and original_temp:
+                    mode_changed_temp = abs(self.target_temperature - (original_temp - 1.0)) < 0.1
+
+            # Only restore if value appears unchanged by user
+            if original_temp and (mode not in ["sleep"] or mode_changed_temp):
+                self.target_temperature = original_temp
+            elif original_temp and mode in ["sleep"] and not mode_changed_temp:
+                _LOGGER.info("Target temperature was manually changed during %s mode, not restoring", mode)
+
+            if original_deadband and (mode != "vacation" or mode_changed_deadband):
+                self.temperature_deadband = original_deadband
+            elif original_deadband and mode == "vacation" and not mode_changed_deadband:
+                _LOGGER.info("Temperature deadband was manually changed during %s mode, not restoring", mode)
 
         self._quick_action_mode = None
         self._quick_action_expiry = None
@@ -1863,24 +2060,28 @@ class AirconOptimizer:
 
         efficiency = profile.cooling_efficiency
 
-        # Determine adjustment based on efficiency
-        if efficiency > 0.7:
-            # High efficiency - room responds well - reduce fan speed
-            adjustment = -0.15  # Reduce by 15%
-            _LOGGER.debug(
-                "Room %s has high efficiency (%.2f), reducing fan speed by 15%%",
-                room_name, efficiency
-            )
-        elif efficiency < 0.4:
-            # Low efficiency - room struggles - increase fan speed
-            adjustment = 0.15  # Increase by 15%
-            _LOGGER.debug(
-                "Room %s has low efficiency (%.2f), increasing fan speed by 15%%",
-                room_name, efficiency
-            )
-        else:
-            # Medium efficiency - no adjustment needed
-            adjustment = 0.0
+        # Proportional adjustment based on efficiency
+        # Target efficiency is 0.55 (middle of range)
+        # Adjustment scales linearly with distance from target:
+        #   efficiency = 1.0 → adjustment = -18% (highly efficient, reduce fan)
+        #   efficiency = 0.7 → adjustment = -6%
+        #   efficiency = 0.55 → adjustment = 0% (optimal)
+        #   efficiency = 0.4 → adjustment = +6%
+        #   efficiency = 0.0 → adjustment = +22% (inefficient, increase fan)
+        TARGET_EFFICIENCY = 0.55
+        MAX_ADJUSTMENT = 0.40  # Max ±40% adjustment
+
+        # Calculate proportional adjustment
+        efficiency_deviation = TARGET_EFFICIENCY - efficiency
+        adjustment = efficiency_deviation * MAX_ADJUSTMENT
+
+        # Clamp adjustment to reasonable bounds (±25%)
+        adjustment = max(-0.25, min(0.25, adjustment))
+
+        _LOGGER.debug(
+            "Room %s efficiency-based adjustment: efficiency=%.2f, adjustment=%+.1f%%",
+            room_name, efficiency, adjustment * 100
+        )
 
         # Apply adjustment and clamp to valid range
         adjusted_speed = base_speed * (1 + adjustment)
@@ -1976,13 +2177,22 @@ class AirconOptimizer:
 
             cover_entity = room_config["cover_entity"]
             cover_state = self.hass.states.get(cover_entity)
-            
+
             if not cover_state:
                 _LOGGER.warning("Cover entity %s for room %s not found", cover_entity, room_name)
                 continue
 
             if cover_state.state in ["unavailable", "unknown"]:
                 _LOGGER.warning("Cover entity %s for room %s is %s", cover_entity, room_name, cover_state.state)
+                continue
+
+            # Skip if cover is currently moving to prevent oscillation
+            # Wait for current movement to complete before issuing new command
+            if cover_state.state in ["opening", "closing"]:
+                _LOGGER.debug(
+                    "Cover %s for room %s is currently %s, skipping position update to avoid oscillation",
+                    cover_entity, room_name, cover_state.state
+                )
                 continue
 
             # Use retry logic for cover position changes
@@ -2130,30 +2340,42 @@ class AirconOptimizer:
 
         if self.hvac_mode == "cool":
             if ac_currently_on:
+                # To turn OFF in cooling mode, we must have OVERCOOLED
+                # avg_temp must be below target by turn_off_threshold
+                # AND max room temp must also be at or below target (all rooms satisfied)
+                # This prevents turning off when we just haven't reached target yet
                 max_temp = max(temps)
-                turn_off = (temp_diff <= -self.ac_turn_off_threshold and max_temp <= effective_target)
-                if turn_off:
-                    _LOGGER.info("AC turn OFF: avg=%.1f°C (%.1f°C below)", avg_temp, abs(temp_diff))
-                return not turn_off
+                overcooled = (temp_diff <= -self.ac_turn_off_threshold and max_temp <= effective_target)
+                if overcooled:
+                    _LOGGER.info("AC turn OFF (overcooled): avg=%.1f°C (%.1f°C below target), max=%.1f°C",
+                                 avg_temp, abs(temp_diff), max_temp)
+                return not overcooled
             else:
+                # To turn ON in cooling mode, avg temp must be above target
                 turn_on = temp_diff >= self.ac_turn_on_threshold
                 if turn_on:
-                    _LOGGER.info("AC turn ON: avg=%.1f°C (+%.1f°C above)", avg_temp, temp_diff)
+                    _LOGGER.info("AC turn ON (too hot): avg=%.1f°C (+%.1f°C above target)", avg_temp, temp_diff)
                 return turn_on
 
         elif self.hvac_mode == "heat":
             if ac_currently_on:
+                # To turn OFF in heating mode, we must have OVERHEATED
+                # avg_temp must be above target by turn_off_threshold
+                # AND min room temp must also be at or above target (all rooms satisfied)
+                # This prevents turning off when we just haven't reached target yet
                 min_temp = min(temps)
-                turn_off = (temp_diff >= self.ac_turn_off_threshold and min_temp >= effective_target)
-                if turn_off:
-                    _LOGGER.info("AC turn OFF: avg=%.1f°C (+%.1f°C above)", avg_temp, temp_diff)
-                return not turn_off
+                overheated = (temp_diff >= self.ac_turn_off_threshold and min_temp >= effective_target)
+                if overheated:
+                    _LOGGER.info("AC turn OFF (overheated): avg=%.1f°C (+%.1f°C above target), min=%.1f°C",
+                                 avg_temp, temp_diff, min_temp)
+                return not overheated
             else:
+                # To turn ON in heating mode, avg temp must be below target
                 turn_on = temp_diff <= -self.ac_turn_on_threshold
                 if turn_on:
-                    _LOGGER.info("AC turn ON: avg=%.1f°C (%.1f°C below)", avg_temp, abs(temp_diff))
+                    _LOGGER.info("AC turn ON (too cold): avg=%.1f°C (%.1f°C below target)", avg_temp, abs(temp_diff))
                 return turn_on
-        else:
+        else:  # auto mode
             return abs(temp_diff) > self.temperature_deadband
 
     async def _set_hvac_mode(self, optimal_mode: str, main_climate_state: dict[str, Any] | None) -> None:
@@ -2281,6 +2503,8 @@ class AirconOptimizer:
                 )
                 if success:
                     self._ac_last_turned_on = time.time()
+                    # Persist timestamp for compressor protection across restarts
+                    await self._save_compressor_state()
                     await self._send_notification("AC Turned On", f"Smart Manager turned on AC in {optimal_mode} mode")
             else:
                 # AC is already on, just set the optimal mode
@@ -2296,6 +2520,8 @@ class AirconOptimizer:
                 )
                 if success:
                     self._ac_last_turned_off = time.time()
+                    # Persist timestamp for compressor protection across restarts
+                    await self._save_compressor_state()
                     await self._send_notification("AC Turned Off", "Smart Manager turned off AC (rooms at target)")
 
     async def _set_ac_temperature(self, temperature: float) -> None:
