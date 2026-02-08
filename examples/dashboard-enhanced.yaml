@@ -1,0 +1,609 @@
+# Enhanced Dashboard for Smart Aircon Manager v2.7.0
+#
+# This dashboard showcases all features including Quick Actions, Learning Status,
+# Adaptive Balancing, and Visual Temperature Monitoring
+#
+# IMPORTANT: Replace 'YOUR_CONFIG_ENTRY_ID' with your actual config entry ID
+# Find it in Developer Tools → States → search for smart_aircon_manager entities
+# Look for entity_id attributes containing the config_entry_id
+#
+# Required Custom Cards (install via HACS):
+#   - mushroom-cards: https://github.com/piitaya/lovelace-mushroom
+#   - bar-card: https://github.com/custom-cards/bar-card
+#   - layout-card: https://github.com/thomasloven/lovelace-layout-card
+#
+# See examples/dashboard-README.md for detailed installation instructions
+
+title: Smart Aircon Manager
+views:
+  - title: Overview
+    path: overview
+    icon: mdi:air-conditioner
+    cards:
+      # Quick Actions Panel
+      - type: horizontal-stack
+        title: Quick Actions
+        cards:
+          - type: custom:mushroom-template-card
+            primary: Vacation Mode
+            secondary: 30% fans, wider deadband
+            icon: mdi:bag-checked
+            icon_color: |
+              {% if states('sensor.smart_aircon_manager_quick_action_mode') == 'vacation' %}
+                amber
+              {% else %}
+                grey
+              {% endif %}
+            tap_action:
+              action: call-service
+              service: smart_aircon_manager.vacation_mode
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
+                enabled: true
+            hold_action:
+              action: call-service
+              service: smart_aircon_manager.vacation_mode
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
+                enabled: false
+
+          - type: custom:mushroom-template-card
+            primary: Boost Mode
+            secondary: 150% fans, 30 min
+            icon: mdi:rocket-launch
+            icon_color: |
+              {% if states('sensor.smart_aircon_manager_quick_action_mode') == 'boost' %}
+                red
+              {% else %}
+                grey
+              {% endif %}
+            tap_action:
+              action: call-service
+              service: smart_aircon_manager.boost_mode
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
+                duration_minutes: 30
+
+          - type: custom:mushroom-template-card
+            primary: Sleep Mode
+            secondary: Max 40% fans, quiet
+            icon: mdi:sleep
+            icon_color: |
+              {% if states('sensor.smart_aircon_manager_quick_action_mode') == 'sleep' %}
+                blue
+              {% else %}
+                grey
+              {% endif %}
+            tap_action:
+              action: call-service
+              service: smart_aircon_manager.sleep_mode
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
+                duration_minutes: 480
+
+          - type: custom:mushroom-template-card
+            primary: Party Mode
+            secondary: Equalize all rooms
+            icon: mdi:party-popper
+            icon_color: |
+              {% if states('sensor.smart_aircon_manager_quick_action_mode') == 'party' %}
+                pink
+              {% else %}
+                grey
+              {% endif %}
+            tap_action:
+              action: call-service
+              service: smart_aircon_manager.party_mode
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
+                duration_minutes: 120
+
+      # System Status
+      - type: entities
+        title: System Status
+        show_header_toggle: false
+        entities:
+          - entity: sensor.smart_aircon_manager_quick_action_mode
+            name: Active Mode
+            icon: mdi:lightning-bolt
+          - entity: sensor.smart_aircon_manager_active_schedule
+            name: Active Schedule
+            icon: mdi:calendar-clock
+          - entity: switch.smart_aircon_manager_manual_override
+            name: Manual Override
+            icon: mdi:account-wrench
+          - entity: sensor.smart_aircon_manager_house_avg_temperature
+            name: House Average Temp
+            icon: mdi:thermometer
+          - entity: sensor.smart_aircon_manager_room_variance
+            name: Room Variance
+            icon: mdi:chart-bell-curve
+
+      # System Overview Gauges
+      - type: horizontal-stack
+        cards:
+          - type: gauge
+            entity: sensor.smart_aircon_manager_house_avg_temperature
+            name: House Average
+            min: 18
+            max: 28
+            severity:
+              green: 20
+              yellow: 23
+              red: 26
+            needle: true
+
+          - type: gauge
+            entity: sensor.smart_aircon_manager_room_variance
+            name: Room Variance
+            min: 0
+            max: 5
+            severity:
+              green: 0
+              yellow: 2
+              red: 3
+            needle: true
+
+      # Visual Room Temperature Map
+      # IMPORTANT: Edit this section to match your actual room names
+      # Replace "Living Room", "Bedroom", etc. with your configured room names
+      - type: custom:layout-card
+        layout_type: grid
+        layout:
+          grid-template-columns: 1fr 1fr 1fr
+          grid-template-rows: auto
+        title: Room Temperature Map
+        cards:
+          # Row 1
+          - type: custom:mushroom-template-card
+            primary: Living Room
+            secondary: |
+              {{ states('sensor.living_room_temperature') }}°C
+              (Target: {{ states('sensor.living_room_target_temperature') }}°C)
+            icon: mdi:sofa
+            icon_color: |
+              {% set temp = states('sensor.living_room_temperature') | float(0) %}
+              {% set target = states('sensor.living_room_target_temperature') | float(22) %}
+              {% set diff = temp - target %}
+              {% if diff > 2 %}
+                red
+              {% elif diff > 1 %}
+                orange
+              {% elif diff > 0.5 %}
+                yellow
+              {% elif diff < -2 %}
+                blue
+              {% elif diff < -1 %}
+                light-blue
+              {% else %}
+                green
+              {% endif %}
+            badge_icon: mdi:fan
+            badge_color: |
+              {% set speed = states('sensor.living_room_fan_speed') | int(0) %}
+              {% if speed > 70 %}
+                red
+              {% elif speed > 30 %}
+                yellow
+              {% else %}
+                green
+              {% endif %}
+
+          - type: custom:mushroom-template-card
+            primary: Bedroom
+            secondary: |
+              {{ states('sensor.bedroom_temperature') }}°C
+              (Target: {{ states('sensor.bedroom_target_temperature') }}°C)
+            icon: mdi:bed
+            icon_color: |
+              {% set temp = states('sensor.bedroom_temperature') | float(0) %}
+              {% set target = states('sensor.bedroom_target_temperature') | float(22) %}
+              {% set diff = temp - target %}
+              {% if diff > 2 %}
+                red
+              {% elif diff > 1 %}
+                orange
+              {% elif diff > 0.5 %}
+                yellow
+              {% elif diff < -2 %}
+                blue
+              {% elif diff < -1 %}
+                light-blue
+              {% else %}
+                green
+              {% endif %}
+            badge_icon: mdi:fan
+            badge_color: |
+              {% set speed = states('sensor.bedroom_fan_speed') | int(0) %}
+              {% if speed > 70 %}
+                red
+              {% elif speed > 30 %}
+                yellow
+              {% else %}
+                green
+              {% endif %}
+
+          - type: custom:mushroom-template-card
+            primary: Kitchen
+            secondary: |
+              {{ states('sensor.kitchen_temperature') }}°C
+              (Target: {{ states('sensor.kitchen_target_temperature') }}°C)
+            icon: mdi:silverware-fork-knife
+            icon_color: |
+              {% set temp = states('sensor.kitchen_temperature') | float(0) %}
+              {% set target = states('sensor.kitchen_target_temperature') | float(22) %}
+              {% set diff = temp - target %}
+              {% if diff > 2 %}
+                red
+              {% elif diff > 1 %}
+                orange
+              {% elif diff > 0.5 %}
+                yellow
+              {% elif diff < -2 %}
+                blue
+              {% elif diff < -1 %}
+                light-blue
+              {% else %}
+                green
+              {% endif %}
+            badge_icon: mdi:fan
+            badge_color: |
+              {% set speed = states('sensor.kitchen_fan_speed') | int(0) %}
+              {% if speed > 70 %}
+                red
+              {% elif speed > 30 %}
+                yellow
+              {% else %}
+                green
+              {% endif %}
+
+          # Row 2 - Add more rooms as needed
+          - type: custom:mushroom-template-card
+            primary: Office
+            secondary: |
+              {{ states('sensor.office_temperature') }}°C
+              (Target: {{ states('sensor.office_target_temperature') }}°C)
+            icon: mdi:desk
+            icon_color: |
+              {% set temp = states('sensor.office_temperature') | float(0) %}
+              {% set target = states('sensor.office_target_temperature') | float(22) %}
+              {% set diff = temp - target %}
+              {% if diff > 2 %}
+                red
+              {% elif diff > 1 %}
+                orange
+              {% elif diff > 0.5 %}
+                yellow
+              {% elif diff < -2 %}
+                blue
+              {% elif diff < -1 %}
+                light-blue
+              {% else %}
+                green
+              {% endif %}
+            badge_icon: mdi:fan
+            badge_color: |
+              {% set speed = states('sensor.office_fan_speed') | int(0) %}
+              {% if speed > 70 %}
+                red
+              {% elif speed > 30 %}
+                yellow
+              {% else %}
+                green
+              {% endif %}
+
+      # Fan Speed Visualization
+      - type: custom:bar-card
+        title: Fan Speeds
+        entity_row: true
+        entities:
+          - entity: sensor.living_room_fan_speed
+            name: Living Room
+            icon: mdi:sofa
+            max: 100
+            min: 0
+            severity:
+              - color: green
+                from: 0
+                to: 30
+              - color: yellow
+                from: 30
+                to: 70
+              - color: red
+                from: 70
+                to: 100
+          - entity: sensor.bedroom_fan_speed
+            name: Bedroom
+            icon: mdi:bed
+            max: 100
+            min: 0
+            severity:
+              - color: green
+                from: 0
+                to: 30
+              - color: yellow
+                from: 30
+                to: 70
+              - color: red
+                from: 70
+                to: 100
+          - entity: sensor.kitchen_fan_speed
+            name: Kitchen
+            icon: mdi:silverware-fork-knife
+            max: 100
+            min: 0
+            severity:
+              - color: green
+                from: 0
+                to: 30
+              - color: yellow
+                from: 30
+                to: 70
+              - color: red
+                from: 70
+                to: 100
+          - entity: sensor.office_fan_speed
+            name: Office
+            icon: mdi:desk
+            max: 100
+            min: 0
+            severity:
+              - color: green
+                from: 0
+                to: 30
+              - color: yellow
+                from: 30
+                to: 70
+              - color: red
+                from: 70
+                to: 100
+
+  # Learning & Analytics View
+  - title: Learning
+    path: learning
+    icon: mdi:brain
+    cards:
+      - type: markdown
+        content: |
+          ## Adaptive Learning Status
+
+          The Smart Aircon Manager learns your home's thermal characteristics
+          and adapts its behavior for optimal comfort and efficiency.
+
+          **Requirements:**
+          - Learning mode enabled
+          - Confidence ≥ 0.7 (200+ data points)
+          - Features activate automatically when ready
+
+      # Learning Confidence Overview
+      - type: entities
+        title: Learning Status
+        show_header_toggle: false
+        entities:
+          - entity: sensor.living_room_learning_confidence
+            name: Living Room Confidence
+            icon: mdi:percent
+          - entity: sensor.bedroom_learning_confidence
+            name: Bedroom Confidence
+            icon: mdi:percent
+          - entity: sensor.kitchen_learning_confidence
+            name: Kitchen Confidence
+            icon: mdi:percent
+          - entity: sensor.office_learning_confidence
+            name: Office Confidence
+            icon: mdi:percent
+
+      # Thermal Characteristics
+      - type: custom:layout-card
+        layout_type: grid
+        layout:
+          grid-template-columns: 1fr 1fr
+        title: Thermal Characteristics
+        cards:
+          - type: entities
+            title: Thermal Mass
+            entities:
+              - entity: sensor.living_room_thermal_mass
+                name: Living Room
+              - entity: sensor.bedroom_thermal_mass
+                name: Bedroom
+              - entity: sensor.kitchen_thermal_mass
+                name: Kitchen
+              - entity: sensor.office_thermal_mass
+                name: Office
+
+          - type: entities
+            title: Cooling Efficiency
+            entities:
+              - entity: sensor.living_room_cooling_efficiency
+                name: Living Room
+              - entity: sensor.bedroom_cooling_efficiency
+                name: Bedroom
+              - entity: sensor.kitchen_cooling_efficiency
+                name: Kitchen
+              - entity: sensor.office_cooling_efficiency
+                name: Office
+
+      # Convergence Performance
+      - type: entities
+        title: Convergence Performance
+        entities:
+          - entity: sensor.living_room_avg_convergence_time
+            name: Living Room
+            icon: mdi:timer-sand
+          - entity: sensor.bedroom_avg_convergence_time
+            name: Bedroom
+            icon: mdi:timer-sand
+          - entity: sensor.kitchen_avg_convergence_time
+            name: Kitchen
+            icon: mdi:timer-sand
+          - entity: sensor.office_avg_convergence_time
+            name: Office
+            icon: mdi:timer-sand
+
+      # Room Coupling Detection
+      - type: markdown
+        content: |
+          ## Room Coupling Detection
+
+          Thermally coupled rooms (shared walls, open doors) are automatically
+          detected and considered during balancing optimization.
+
+      - type: entities
+        title: Detected Couplings
+        entities:
+          - entity: sensor.living_room_coupled_rooms
+            name: Living Room Couples
+          - entity: sensor.bedroom_coupled_rooms
+            name: Bedroom Couples
+          - entity: sensor.kitchen_coupled_rooms
+            name: Kitchen Couples
+          - entity: sensor.office_coupled_rooms
+            name: Office Couples
+
+      # Data Collection Progress
+      - type: horizontal-stack
+        cards:
+          - type: custom:mushroom-template-card
+            primary: Living Room
+            secondary: |
+              {{ states('sensor.living_room_data_points') }} data points
+            icon: mdi:database
+            icon_color: |
+              {% set points = states('sensor.living_room_data_points') | int(0) %}
+              {% if points >= 200 %}
+                green
+              {% elif points >= 100 %}
+                yellow
+              {% else %}
+                red
+              {% endif %}
+
+          - type: custom:mushroom-template-card
+            primary: Bedroom
+            secondary: |
+              {{ states('sensor.bedroom_data_points') }} data points
+            icon: mdi:database
+            icon_color: |
+              {% set points = states('sensor.bedroom_data_points') | int(0) %}
+              {% if points >= 200 %}
+                green
+              {% elif points >= 100 %}
+                yellow
+              {% else %}
+                red
+              {% endif %}
+
+          - type: custom:mushroom-template-card
+            primary: Kitchen
+            secondary: |
+              {{ states('sensor.kitchen_data_points') }} data points
+            icon: mdi:database
+            icon_color: |
+              {% set points = states('sensor.kitchen_data_points') | int(0) %}
+              {% if points >= 200 %}
+                green
+              {% elif points >= 100 %}
+                yellow
+              {% else %}
+                red
+              {% endif %}
+
+          - type: custom:mushroom-template-card
+            primary: Office
+            secondary: |
+              {{ states('sensor.office_data_points') }} data points
+            icon: mdi:database
+            icon_color: |
+              {% set points = states('sensor.office_data_points') | int(0) %}
+              {% if points >= 200 %}
+                green
+              {% elif points >= 100 %}
+                yellow
+              {% else %}
+                red
+              {% endif %}
+
+  # Schedules View
+  - title: Schedules
+    path: schedules
+    icon: mdi:calendar-clock
+    cards:
+      - type: entities
+        title: Schedule Control
+        entities:
+          - entity: sensor.smart_aircon_manager_active_schedule
+            name: Active Schedule
+            icon: mdi:calendar-check
+          - entity: sensor.smart_aircon_manager_next_schedule
+            name: Next Schedule
+            icon: mdi:calendar-arrow-right
+
+      - type: markdown
+        content: |
+          ## Schedule Management
+
+          Configure schedules in the integration settings.
+          Schedules can be time-based, room-specific, and seasonal.
+
+          To add or modify schedules, go to:
+          **Settings → Devices & Services → Smart Aircon Manager → Configure**
+
+  # Advanced Settings
+  - title: Advanced
+    path: advanced
+    icon: mdi:cog
+    cards:
+      - type: entities
+        title: System Control
+        entities:
+          - entity: switch.smart_aircon_manager_manual_override
+            name: Manual Override
+          - entity: sensor.smart_aircon_manager_optimization_cycle_time
+            name: Cycle Time
+            icon: mdi:timer
+          - entity: sensor.smart_aircon_manager_error_count
+            name: Error Count
+            icon: mdi:alert-circle
+
+      - type: entities
+        title: Learning Control
+        entities:
+          - type: button
+            name: Analyze Learning Now
+            icon: mdi:brain
+            tap_action:
+              action: call-service
+              service: smart_aircon_manager.analyze_learning
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
+          - type: button
+            name: Reset Learning Data
+            icon: mdi:restore
+            tap_action:
+              action: call-service
+              service: smart_aircon_manager.reset_learning
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
+            confirmation:
+              text: Are you sure you want to reset all learning data?
+
+      - type: entities
+        title: Optimization Control
+        entities:
+          - type: button
+            name: Force Optimization
+            icon: mdi:refresh
+            tap_action:
+              action: call-service
+              service: smart_aircon_manager.force_optimize
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
+          - type: button
+            name: Reset Smoothing
+            icon: mdi:chart-line-variant
+            tap_action:
+              action: call-service
+              service: smart_aircon_manager.reset_smoothing
+              data:
+                config_entry_id: YOUR_CONFIG_ENTRY_ID
