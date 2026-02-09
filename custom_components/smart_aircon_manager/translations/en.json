@@ -19,6 +19,8 @@
           "room_name": "Room Name",
           "temperature_sensor": "Temperature Sensor",
           "cover_entity": "Zone Fan Speed Control",
+          "humidity_sensor": "Humidity Sensor (Optional)",
+          "room_target_temperature": "Room Target Temperature (Optional - overrides house target)",
           "add_another": "Add another room after this one? (Uncheck to finish setup)"
         }
       }
@@ -82,7 +84,27 @@
         "data": {
           "room_name": "Room Name",
           "temperature_sensor": "Temperature Sensor",
-          "cover_entity": "Zone Fan Speed Control"
+          "cover_entity": "Zone Fan Speed Control",
+          "humidity_sensor": "Humidity Sensor (Optional)",
+          "room_target_temperature": "Room Target Temperature (Optional - overrides house target)"
+        }
+      },
+      "select_room_to_edit": {
+        "title": "Select Room to Edit",
+        "description": "Choose which room to edit",
+        "data": {
+          "room_to_edit": "Room to Edit"
+        }
+      },
+      "edit_room": {
+        "title": "Edit Room: {room_name}",
+        "description": "Update room configuration. Leave Room Target Temperature empty to use the house target.",
+        "data": {
+          "room_name": "Room Name",
+          "temperature_sensor": "Temperature Sensor",
+          "cover_entity": "Zone Fan Speed Control",
+          "humidity_sensor": "Humidity Sensor (Optional)",
+          "room_target_temperature": "Room Target Temperature (Optional - overrides house target)"
         }
       },
       "remove_room": {

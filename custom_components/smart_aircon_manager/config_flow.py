@@ -20,6 +20,7 @@ from .const import (
     CONF_TEMPERATURE_SENSOR,
     CONF_COVER_ENTITY,
     CONF_HUMIDITY_SENSOR,
+    CONF_ROOM_TARGET_TEMPERATURE,
     CONF_MAIN_CLIMATE_ENTITY,
     CONF_MAIN_FAN_ENTITY,
     CONF_UPDATE_INTERVAL,
@@ -150,9 +151,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
                 }
 
-                # Add humidity sensor if provided
+                # Add optional fields if provided
                 if user_input.get(CONF_HUMIDITY_SENSOR):
                     new_room[CONF_HUMIDITY_SENSOR] = user_input[CONF_HUMIDITY_SENSOR]
+                if user_input.get(CONF_ROOM_TARGET_TEMPERATURE) is not None:
+                    new_room[CONF_ROOM_TARGET_TEMPERATURE] = user_input[CONF_ROOM_TARGET_TEMPERATURE]
 
                 self._rooms.append(new_room)
 
@@ -198,6 +201,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Optional(CONF_HUMIDITY_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
+                ),
+                vol.Optional(CONF_ROOM_TARGET_TEMPERATURE): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10.0,
+                        max=35.0,
+                        step=0.5,
+                        unit_of_measurement="°C",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
                 ),
                 vol.Required("add_another", default=False): cv.boolean,
             }
@@ -443,9 +455,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
                 }
 
-                # Add humidity sensor if provided
+                # Add optional fields if provided
                 if user_input.get(CONF_HUMIDITY_SENSOR):
                     new_room[CONF_HUMIDITY_SENSOR] = user_input[CONF_HUMIDITY_SENSOR]
+                if user_input.get(CONF_ROOM_TARGET_TEMPERATURE) is not None:
+                    new_room[CONF_ROOM_TARGET_TEMPERATURE] = user_input[CONF_ROOM_TARGET_TEMPERATURE]
 
                 current_rooms = list(self.config_entry.data.get(CONF_ROOM_CONFIGS, []))
                 current_rooms.append(new_room)
@@ -474,6 +488,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Optional(CONF_HUMIDITY_SENSOR): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
+                    ),
+                    vol.Optional(CONF_ROOM_TARGET_TEMPERATURE): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=10.0,
+                            max=35.0,
+                            step=0.5,
+                            unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
                     ),
                 }
             ),
@@ -598,9 +621,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
                 }
 
-                # Include humidity sensor if provided
+                # Include optional fields if provided
                 if user_input.get(CONF_HUMIDITY_SENSOR):
                     updated_room[CONF_HUMIDITY_SENSOR] = user_input[CONF_HUMIDITY_SENSOR]
+                if user_input.get(CONF_ROOM_TARGET_TEMPERATURE) is not None:
+                    updated_room[CONF_ROOM_TARGET_TEMPERATURE] = user_input[CONF_ROOM_TARGET_TEMPERATURE]
 
                 # Replace the old room with updated one
                 updated_rooms = [
@@ -639,6 +664,25 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         else:
             schema_dict[vol.Optional(CONF_HUMIDITY_SENSOR)] = selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
+            )
+
+        # Add per-room target temperature with default if it exists
+        room_target = room_to_edit.get(CONF_ROOM_TARGET_TEMPERATURE)
+        if room_target is not None:
+            schema_dict[vol.Optional(CONF_ROOM_TARGET_TEMPERATURE, default=room_target)] = selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=10.0, max=35.0, step=0.5,
+                    unit_of_measurement="°C",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            )
+        else:
+            schema_dict[vol.Optional(CONF_ROOM_TARGET_TEMPERATURE)] = selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=10.0, max=35.0, step=0.5,
+                    unit_of_measurement="°C",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
             )
 
         return self.async_show_form(
