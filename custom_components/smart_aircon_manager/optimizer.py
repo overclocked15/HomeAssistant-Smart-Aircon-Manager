@@ -1664,9 +1664,9 @@ class AirconOptimizer:
                 elif abs_temp_diff >= self.overshoot_tier1_threshold:  # 1-2°C
                     base_speed = 22   # Medium overshoot - reduced cooling
                 elif abs_temp_diff >= 0.7:
-                    base_speed = 30   # Small overshoot - gentle reduction
+                    base_speed = 20   # Small overshoot - gentle reduction
                 else:
-                    base_speed = 35   # Very small overshoot - slight reduction
+                    base_speed = 15   # Very small overshoot - slight reduction
 
                 # Apply efficiency adjustment if room provided
                 if room_name:
@@ -1702,9 +1702,9 @@ class AirconOptimizer:
                 elif abs_temp_diff >= self.overshoot_tier1_threshold:  # 1-2°C
                     base_speed = 22   # Medium overshoot - reduced heating
                 elif abs_temp_diff >= 0.7:
-                    base_speed = 30   # Small overshoot - gentle reduction
+                    base_speed = 20   # Small overshoot - gentle reduction
                 else:
-                    base_speed = 35   # Very small overshoot - slight reduction
+                    base_speed = 15   # Very small overshoot - slight reduction
 
                 # Apply efficiency adjustment if room provided
                 if room_name:
