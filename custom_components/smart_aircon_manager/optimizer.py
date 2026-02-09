@@ -1632,7 +1632,7 @@ class AirconOptimizer:
             base_speed = 50  # Baseline circulation when at target
             # Apply efficiency adjustment if room provided
             if room_name:
-                return self._apply_efficiency_adjustment(base_speed, room_name)
+                return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
             return base_speed
 
         if self.hvac_mode == "cool":
@@ -1653,7 +1653,7 @@ class AirconOptimizer:
 
                 # Apply efficiency adjustment if room provided
                 if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name)
+                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
                 return base_speed
             else:
                 # Room is too cold - overshot target, reduce cooling progressively
@@ -1670,7 +1670,7 @@ class AirconOptimizer:
 
                 # Apply efficiency adjustment if room provided
                 if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name)
+                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
                 return base_speed
 
         elif self.hvac_mode == "heat":
@@ -1691,7 +1691,7 @@ class AirconOptimizer:
 
                 # Apply efficiency adjustment if room provided
                 if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name)
+                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
                 return base_speed
             else:
                 # Room is too warm - overshot target, reduce heating progressively
@@ -1708,7 +1708,7 @@ class AirconOptimizer:
 
                 # Apply efficiency adjustment if room provided
                 if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name)
+                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
                 return base_speed
         else:
             # Auto mode - use magnitude-based approach with adaptive bands
@@ -1729,7 +1729,7 @@ class AirconOptimizer:
 
             # Apply efficiency adjustment if room provided
             if room_name:
-                return self._apply_efficiency_adjustment(base_speed, room_name)
+                return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
             return base_speed
 
     def _apply_room_balancing(
@@ -2139,13 +2139,16 @@ class AirconOptimizer:
         adaptive_bands = {k: v * multiplier for k, v in default_bands.items()}
         return adaptive_bands
 
-    def _apply_efficiency_adjustment(self, base_speed: int, room_name: str) -> int:
+    def _apply_efficiency_adjustment(self, base_speed: int, room_name: str, abs_temp_diff: float = 0.0) -> int:
         """Adjust fan speed based on learned cooling/heating efficiency.
 
         Uses learned cooling_efficiency to optimize fan speeds:
-        - High efficiency (0.7-1.0): Room cools/heats easily - reduce fan speed 15%
-        - Low efficiency (0.0-0.4): Room struggles - increase fan speed 15%
+        - High efficiency (0.7-1.0): Room cools/heats easily - reduce fan speed
+        - Low efficiency (0.0-0.4): Room struggles - increase fan speed
         - Medium efficiency (0.4-0.7): No adjustment needed
+
+        Efficiency reductions are scaled back when the room is far from target,
+        so that reaching the target takes priority over energy efficiency.
         """
         # Check if adaptive efficiency is enabled
         if not self.enable_adaptive_efficiency:
@@ -2161,13 +2164,6 @@ class AirconOptimizer:
         efficiency = profile.cooling_efficiency
 
         # Proportional adjustment based on efficiency
-        # Target efficiency is 0.55 (middle of range)
-        # Adjustment scales linearly with distance from target:
-        #   efficiency = 1.0 → adjustment = -18% (highly efficient, reduce fan)
-        #   efficiency = 0.7 → adjustment = -6%
-        #   efficiency = 0.55 → adjustment = 0% (optimal)
-        #   efficiency = 0.4 → adjustment = +6%
-        #   efficiency = 0.0 → adjustment = +22% (inefficient, increase fan)
         TARGET_EFFICIENCY = 0.55
         MAX_ADJUSTMENT = 0.40  # Max ±40% adjustment
 
@@ -2175,8 +2171,20 @@ class AirconOptimizer:
         efficiency_deviation = TARGET_EFFICIENCY - efficiency
         adjustment = efficiency_deviation * MAX_ADJUSTMENT
 
-        # Clamp adjustment to reasonable bounds (±25%)
-        adjustment = max(-0.25, min(0.25, adjustment))
+        # Clamp adjustment to reasonable bounds (±15%)
+        adjustment = max(-0.15, min(0.15, adjustment))
+
+        # Scale back downward adjustments when room is far from target.
+        # Reaching the target is more important than efficiency savings.
+        #   >=2°C from target: no downward adjustment (full cooling priority)
+        #   1-2°C from target: linearly scaled downward adjustment
+        #   <1°C from target: full downward adjustment (room is close, fine-tune)
+        if adjustment < 0 and abs_temp_diff >= 1.0:
+            if abs_temp_diff >= 2.0:
+                adjustment = 0.0
+            else:
+                scale = (2.0 - abs_temp_diff) / 1.0
+                adjustment *= scale
 
         _LOGGER.debug(
             "Room %s efficiency-based adjustment: efficiency=%.2f, adjustment=%+.1f%%",
