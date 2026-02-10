@@ -1567,6 +1567,10 @@ class AirconOptimizer:
         if self.enable_room_balancing and len(recommendations) > 1:
             recommendations = self._apply_room_balancing(recommendations, room_states, base_effective_target)
 
+        # Normalize fan speeds so the highest damper reaches 100%
+        # This maximizes total system airflow while preserving proportional distribution
+        recommendations = self._normalize_fan_speeds(recommendations)
+
         if self.auto_control_ac_temperature and self.main_climate_entity:
             ac_temp = self._calculate_ac_temperature(room_states, base_effective_target)
             recommendations["ac_temperature"] = ac_temp
@@ -1614,6 +1618,60 @@ class AirconOptimizer:
         # Large change - apply immediately
         self._last_fan_speeds[room_name] = new_speed
         return new_speed
+
+    def _normalize_fan_speeds(self, recommendations: dict[str, int]) -> dict[str, int]:
+        """Normalize fan speeds so the highest damper reaches 100%.
+
+        In a ducted system, partially closing ALL dampers just restricts total
+        airflow and creates back-pressure on the blower. This scales speeds
+        for rooms needing active conditioning so the highest reaches 100%,
+        while preserving the relative distribution between rooms.
+
+        Rooms in overshoot (speed <= 50%, i.e. at/below deadband baseline)
+        are left unchanged to preserve deliberate airflow reduction.
+
+        Only normalizes when meaningful conditioning demand exists (max speed
+        above baseline circulation level).
+        """
+        BASELINE_SPEED = 50  # Deadband baseline circulation speed
+
+        # Separate fan speeds from non-speed entries (like ac_temperature)
+        fan_speeds = {k: v for k, v in recommendations.items() if k != "ac_temperature"}
+
+        if not fan_speeds:
+            return recommendations
+
+        max_speed = max(fan_speeds.values())
+
+        # Only normalize when there's active conditioning demand above baseline.
+        # Skip if already at 100% (no scaling needed) or if all rooms are at/below
+        # baseline (overshoot or at-target scenario where we want reduced airflow).
+        if max_speed <= BASELINE_SPEED or max_speed >= 100:
+            return recommendations
+
+        scale_factor = 100.0 / max_speed
+
+        normalized = {}
+        for room_name, speed in recommendations.items():
+            if room_name == "ac_temperature":
+                normalized[room_name] = speed
+                continue
+
+            if speed <= BASELINE_SPEED:
+                # Overshoot or at-target room - preserve deliberate low speed
+                normalized[room_name] = speed
+            else:
+                # Active conditioning room - scale up proportionally
+                scaled = int(speed * scale_factor)
+                normalized[room_name] = max(self.min_airflow_percent, min(100, scaled))
+
+        _LOGGER.debug(
+            "Normalized fan speeds (scale=%.2fx, max %d%%→100%%): %s",
+            scale_factor, max_speed,
+            {k: f"{recommendations[k]}→{normalized[k]}%" for k, v in normalized.items() if k != "ac_temperature"}
+        )
+
+        return normalized
 
     def _calculate_fan_speed(self, temp_diff: float, abs_temp_diff: float, room_name: str = None) -> int:
         """Calculate fan speed based on temperature difference and HVAC mode.
@@ -1963,31 +2021,37 @@ class AirconOptimizer:
 
         adjusted = {}
 
+        # Preserve ac_temperature - quick actions only adjust fan/damper speeds
+        if "ac_temperature" in recommendations:
+            adjusted["ac_temperature"] = recommendations["ac_temperature"]
+
+        fan_speeds = {k: v for k, v in recommendations.items() if k != "ac_temperature"}
+
         if self._quick_action_mode == "vacation":
             # Reduce all fan speeds by 70%, widen deadband
-            for room, speed in recommendations.items():
+            for room, speed in fan_speeds.items():
                 adjusted[room] = max(10, int(speed * 0.3))
             _LOGGER.debug("Vacation mode: Reduced fan speeds to 30%%")
 
         elif self._quick_action_mode == "boost":
             # Aggressive cooling/heating for 30 mins
-            for room, speed in recommendations.items():
+            for room, speed in fan_speeds.items():
                 adjusted[room] = min(100, int(speed * 1.5))
             _LOGGER.debug("Boost mode: Increased fan speeds by 50%%")
 
         elif self._quick_action_mode == "sleep":
             # Quieter fans (cap at 40%)
-            for room, speed in recommendations.items():
+            for room, speed in fan_speeds.items():
                 adjusted[room] = min(40, speed)
             _LOGGER.debug("Sleep mode: Capped fan speeds at 40%%")
 
         elif self._quick_action_mode == "party":
             # Equalize all rooms quickly - set all to median speed (min 60%)
             import statistics
-            speeds = list(recommendations.values())
+            speeds = list(fan_speeds.values())
             median_speed = int(statistics.median(speeds)) if speeds else 60
             target_speed = max(60, median_speed)
-            for room in recommendations.keys():
+            for room in fan_speeds.keys():
                 adjusted[room] = target_speed
             _LOGGER.debug("Party mode: Set all rooms to %d%% for equalization", target_speed)
 
