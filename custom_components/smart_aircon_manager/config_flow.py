@@ -90,7 +90,9 @@ _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
-        vol.Optional(CONF_TARGET_TEMPERATURE, default=DEFAULT_TARGET_TEMPERATURE): cv.positive_int,
+        vol.Optional(CONF_TARGET_TEMPERATURE, default=DEFAULT_TARGET_TEMPERATURE): selector.NumberSelector(
+            selector.NumberSelectorConfig(min=10, max=35, step=0.5, mode="box", unit_of_measurement="°C")
+        ),
         vol.Optional(CONF_MAIN_CLIMATE_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="climate")
         ),
@@ -321,7 +323,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         default=self.config_entry.data.get(
                             CONF_TARGET_TEMPERATURE, DEFAULT_TARGET_TEMPERATURE
                         ),
-                    ): cv.positive_int,
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=10, max=35, step=0.5, mode="box", unit_of_measurement="°C")
+                    ),
                     vol.Optional(
                         CONF_TEMPERATURE_DEADBAND,
                         default=self.config_entry.data.get(
@@ -439,18 +443,26 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         errors = {}
 
         if user_input is not None:
-            # Validate entities
-            validation_errors = self._validate_entities(
-                user_input[CONF_TEMPERATURE_SENSOR],
-                user_input[CONF_COVER_ENTITY]
-            )
+            # Check for duplicate room name
+            current_rooms = list(self.config_entry.data.get(CONF_ROOM_CONFIGS, []))
+            existing_names = [room[CONF_ROOM_NAME].lower() for room in current_rooms]
+            if user_input[CONF_ROOM_NAME].strip().lower() in existing_names:
+                errors["room_name"] = "duplicate_room_name"
 
-            if validation_errors:
-                errors = validation_errors
-            else:
+            # Validate entities
+            if not errors:
+                validation_errors = self._validate_entities(
+                    user_input[CONF_TEMPERATURE_SENSOR],
+                    user_input[CONF_COVER_ENTITY]
+                )
+
+                if validation_errors:
+                    errors = validation_errors
+
+            if not errors:
                 # Add the room
                 new_room = {
-                    CONF_ROOM_NAME: user_input[CONF_ROOM_NAME],
+                    CONF_ROOM_NAME: user_input[CONF_ROOM_NAME].strip(),
                     CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
                     CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
                 }
@@ -605,15 +617,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         errors = {}
 
         if user_input is not None:
-            # Validate entities
-            validation_errors = self._validate_entities(
-                user_input[CONF_TEMPERATURE_SENSOR],
-                user_input[CONF_COVER_ENTITY]
-            )
+            # Check for duplicate room name (allow keeping the same name)
+            new_name = user_input[CONF_ROOM_NAME].strip()
+            if new_name.lower() != room_to_edit_name.lower():
+                existing_names = [room[CONF_ROOM_NAME].lower() for room in current_rooms]
+                if new_name.lower() in existing_names:
+                    errors["room_name"] = "duplicate_room_name"
 
-            if validation_errors:
-                errors = validation_errors
-            else:
+            # Validate entities
+            if not errors:
+                validation_errors = self._validate_entities(
+                    user_input[CONF_TEMPERATURE_SENSOR],
+                    user_input[CONF_COVER_ENTITY]
+                )
+
+                if validation_errors:
+                    errors = validation_errors
+
+            if not errors:
                 # Update the room
                 updated_room = {
                     CONF_ROOM_NAME: user_input[CONF_ROOM_NAME],
@@ -633,8 +654,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     for room in current_rooms
                 ]
 
-                # Update the config entry
                 new_data = {**self.config_entry.data, CONF_ROOM_CONFIGS: updated_rooms}
+
+                # If room was renamed, migrate override and critical room settings
+                new_name = user_input[CONF_ROOM_NAME]
+                if new_name != room_to_edit_name:
+                    # Migrate room overrides (keyed as "{room_name}_enabled")
+                    overrides = dict(new_data.get(CONF_ROOM_OVERRIDES, {}))
+                    old_key = f"{room_to_edit_name}_enabled"
+                    new_key = f"{new_name}_enabled"
+                    if old_key in overrides:
+                        overrides[new_key] = overrides.pop(old_key)
+                        new_data[CONF_ROOM_OVERRIDES] = overrides
+
+                    # Migrate critical room settings (keyed by room name)
+                    critical = dict(new_data.get(CONF_CRITICAL_ROOMS, {}))
+                    if room_to_edit_name in critical:
+                        critical[new_name] = critical.pop(room_to_edit_name)
+                        new_data[CONF_CRITICAL_ROOMS] = critical
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
@@ -932,26 +969,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_edit_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Edit an existing schedule."""
-        current_schedules = self.config_entry.data.get(CONF_SCHEDULES, [])
-
-        if not current_schedules:
-            return self.async_show_form(
-                step_id="edit_schedule",
-                data_schema=vol.Schema({}),
-                description_placeholders={
-                    "message": "No schedules configured. Add a schedule first."
-                },
-            )
-
-        # For simplicity, show a message that editing is done via delete+add
-        return self.async_show_form(
-            step_id="edit_schedule",
-            data_schema=vol.Schema({}),
-            description_placeholders={
-                "message": f"You have {len(current_schedules)} schedule(s). To edit, delete the old one and add a new one."
-            },
-        )
+        """Edit an existing schedule (redirect to scheduling menu)."""
+        # Editing is done via delete+add; return to scheduling menu to avoid infinite loop
+        return await self.async_step_scheduling()
 
     async def async_step_delete_schedule(
         self, user_input: dict[str, Any] | None = None
@@ -960,13 +980,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         current_schedules = list(self.config_entry.data.get(CONF_SCHEDULES, []))
 
         if not current_schedules:
-            return self.async_show_form(
-                step_id="delete_schedule",
-                data_schema=vol.Schema({}),
-                description_placeholders={
-                    "message": "No schedules to delete."
-                },
-            )
+            # No schedules to delete - return to scheduling menu
+            return await self.async_step_scheduling()
 
         if user_input is not None:
             # Remove the selected schedule

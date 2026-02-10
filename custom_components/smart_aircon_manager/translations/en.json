@@ -31,7 +31,8 @@
       "unknown": "Unexpected error occurred",
       "no_rooms": "You must add at least one room",
       "entity_not_found": "Entity does not exist in Home Assistant",
-      "entity_unavailable": "Entity is unavailable or has no valid state"
+      "entity_unavailable": "Entity is unavailable or has no valid state",
+      "duplicate_room_name": "A room with this name already exists"
     },
     "abort": {
       "already_configured": "Integration is already configured"

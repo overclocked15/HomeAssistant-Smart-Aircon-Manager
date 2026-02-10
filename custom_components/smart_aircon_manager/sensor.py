@@ -336,7 +336,11 @@ class OptimizationStatusSensor(AirconManagerSensorBase):
         if not room_states:
             return "no_data"
 
-        # Check if all rooms are at target
+        # Check if all rooms are at target (use configured deadband, not hardcoded)
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        optimizer = entry_data.get("optimizer")
+        deadband = optimizer.temperature_deadband if optimizer else 0.5
+
         all_at_target = True
         any_too_hot = False
         any_too_cold = False
@@ -346,7 +350,7 @@ class OptimizationStatusSensor(AirconManagerSensorBase):
                 continue
 
             diff = state["current_temperature"] - state["target_temperature"]
-            if abs(diff) > 0.5:
+            if abs(diff) > deadband:
                 all_at_target = False
                 if diff > 0:
                     any_too_hot = True
@@ -518,7 +522,9 @@ class MainFanSpeedSensor(AirconManagerSensorBase):
         min_temp = min(temps)
         temp_variance = max_temp - min_temp
 
-        target_temp = next(iter(room_states.values()))["target_temperature"] if room_states else None
+        # Use average of all per-room targets (not just first room)
+        targets = [s["target_temperature"] for s in room_states.values() if s.get("target_temperature") is not None]
+        target_temp = sum(targets) / len(targets) if targets else None
         avg_deviation = abs(avg_temp - target_temp) if target_temp else None
 
         return {
@@ -752,13 +758,11 @@ class LastOptimizationTimeSensor(AirconManagerSensorBase):
     @property
     def native_value(self):
         """Return the last successful update time."""
-        # Use coordinator's internal last update time
-        from datetime import datetime, timezone
-        if hasattr(self.coordinator, '_last_update_time'):
+        # Use coordinator's built-in last_update_success_time (available in HA 2023.3+)
+        if hasattr(self.coordinator, 'last_update_success_time') and self.coordinator.last_update_success_time:
+            return self.coordinator.last_update_success_time
+        if hasattr(self.coordinator, '_last_update_time') and self.coordinator._last_update_time:
             return self.coordinator._last_update_time
-        # Fallback: return current time if data exists, None otherwise
-        if self.coordinator.data:
-            return datetime.now(timezone.utc)
         return None
 
     @property
@@ -2277,7 +2281,7 @@ class CriticalRoomStatusSensor(CoordinatorEntity, SensorEntity):
     def native_value(self):
         """Return the status."""
         # Get critical monitor
-        critical_monitor = self.hass.data[DOMAIN][self._config_entry.entry_id].get("critical_monitor")
+        critical_monitor = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {}).get("critical_monitor")
         if not critical_monitor:
             return "disabled"
 
@@ -2290,7 +2294,7 @@ class CriticalRoomStatusSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         """Return additional attributes."""
-        critical_monitor = self.hass.data[DOMAIN][self._config_entry.entry_id].get("critical_monitor")
+        critical_monitor = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {}).get("critical_monitor")
         if not critical_monitor:
             return {"protection_enabled": False}
 
@@ -2345,7 +2349,7 @@ class CriticalRoomMarginSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         """Return the margin in degrees C."""
-        critical_monitor = self.hass.data[DOMAIN][self._config_entry.entry_id].get("critical_monitor")
+        critical_monitor = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {}).get("critical_monitor")
         if not critical_monitor:
             return None
 
@@ -2355,7 +2359,7 @@ class CriticalRoomMarginSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         """Return additional attributes."""
-        critical_monitor = self.hass.data[DOMAIN][self._config_entry.entry_id].get("critical_monitor")
+        critical_monitor = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {}).get("critical_monitor")
         if not critical_monitor:
             return {}
 

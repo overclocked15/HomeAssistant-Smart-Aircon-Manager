@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+import voluptuous as vol
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -66,22 +68,53 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.CLIMATE, Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SWITCH]
 
 
+_CACHED_VERSION: str | None = None
+
+# Service schemas
+SERVICE_SCHEMA_ENTRY_ID = vol.Schema({
+    vol.Optional("config_entry_id"): str,
+})
+SERVICE_SCHEMA_ROOM_OVERRIDE = vol.Schema({
+    vol.Required("config_entry_id"): str,
+    vol.Required("room_name"): str,
+    vol.Optional("enabled", default=True): bool,
+})
+SERVICE_SCHEMA_LEARNING_RESET = vol.Schema({
+    vol.Optional("config_entry_id"): str,
+    vol.Optional("room_name"): str,
+})
+SERVICE_SCHEMA_ENABLE_LEARNING = vol.Schema({
+    vol.Required("config_entry_id"): str,
+    vol.Optional("mode", default="passive"): vol.In(["passive", "active"]),
+})
+SERVICE_SCHEMA_VACATION = vol.Schema({
+    vol.Required("config_entry_id"): str,
+    vol.Optional("enabled", default=True): bool,
+})
+SERVICE_SCHEMA_TIMED_MODE = vol.Schema({
+    vol.Required("config_entry_id"): str,
+    vol.Optional("duration_minutes"): vol.All(int, vol.Range(min=1)),
+})
+
+
 def get_device_info(config_entry: ConfigEntry) -> dict:
     """Get device info for all entities."""
-    import json
-    from pathlib import Path
-    try:
-        manifest_path = Path(__file__).parent / "manifest.json"
-        manifest = json.loads(manifest_path.read_text())
-        version = manifest.get("version", "unknown")
-    except Exception:
-        version = "unknown"
+    global _CACHED_VERSION
+    if _CACHED_VERSION is None:
+        import json
+        from pathlib import Path
+        try:
+            manifest_path = Path(__file__).parent / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            _CACHED_VERSION = manifest.get("version", "unknown")
+        except Exception:
+            _CACHED_VERSION = "unknown"
     return {
         "identifiers": {(DOMAIN, config_entry.entry_id)},
         "name": "Smart Aircon Manager",
         "manufacturer": "Smart Aircon Manager",
         "model": "Logic-Based HVAC Controller",
-        "sw_version": version,
+        "sw_version": _CACHED_VERSION,
     }
 
 
@@ -257,7 +290,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     coordinator = hass.data[DOMAIN][entry_id]["coordinator"]
                     await coordinator.async_refresh()
 
-        hass.services.async_register(DOMAIN, "force_optimize", async_force_optimize_service)
+        hass.services.async_register(DOMAIN, "force_optimize", async_force_optimize_service, SERVICE_SCHEMA_ENTRY_ID)
         _LOGGER.debug("Registered force_optimize service")
 
         # Register reset_smoothing service
@@ -279,19 +312,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
                     optimizer._last_fan_speeds = {}
 
-        hass.services.async_register(DOMAIN, "reset_smoothing", async_reset_smoothing_service)
+        hass.services.async_register(DOMAIN, "reset_smoothing", async_reset_smoothing_service, SERVICE_SCHEMA_ENTRY_ID)
         _LOGGER.debug("Registered reset_smoothing service")
 
         # Register set_room_override service
         async def async_set_room_override_service(call):
             """Handle set_room_override service call."""
-            config_entry_id = call.data.get("config_entry_id")
-            room_name = call.data.get("room_name")
+            config_entry_id = call.data["config_entry_id"]
+            room_name = call.data["room_name"]
             enabled = call.data.get("enabled", True)
-
-            if not config_entry_id or not room_name:
-                _LOGGER.error("config_entry_id and room_name are required")
-                return
 
             if config_entry_id in hass.data[DOMAIN]:
                 _LOGGER.info("Setting room override for %s in entry %s: enabled=%s", room_name, config_entry_id, enabled)
@@ -300,7 +329,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("Config entry %s not found", config_entry_id)
 
-        hass.services.async_register(DOMAIN, "set_room_override", async_set_room_override_service)
+        hass.services.async_register(DOMAIN, "set_room_override", async_set_room_override_service, SERVICE_SCHEMA_ROOM_OVERRIDE)
         _LOGGER.debug("Registered set_room_override service")
 
         # Register reset_error_count service
@@ -324,7 +353,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     optimizer._error_count = 0
                     optimizer._last_error = None
 
-        hass.services.async_register(DOMAIN, "reset_error_count", async_reset_error_count_service)
+        hass.services.async_register(DOMAIN, "reset_error_count", async_reset_error_count_service, SERVICE_SCHEMA_ENTRY_ID)
         _LOGGER.debug("Registered reset_error_count service")
 
         # Register analyze_learning service
@@ -349,7 +378,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if optimizer.learning_manager:
                         await optimizer.learning_manager.async_update_profiles()
 
-        hass.services.async_register(DOMAIN, "analyze_learning", async_analyze_learning_service)
+        hass.services.async_register(DOMAIN, "analyze_learning", async_analyze_learning_service, SERVICE_SCHEMA_ENTRY_ID)
         _LOGGER.debug("Registered analyze_learning service")
 
         # Register reset_learning service
@@ -383,7 +412,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         else:
                             optimizer.learning_manager.tracker.clear_all_data()
 
-        hass.services.async_register(DOMAIN, "reset_learning", async_reset_learning_service)
+        hass.services.async_register(DOMAIN, "reset_learning", async_reset_learning_service, SERVICE_SCHEMA_LEARNING_RESET)
         _LOGGER.debug("Registered reset_learning service")
 
         # Register enable_learning service
@@ -403,7 +432,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("Config entry %s not found", config_entry_id)
 
-        hass.services.async_register(DOMAIN, "enable_learning", async_enable_learning_service)
+        hass.services.async_register(DOMAIN, "enable_learning", async_enable_learning_service, SERVICE_SCHEMA_ENABLE_LEARNING)
         _LOGGER.debug("Registered enable_learning service")
 
         # Register disable_learning service
@@ -421,7 +450,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("Config entry %s not found", config_entry_id)
 
-        hass.services.async_register(DOMAIN, "disable_learning", async_disable_learning_service)
+        hass.services.async_register(DOMAIN, "disable_learning", async_disable_learning_service, SERVICE_SCHEMA_ENTRY_ID)
         _LOGGER.debug("Registered disable_learning service")
 
         # Register vacation_mode service
@@ -440,7 +469,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("Config entry %s not found", config_entry_id)
 
-        hass.services.async_register(DOMAIN, "vacation_mode", async_vacation_mode_service)
+        hass.services.async_register(DOMAIN, "vacation_mode", async_vacation_mode_service, SERVICE_SCHEMA_VACATION)
         _LOGGER.debug("Registered vacation_mode service")
 
         # Register boost_mode service
@@ -456,7 +485,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("Config entry %s not found", config_entry_id)
 
-        hass.services.async_register(DOMAIN, "boost_mode", async_boost_mode_service)
+        hass.services.async_register(DOMAIN, "boost_mode", async_boost_mode_service, SERVICE_SCHEMA_TIMED_MODE)
         _LOGGER.debug("Registered boost_mode service")
 
         # Register sleep_mode service
@@ -472,7 +501,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("Config entry %s not found", config_entry_id)
 
-        hass.services.async_register(DOMAIN, "sleep_mode", async_sleep_mode_service)
+        hass.services.async_register(DOMAIN, "sleep_mode", async_sleep_mode_service, SERVICE_SCHEMA_TIMED_MODE)
         _LOGGER.debug("Registered sleep_mode service")
 
         # Register party_mode service
@@ -488,7 +517,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 _LOGGER.error("Config entry %s not found", config_entry_id)
 
-        hass.services.async_register(DOMAIN, "party_mode", async_party_mode_service)
+        hass.services.async_register(DOMAIN, "party_mode", async_party_mode_service, SERVICE_SCHEMA_TIMED_MODE)
         _LOGGER.debug("Registered party_mode service")
 
     return True

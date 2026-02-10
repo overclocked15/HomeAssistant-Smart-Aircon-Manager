@@ -98,11 +98,9 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         self._optimizer.target_temperature = temperature
 
         # Persist to config entry
-        config_entry = self.hass.config_entries.async_get_entry(self._attr_unique_id.replace("_climate", ""))
-        if config_entry:
-            from .const import CONF_TARGET_TEMPERATURE
-            new_data = {**config_entry.data, CONF_TARGET_TEMPERATURE: temperature}
-            self.hass.config_entries.async_update_entry(config_entry, data=new_data)
+        from .const import CONF_TARGET_TEMPERATURE
+        new_data = {**self._config_entry.data, CONF_TARGET_TEMPERATURE: temperature}
+        self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
 
         await self.coordinator.async_request_refresh()
 

@@ -93,10 +93,19 @@ class TestFanSpeedCalculation:
 
     def test_auto_mode(self):
         opt = _make_optimizer(hvac_mode="auto", temperature_deadband=0.5)
-        # Should use magnitude-based approach
+        # Active conditioning uses adaptive bands
         assert opt._calculate_fan_speed(2.0, 2.0) == 70
-        assert opt._calculate_fan_speed(-2.0, 2.0) == 70
         assert opt._calculate_fan_speed(4.0, 4.0) == 100
+        # Overshoot detection: in auto mode (defaults to cool), temp_diff < 0 is overshoot
+        assert opt._calculate_fan_speed(-2.0, 2.0) < 50  # Should reduce, not blast
+
+    def test_auto_mode_heat_overshoot(self):
+        opt = _make_optimizer(hvac_mode="auto", temperature_deadband=0.5)
+        # When last mode is heat, positive temp_diff is overshoot (overheated)
+        opt._last_hvac_mode = "heat"
+        assert opt._calculate_fan_speed(2.0, 2.0) < 50  # Overshoot in heat mode
+        # Negative temp_diff in heat mode = needs heating (active conditioning)
+        assert opt._calculate_fan_speed(-2.0, 2.0) == 70
 
     def test_no_discontinuity_at_deadband_boundary(self):
         """Fan speed should not decrease when crossing from in-deadband to out-of-deadband."""
