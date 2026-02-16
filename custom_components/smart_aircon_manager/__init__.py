@@ -263,7 +263,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def async_reload_service(call):
         """Handle reload service call."""
         _LOGGER.info("Reloading Smart Aircon Manager integration")
-        await hass.config_entries.async_reload(entry.entry_id)
+        for entry_id in list(hass.data[DOMAIN]):
+            await hass.config_entries.async_reload(entry_id)
 
     # Register services (only once for first entry)
     if not hass.services.has_service(DOMAIN, "reload"):
@@ -286,7 +287,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 # Run for all entries
                 _LOGGER.info("Force running optimization for all entries")
-                for entry_id in hass.data[DOMAIN]:
+                for entry_id in list(hass.data[DOMAIN]):
                     coordinator = hass.data[DOMAIN][entry_id]["coordinator"]
                     await coordinator.async_refresh()
 
@@ -308,7 +309,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 # Reset for all entries
                 _LOGGER.info("Resetting smoothing for all entries")
-                for entry_id in hass.data[DOMAIN]:
+                for entry_id in list(hass.data[DOMAIN]):
                     optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
                     optimizer._last_fan_speeds = {}
 
@@ -348,7 +349,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 # Reset for all entries
                 _LOGGER.info("Resetting error count for all entries")
-                for entry_id in hass.data[DOMAIN]:
+                for entry_id in list(hass.data[DOMAIN]):
                     optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
                     optimizer._error_count = 0
                     optimizer._last_error = None
@@ -373,7 +374,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 # Analyze all entries
                 _LOGGER.info("Analyzing learning profiles for all entries")
-                for entry_id in hass.data[DOMAIN]:
+                for entry_id in list(hass.data[DOMAIN]):
                     optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
                     if optimizer.learning_manager:
                         await optimizer.learning_manager.async_update_profiles()
@@ -404,7 +405,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 # Reset all entries
                 _LOGGER.info("Resetting learning data for all entries")
-                for entry_id in hass.data[DOMAIN]:
+                for entry_id in list(hass.data[DOMAIN]):
                     optimizer = hass.data[DOMAIN][entry_id]["optimizer"]
                     if optimizer.learning_manager:
                         if room_name:

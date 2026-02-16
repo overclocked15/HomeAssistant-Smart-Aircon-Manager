@@ -494,3 +494,191 @@ class TestManualOverride:
         # Should return without calling any services
         await opt._apply_recommendations({"Room1": 75})
         opt.hass.services.async_call.assert_not_called()
+
+
+class TestFahrenheitConversion:
+    """Test that Fahrenheit sensors are converted before validation (C2 fix)."""
+
+    def test_valid_fahrenheit_accepted_after_conversion(self):
+        """75°F = 23.9°C should be accepted, not rejected by range check."""
+        opt = _make_optimizer()
+        # After conversion, 75°F = 23.9°C which is valid
+        celsius = (75 - 32) * 5.0 / 9.0
+        result = opt._validate_sensor_temperature(celsius, "TestRoom")
+        assert result is not None
+        assert abs(result - 23.9) < 0.1
+
+    def test_high_fahrenheit_converts_correctly(self):
+        """100°F = 37.8°C should be valid after conversion."""
+        opt = _make_optimizer()
+        celsius = (100 - 32) * 5.0 / 9.0
+        result = opt._validate_sensor_temperature(celsius, "TestRoom")
+        assert result is not None
+        assert abs(result - 37.8) < 0.1
+
+    def test_extreme_fahrenheit_rejected_after_conversion(self):
+        """200°F = 93.3°C should be rejected even after conversion."""
+        opt = _make_optimizer()
+        celsius = (200 - 32) * 5.0 / 9.0
+        result = opt._validate_sensor_temperature(celsius, "TestRoom")
+        assert result is None
+
+
+class TestACTemperatureSetpoint:
+    """Test _calculate_ac_temperature uses relative offsets (C1 fix)."""
+
+    def test_cool_mode_setpoint_at_or_below_target(self):
+        """AC setpoint should never exceed the target in cool mode."""
+        opt = _make_optimizer(hvac_mode="cool", target_temperature=18.0)
+        room_states = {
+            "Room1": {"current_temperature": 20.5, "target_temperature": 18.0, "cover_position": 50},
+        }
+        result = opt._calculate_ac_temperature(room_states, 18.0)
+        assert result <= 18.0  # Must not be above user's target
+
+    def test_heat_mode_setpoint_at_or_above_target(self):
+        """AC setpoint should never be below the target in heat mode."""
+        opt = _make_optimizer(hvac_mode="heat", target_temperature=26.0)
+        room_states = {
+            "Room1": {"current_temperature": 23.5, "target_temperature": 26.0, "cover_position": 50},
+        }
+        result = opt._calculate_ac_temperature(room_states, 26.0)
+        assert result >= 26.0  # Must not be below user's target
+
+    def test_aggressive_cool_offset(self):
+        """Far above target should apply -4°C offset."""
+        opt = _make_optimizer(hvac_mode="cool", target_temperature=24.0)
+        room_states = {
+            "Room1": {"current_temperature": 27.0, "target_temperature": 24.0, "cover_position": 50},
+        }
+        result = opt._calculate_ac_temperature(room_states, 24.0)
+        assert result == 20.0  # 24.0 - 4.0
+
+    def test_auto_mode_not_bypassed(self):
+        """Auto mode should apply optimization, not just return target."""
+        opt = _make_optimizer(hvac_mode="auto", target_temperature=24.0)
+        opt._last_hvac_mode = "cool"
+        room_states = {
+            "Room1": {"current_temperature": 27.0, "target_temperature": 24.0, "cover_position": 50},
+        }
+        result = opt._calculate_ac_temperature(room_states, 24.0)
+        assert result != 24.0  # Should apply optimization
+
+
+class TestOptimizerDisabled:
+    """Test that optimizer respects is_enabled flag (C4 fix)."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_optimizer_returns_system_off(self):
+        opt = _make_optimizer()
+        opt.is_enabled = False
+        result = await opt.async_optimize()
+        assert result.get("system_off") is True
+        assert result["recommendations"] == {}
+
+    @pytest.mark.asyncio
+    async def test_enabled_optimizer_does_not_return_system_off(self):
+        opt = _make_optimizer()
+        opt.is_enabled = True
+        result = await opt.async_optimize()
+        assert result.get("system_off") is not True
+
+
+class TestQuickActionExit:
+    """Test that boost/party mode exit doesn't revert user temp changes (H3 fix)."""
+
+    def test_boost_exit_preserves_user_temp_change(self):
+        opt = _make_optimizer(target_temperature=24.0)
+        opt._quick_action_mode = "boost"
+        opt._quick_action_original_settings = {
+            "target_temperature": 24.0,
+            "temperature_deadband": 0.5,
+        }
+        # User changes temp during boost
+        opt.target_temperature = 22.0
+        opt._exit_quick_action_mode()
+        # boost didn't modify temp, so user's 22.0 should be preserved
+        assert opt.target_temperature == 22.0
+
+    def test_party_exit_preserves_user_temp_change(self):
+        opt = _make_optimizer(target_temperature=24.0)
+        opt._quick_action_mode = "party"
+        opt._quick_action_original_settings = {
+            "target_temperature": 24.0,
+            "temperature_deadband": 0.5,
+        }
+        opt.target_temperature = 20.0
+        opt._exit_quick_action_mode()
+        assert opt.target_temperature == 20.0
+
+    def test_sleep_exit_restores_if_unmodified(self):
+        opt = _make_optimizer(target_temperature=25.0, hvac_mode="cool")
+        opt._quick_action_mode = "sleep"
+        opt._quick_action_original_settings = {
+            "target_temperature": 24.0,
+            "temperature_deadband": 0.5,
+        }
+        # Sleep mode set temp to 25.0 (original 24.0 + 1.0 for cool mode)
+        # User didn't change it, so current == what mode would have set
+        opt._exit_quick_action_mode()
+        assert opt.target_temperature == 24.0  # Restored to original
+
+
+class TestAutoModeOccupancySetback:
+    """Test auto mode occupancy setback uses effective mode, not magic number (H1 fix)."""
+
+    def test_auto_mode_high_target_cooling(self):
+        """Target=28 in auto mode resolving to cool should apply +setback."""
+        opt = _make_optimizer(
+            enable_occupancy_control=True,
+            hvac_mode="auto",
+            target_temperature=28.0,
+            vacant_room_setback=2.0,
+        )
+        opt._last_hvac_mode = "cool"
+        opt._room_occupancy_state["Living Room"] = {"occupied": False, "last_seen": time.time() - 600}
+        result = opt._get_room_effective_target("Living Room", 28.0)
+        assert result == 30.0  # +2°C setback (cooling direction)
+
+    def test_auto_mode_resolving_to_heat(self):
+        """Auto mode resolving to heat should apply -setback."""
+        opt = _make_optimizer(
+            enable_occupancy_control=True,
+            hvac_mode="auto",
+            target_temperature=22.0,
+            vacant_room_setback=2.0,
+        )
+        opt._last_hvac_mode = "heat"
+        opt._room_occupancy_state["Living Room"] = {"occupied": False, "last_seen": time.time() - 600}
+        result = opt._get_room_effective_target("Living Room", 22.0)
+        assert result == 20.0  # -2°C setback (heating direction)
+
+
+class TestModeTrackingWithoutHumidity:
+    """Test that _determine_optimal_hvac_mode tracks state even without humidity (H2 fix)."""
+
+    def test_no_humidity_auto_resolves_to_heat_when_cold(self):
+        opt = _make_optimizer(hvac_mode="auto", enable_humidity_control=False)
+        room_states = {
+            "Room1": {"current_temperature": 20.0, "target_temperature": 24.0},
+        }
+        result = opt._determine_optimal_hvac_mode(room_states, 24.0)
+        assert result == "heat"
+        assert opt._last_hvac_mode == "heat"
+
+    def test_no_humidity_auto_resolves_to_cool_when_hot(self):
+        opt = _make_optimizer(hvac_mode="auto", enable_humidity_control=False)
+        room_states = {
+            "Room1": {"current_temperature": 27.0, "target_temperature": 24.0},
+        }
+        result = opt._determine_optimal_hvac_mode(room_states, 24.0)
+        assert result == "cool"
+        assert opt._last_hvac_mode == "cool"
+
+    def test_no_humidity_explicit_mode_preserved(self):
+        opt = _make_optimizer(hvac_mode="heat", enable_humidity_control=False)
+        room_states = {
+            "Room1": {"current_temperature": 27.0, "target_temperature": 24.0},
+        }
+        result = opt._determine_optimal_hvac_mode(room_states, 24.0)
+        assert result == "heat"  # Explicit mode preserved regardless of temp

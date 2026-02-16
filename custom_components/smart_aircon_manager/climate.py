@@ -50,8 +50,15 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         self._optimizer = optimizer
         self._config_entry = config_entry
         self._attr_unique_id = f"{config_entry.entry_id}_climate"
-        self._attr_hvac_mode = HVACMode.AUTO
-        self._is_on = True
+
+        # Restore persisted state from config entry (survives HA restarts)
+        from .const import CONF_HVAC_MODE
+        persisted_mode = config_entry.data.get(CONF_HVAC_MODE, "auto")
+        self._is_on = config_entry.data.get("is_system_on", True)
+
+        mode_map = {"cool": HVACMode.COOL, "heat": HVACMode.HEAT, "auto": HVACMode.AUTO}
+        self._attr_hvac_mode = mode_map.get(persisted_mode, HVACMode.AUTO)
+        self._optimizer.is_enabled = self._is_on
 
     @property
     def device_info(self):
@@ -108,14 +115,26 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         """Set new target hvac mode."""
         if hvac_mode == HVACMode.OFF:
             self._is_on = False
+            self._optimizer.is_enabled = False
         else:
             self._is_on = True
+            self._optimizer.is_enabled = True
             self._attr_hvac_mode = hvac_mode
 
             # Propagate HVAC mode to optimizer so control logic uses the new mode
             mode_str = hvac_mode.value if hasattr(hvac_mode, 'value') else str(hvac_mode)
             if mode_str in ("cool", "heat", "auto"):
                 self._optimizer.hvac_mode = mode_str
+
+        # Persist state for restart recovery
+        from .const import CONF_HVAC_MODE
+        if hvac_mode == HVACMode.OFF:
+            # Keep last active mode, store is_system_on=False
+            new_data = {**self._config_entry.data, "is_system_on": False}
+        else:
+            persist_mode = hvac_mode.value if hasattr(hvac_mode, 'value') else str(hvac_mode)
+            new_data = {**self._config_entry.data, CONF_HVAC_MODE: persist_mode, "is_system_on": True}
+        self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
 
         self.async_write_ha_state()
 

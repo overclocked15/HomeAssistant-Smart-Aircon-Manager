@@ -971,7 +971,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Edit an existing schedule (redirect to scheduling menu)."""
         # Editing is done via delete+add; return to scheduling menu to avoid infinite loop
-        return await self.async_step_scheduling()
+        return await self.async_step_schedules()
 
     async def async_step_delete_schedule(
         self, user_input: dict[str, Any] | None = None
@@ -981,7 +981,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         if not current_schedules:
             # No schedules to delete - return to scheduling menu
-            return await self.async_step_scheduling()
+            return await self.async_step_schedules()
 
         if user_input is not None:
             # Remove the selected schedule

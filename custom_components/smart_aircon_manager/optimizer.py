@@ -94,6 +94,7 @@ class AirconOptimizer:
         self.main_fan_entity = main_fan_entity
         self.temperature_deadband = self._validate_positive_float(temperature_deadband, "temperature_deadband", 0.1, 5.0)
         self.hvac_mode = hvac_mode if hvac_mode in ["cool", "heat", "auto"] else "cool"
+        self.is_enabled = True  # Can be set to False by climate entity when OFF
         self.auto_control_main_ac = auto_control_main_ac
         self.auto_control_ac_temperature = auto_control_ac_temperature
         self.enable_notifications = enable_notifications
@@ -611,8 +612,30 @@ class AirconOptimizer:
         Returns: "cool", "heat", "dry", or "fan_only"
         """
         if not self.enable_humidity_control:
-            # No humidity control - return based on hvac_mode setting
-            return self.hvac_mode if self.hvac_mode != "auto" else "cool"
+            # No humidity control - resolve mode from temperature only
+            if self.hvac_mode != "auto":
+                resolved_mode = self.hvac_mode
+            else:
+                # Resolve auto mode based on temperature deviation
+                temps = self._valid_temps(room_states)
+                if temps:
+                    avg_temp = sum(temps) / len(temps)
+                    resolved_mode = "heat" if avg_temp < effective_target else "cool"
+                else:
+                    resolved_mode = "cool"  # Default fallback
+
+            # Update tracking state so _get_effective_operating_mode() stays current
+            current_time = time.time()
+            if resolved_mode != self._last_hvac_mode:
+                self._last_hvac_mode = resolved_mode
+                self._last_mode_change_time = current_time
+            elif self._last_hvac_mode is None:
+                self._last_hvac_mode = resolved_mode
+                self._last_mode_change_time = current_time
+            self._dry_mode_active = False
+            self._fan_only_mode_active = False
+
+            return resolved_mode
 
         # Collect valid temperatures and humidities
         temps = self._valid_temps(room_states)
@@ -967,7 +990,8 @@ class AirconOptimizer:
             return base_target
 
         # Room is vacant - apply setback
-        if self.hvac_mode == "cool" or (self.hvac_mode == "auto" and self.target_temperature < 24):
+        operating_mode = self._get_effective_operating_mode()
+        if operating_mode == "cool":
             # Cooling mode - increase target (reduce cooling)
             effective_target = base_target + self.vacant_room_setback
             _LOGGER.debug(
@@ -1181,6 +1205,19 @@ class AirconOptimizer:
 
     async def async_optimize(self) -> dict[str, Any]:
         """Run optimization cycle with error handling."""
+        if not self.is_enabled:
+            _LOGGER.debug("Optimizer disabled (system OFF) - skipping optimization cycle")
+            return {
+                "room_states": {},
+                "recommendations": {},
+                "optimization_response_text": "System is OFF - optimization disabled",
+                "main_climate_state": None,
+                "main_fan_speed": None,
+                "main_ac_running": False,
+                "needs_ac": False,
+                "system_off": True,
+            }
+
         try:
             return await self._async_optimize_impl()
         except Exception as e:
@@ -1492,17 +1529,21 @@ class AirconOptimizer:
             current_temp = None
 
             if temp_state:
-                # Use validation method for temperature
-                current_temp = self._validate_sensor_temperature(temp_state.state, room_name)
-
-                if current_temp is not None:
-                    # Handle unit conversion
-                    unit = temp_state.attributes.get("unit_of_measurement", "°C")
-                    if unit in ["°F", "fahrenheit", "F"]:
-                        current_temp = (current_temp - 32) * 5.0 / 9.0
-                        _LOGGER.debug("Converted temperature for %s from F to C: %.1f°C", room_name, current_temp)
-                        # Re-validate after conversion
+                # Parse raw value, convert units BEFORE validation (F readings >70 are valid)
+                raw_value = temp_state.state
+                if raw_value is not None and raw_value not in ["unknown", "unavailable", "none"]:
+                    try:
+                        current_temp = float(raw_value)
+                        # Convert Fahrenheit to Celsius before range validation
+                        unit = temp_state.attributes.get("unit_of_measurement", "°C")
+                        if unit in ["°F", "fahrenheit", "F"]:
+                            current_temp = (current_temp - 32) * 5.0 / 9.0
+                            _LOGGER.debug("Converted temperature for %s from F to C: %.1f°C", room_name, current_temp)
+                        # Validate after conversion to Celsius
                         current_temp = self._validate_sensor_temperature(current_temp, room_name)
+                    except (ValueError, TypeError):
+                        _LOGGER.warning("Could not parse temperature for %s: %s", room_name, raw_value)
+                        current_temp = None
 
             # Collect humidity if sensor is configured
             current_humidity = None
@@ -2004,21 +2045,30 @@ class AirconOptimizer:
         avg_temp = sum(temps) / len(temps)
         temp_diff = avg_temp - effective_target
 
-        # Get base setpoint using standard logic
-        if self.hvac_mode == "cool":
+        # Get base setpoint using RELATIVE offsets from effective_target
+        # Resolve auto mode to cool/heat using existing helper
+        operating_mode = self._get_effective_operating_mode(room_states)
+
+        if operating_mode == "cool":
             if temp_diff >= 2.0:
-                base_setpoint = 19.0
+                # Far above target - aggressive cooling
+                base_setpoint = effective_target - 4.0
             elif temp_diff >= 0.5:
-                base_setpoint = 21.0
+                # Moderately above target - moderate cooling
+                base_setpoint = effective_target - 2.0
             else:
-                base_setpoint = 23.0
-        elif self.hvac_mode == "heat":
+                # Near target - gentle cooling
+                base_setpoint = effective_target
+        elif operating_mode == "heat":
             if temp_diff <= -2.0:
-                base_setpoint = 25.0
+                # Far below target - aggressive heating
+                base_setpoint = effective_target + 4.0
             elif temp_diff <= -0.5:
-                base_setpoint = 23.0
+                # Moderately below target - moderate heating
+                base_setpoint = effective_target + 2.0
             else:
-                base_setpoint = 21.0
+                # Near target - gentle heating
+                base_setpoint = effective_target
         else:
             return effective_target
 
@@ -2203,12 +2253,13 @@ class AirconOptimizer:
             # Don't restore temp if a schedule is currently active (it takes priority)
             schedule_active = self._current_schedule is not None if hasattr(self, '_current_schedule') else False
 
-            # Only restore if value appears unchanged by user and no schedule is overriding
+            # Only restore temp for modes that actually modified it (sleep only)
+            # boost/party/vacation don't change target_temperature, so never revert
             if schedule_active and original_temp:
                 _LOGGER.info("Schedule active after %s mode exit, not restoring target temperature", mode)
-            elif original_temp and (mode not in ["sleep"] or mode_changed_temp):
+            elif original_temp and mode == "sleep" and mode_changed_temp:
                 self.target_temperature = original_temp
-            elif original_temp and mode in ["sleep"] and not mode_changed_temp:
+            elif original_temp and mode == "sleep" and not mode_changed_temp:
                 _LOGGER.info("Target temperature was manually changed during %s mode, not restoring", mode)
 
             if original_deadband and (mode != "vacation" or mode_changed_deadband):

@@ -32,7 +32,13 @@
       "no_rooms": "You must add at least one room",
       "entity_not_found": "Entity does not exist in Home Assistant",
       "entity_unavailable": "Entity is unavailable or has no valid state",
-      "duplicate_room_name": "A room with this name already exists"
+      "duplicate_room_name": "A room with this name already exists",
+      "unrealistic_temperature": "Temperature sensor reading is outside the realistic range (-50°C to 70°C)",
+      "non_numeric_temperature": "Temperature sensor is not reporting a numeric value",
+      "invalid_domain": "Entity must be from a supported domain (sensor for temperature, cover for zone control)",
+      "missing_position_attribute": "Cover entity is missing the current_position attribute required for fan speed control",
+      "invalid_position_range": "Cover entity position is outside the valid range (0-100)",
+      "non_numeric_position": "Cover entity position is not a numeric value"
     },
     "abort": {
       "already_configured": "Integration is already configured"
