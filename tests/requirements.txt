@@ -1,0 +1,13 @@
+# Test dependencies for Smart Aircon Manager
+# Install with: pip install -r tests/requirements.txt
+
+# Core test framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-homeassistant-custom-component>=0.13.0
+
+# Home Assistant (pulls in voluptuous and other core deps)
+homeassistant>=2024.1.0
+
+# For mocking
+unittest-xml-reporting>=3.2.0

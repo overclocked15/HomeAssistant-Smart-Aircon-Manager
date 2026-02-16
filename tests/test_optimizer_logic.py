@@ -683,3 +683,106 @@ class TestModeTrackingWithoutHumidity:
         }
         result = opt._determine_optimal_hvac_mode(room_states, 24.0)
         assert result == "heat"  # Explicit mode preserved regardless of temp
+
+class TestTemperatureNormalization:
+    """Test temperature normalization (Finding 1 fix)."""
+
+    def test_celsius_passthrough(self):
+        from custom_components.smart_aircon_manager.temperature_utils import normalize_temperature
+
+        # Mock state object with Celsius
+        state = MagicMock()
+        state.state = "22.5"
+        state.attributes = {"unit_of_measurement": "°C"}
+
+        result = normalize_temperature(state, "test_sensor")
+        assert result == 22.5
+
+    def test_fahrenheit_conversion(self):
+        from custom_components.smart_aircon_manager.temperature_utils import normalize_temperature
+
+        # Mock state object with Fahrenheit (72°F = 22.2°C)
+        state = MagicMock()
+        state.state = "72.0"
+        state.attributes = {"unit_of_measurement": "°F"}
+
+        result = normalize_temperature(state, "test_sensor")
+        assert result is not None
+        assert abs(result - 22.22) < 0.01  # Allow small floating point variance
+
+    def test_fahrenheit_high_value_valid(self):
+        from custom_components.smart_aircon_manager.temperature_utils import normalize_temperature, validate_temperature_range
+
+        # 80°F = 26.67°C - should be valid after conversion
+        state = MagicMock()
+        state.state = "80.0"
+        state.attributes = {"unit_of_measurement": "°F"}
+
+        result = normalize_temperature(state, "test_sensor")
+        assert result is not None
+        assert validate_temperature_range(result)
+
+    def test_unavailable_returns_none(self):
+        from custom_components.smart_aircon_manager.temperature_utils import normalize_temperature
+
+        state = MagicMock()
+        state.state = "unavailable"
+        state.attributes = {"unit_of_measurement": "°C"}
+
+        result = normalize_temperature(state, "test_sensor")
+        assert result is None
+
+    def test_non_numeric_returns_none(self):
+        from custom_components.smart_aircon_manager.temperature_utils import normalize_temperature
+
+        state = MagicMock()
+        state.state = "not_a_number"
+        state.attributes = {"unit_of_measurement": "°C"}
+
+        result = normalize_temperature(state, "test_sensor")
+        assert result is None
+
+
+class TestACTurnOnOutlier:
+    """Test AC turn-on with outlier room detection (Finding 2 fix)."""
+
+    @pytest.mark.asyncio
+    async def test_cool_mode_outlier_triggers_ac(self):
+        """One very hot room should trigger AC even if average is okay."""
+        opt = _make_optimizer(hvac_mode="cool", ac_turn_on_threshold=1.0)
+        room_states = {
+            "Room1": {"current_temperature": 28.0, "target_temperature": 24.0},  # +4°C (outlier)
+            "Room2": {"current_temperature": 23.0, "target_temperature": 24.0},  # -1°C
+            "Room3": {"current_temperature": 23.5, "target_temperature": 24.0},  # -0.5°C
+        }
+        # avg_temp = 24.83, diff = +0.83 < 1.0 threshold (wouldn't trigger)
+        # BUT max_temp = 28.0, max_deviation = +4.0 >= 1.5 (SHOULD trigger)
+        result = await opt._check_if_ac_needed(room_states, ac_currently_on=False)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_heat_mode_outlier_triggers_ac(self):
+        """One very cold room should trigger AC even if average is okay."""
+        opt = _make_optimizer(hvac_mode="heat", ac_turn_on_threshold=1.0)
+        room_states = {
+            "Room1": {"current_temperature": 20.0, "target_temperature": 24.0},  # -4°C (outlier)
+            "Room2": {"current_temperature": 25.0, "target_temperature": 24.0},  # +1°C
+            "Room3": {"current_temperature": 24.5, "target_temperature": 24.0},  # +0.5°C
+        }
+        # avg_temp = 23.17, diff = -0.83 > -1.0 threshold (wouldn't trigger)
+        # BUT min_temp = 20.0, min_deviation = +4.0 >= 1.5 (SHOULD trigger)
+        result = await opt._check_if_ac_needed(room_states, ac_currently_on=False)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_no_outlier_requires_average(self):
+        """Without outlier, normal threshold applies."""
+        opt = _make_optimizer(hvac_mode="cool", ac_turn_on_threshold=1.0)
+        room_states = {
+            "Room1": {"current_temperature": 24.6, "target_temperature": 24.0},
+            "Room2": {"current_temperature": 24.5, "target_temperature": 24.0},
+        }
+        # avg = 24.55, diff = +0.55 < 1.0 threshold (shouldn't trigger)
+        # max = 24.6, max_deviation = +0.6 < 1.5 (no outlier)
+        result = await opt._check_if_ac_needed(room_states, ac_currently_on=False)
+        assert result is False

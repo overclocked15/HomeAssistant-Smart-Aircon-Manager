@@ -90,6 +90,8 @@ data:
 
 **Use case**: Temporarily exclude a room from optimization (e.g., guest room, room under maintenance).
 
+**⚠️ Important**: Room overrides are **runtime-only** and will be lost when Home Assistant is restarted or reloaded. For permanent room exclusion, remove the room from the integration configuration instead.
+
 ---
 
 ### `smart_aircon_manager.reload`

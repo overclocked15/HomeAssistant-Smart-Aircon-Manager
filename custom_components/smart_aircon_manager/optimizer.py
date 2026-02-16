@@ -12,6 +12,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from .learning import LearningManager
+from .temperature_utils import normalize_temperature, validate_temperature_range
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -861,15 +862,9 @@ class AirconOptimizer:
 
         if self.outdoor_temp_sensor:
             sensor_state = self.hass.states.get(self.outdoor_temp_sensor)
-            if sensor_state and sensor_state.state not in ["unknown", "unavailable", "none", None]:
-                try:
-                    temp = float(sensor_state.state)
-                    unit = sensor_state.attributes.get("unit_of_measurement", "°C")
-                    if unit in ["°F", "fahrenheit", "F"]:
-                        temp = (temp - 32) * 5.0 / 9.0
-                    fresh_temp = temp
-                except (ValueError, TypeError) as e:
-                    _LOGGER.warning("Could not read outdoor temperature sensor: %s", e)
+            fresh_temp = normalize_temperature(sensor_state, "outdoor")
+            if fresh_temp is None:
+                _LOGGER.debug("Could not read outdoor temperature sensor")
 
         if fresh_temp is None and self.weather_entity:
             weather_state = self.hass.states.get(self.weather_entity)
@@ -1550,21 +1545,11 @@ class AirconOptimizer:
             current_temp = None
 
             if temp_state:
-                # Parse raw value, convert units BEFORE validation (F readings >70 are valid)
-                raw_value = temp_state.state
-                if raw_value is not None and raw_value not in ["unknown", "unavailable", "none"]:
-                    try:
-                        current_temp = float(raw_value)
-                        # Convert Fahrenheit to Celsius before range validation
-                        unit = temp_state.attributes.get("unit_of_measurement", "°C")
-                        if unit in ["°F", "fahrenheit", "F"]:
-                            current_temp = (current_temp - 32) * 5.0 / 9.0
-                            _LOGGER.debug("Converted temperature for %s from F to C: %.1f°C", room_name, current_temp)
-                        # Validate after conversion to Celsius
-                        current_temp = self._validate_sensor_temperature(current_temp, room_name)
-                    except (ValueError, TypeError):
-                        _LOGGER.warning("Could not parse temperature for %s: %s", room_name, raw_value)
-                        current_temp = None
+                # Normalize temperature (handles F→C conversion)
+                current_temp = normalize_temperature(temp_state, room_name)
+                # Validate after normalization
+                if current_temp is not None:
+                    current_temp = self._validate_sensor_temperature(current_temp, room_name)
 
             # Collect humidity if sensor is configured
             current_humidity = None
@@ -2678,10 +2663,21 @@ class AirconOptimizer:
                                  avg_temp, abs(temp_diff), max_temp)
                 return not overcooled
             else:
-                # To turn ON in cooling mode, avg temp must be above target
-                turn_on = temp_diff >= self.ac_turn_on_threshold
+                # To turn ON in cooling mode, check both average AND worst room
+                # Turn on if: (1) avg exceeds threshold, OR (2) any room is extremely hot
+                max_temp = max(temps)
+                max_deviation = max_temp - effective_target
+                turn_on_avg = temp_diff >= self.ac_turn_on_threshold
+                turn_on_outlier = max_deviation >= (self.ac_turn_on_threshold * 1.5)  # 1.5x threshold for outliers
+
+                turn_on = turn_on_avg or turn_on_outlier
                 if turn_on:
-                    _LOGGER.info("AC turn ON (too hot): avg=%.1f°C (+%.1f°C above target)", avg_temp, temp_diff)
+                    if turn_on_outlier and not turn_on_avg:
+                        _LOGGER.info("AC turn ON (outlier room): max=%.1f°C (+%.1f°C above target), avg=%.1f°C",
+                                     max_temp, max_deviation, avg_temp)
+                    else:
+                        _LOGGER.info("AC turn ON (too hot): avg=%.1f°C (+%.1f°C above target), max=%.1f°C",
+                                     avg_temp, temp_diff, max_temp)
                 return turn_on
 
         elif self.hvac_mode == "heat":
@@ -2697,10 +2693,21 @@ class AirconOptimizer:
                                  avg_temp, temp_diff, min_temp)
                 return not overheated
             else:
-                # To turn ON in heating mode, avg temp must be below target
-                turn_on = temp_diff <= -self.ac_turn_on_threshold
+                # To turn ON in heating mode, check both average AND worst room
+                # Turn on if: (1) avg exceeds threshold, OR (2) any room is extremely cold
+                min_temp = min(temps)
+                min_deviation = effective_target - min_temp
+                turn_on_avg = temp_diff <= -self.ac_turn_on_threshold
+                turn_on_outlier = min_deviation >= (self.ac_turn_on_threshold * 1.5)  # 1.5x threshold for outliers
+
+                turn_on = turn_on_avg or turn_on_outlier
                 if turn_on:
-                    _LOGGER.info("AC turn ON (too cold): avg=%.1f°C (%.1f°C below target)", avg_temp, abs(temp_diff))
+                    if turn_on_outlier and not turn_on_avg:
+                        _LOGGER.info("AC turn ON (outlier room): min=%.1f°C (%.1f°C below target), avg=%.1f°C",
+                                     min_temp, min_deviation, avg_temp)
+                    else:
+                        _LOGGER.info("AC turn ON (too cold): avg=%.1f°C (%.1f°C below target), min=%.1f°C",
+                                     avg_temp, abs(temp_diff), min_temp)
                 return turn_on
         else:  # auto mode - apply hysteresis like cool/heat modes
             if ac_currently_on:

@@ -23,6 +23,7 @@ from .const import (
     CRITICAL_STATUS_CRITICAL,
     CRITICAL_STATUS_RECOVERING,
 )
+from .temperature_utils import normalize_temperature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,24 +106,15 @@ class CriticalRoomMonitor:
             if not room_config:
                 continue
 
-            # Get current temperature
+            # Get current temperature (normalized to Celsius)
             temp_sensor = room_config["temperature_sensor"]
             temp_state = self.hass.states.get(temp_sensor)
+            current_temp = normalize_temperature(temp_state, f"critical room {room_name}")
 
-            if not temp_state or temp_state.state in [STATE_UNAVAILABLE, STATE_UNKNOWN]:
+            if current_temp is None:
                 _LOGGER.warning(
-                    "Temperature sensor %s for critical room %s is unavailable",
+                    "Temperature sensor %s for critical room %s is unavailable or invalid",
                     temp_sensor,
-                    room_name,
-                )
-                continue
-
-            try:
-                current_temp = float(temp_state.state)
-            except (ValueError, TypeError):
-                _LOGGER.warning(
-                    "Invalid temperature value %s for critical room %s",
-                    temp_state.state,
                     room_name,
                 )
                 continue

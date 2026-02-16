@@ -85,6 +85,7 @@ from .const import (
     CONF_CRITICAL_NOTIFY_SERVICES,
     DEFAULT_CRITICAL_WARNING_OFFSET,
 )
+from .temperature_utils import normalize_temperature, validate_temperature_range
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -230,24 +231,26 @@ def _validate_entities_common(hass, temp_sensor: str, cover_entity: str) -> dict
     """
     errors = {}
 
-    # Check temperature sensor
+    # Check temperature sensor (normalize handles F→C conversion)
     temp_state = hass.states.get(temp_sensor)
     if not temp_state:
         errors["temperature_sensor"] = "entity_not_found"
     elif temp_state.state in ["unavailable", "unknown"]:
         errors["temperature_sensor"] = "entity_unavailable"
     else:
-        try:
-            temp_value = float(temp_state.state)
-            if not (-50.0 <= temp_value <= 70.0):
-                _LOGGER.warning(
-                    "Temperature sensor %s has unrealistic value: %.1f°C",
-                    temp_sensor, temp_value
-                )
-                errors["temperature_sensor"] = "unrealistic_temperature"
-        except (ValueError, TypeError):
+        # Normalize temperature (handles F→C conversion automatically)
+        temp_celsius = normalize_temperature(temp_state, temp_sensor)
+
+        if temp_celsius is None:
             _LOGGER.error("Temperature sensor %s has non-numeric state: %s", temp_sensor, temp_state.state)
             errors["temperature_sensor"] = "non_numeric_temperature"
+        elif not validate_temperature_range(temp_celsius):
+            _LOGGER.warning(
+                "Temperature sensor %s has unrealistic value: %.1f°C (converted from %s %s)",
+                temp_sensor, temp_celsius, temp_state.state,
+                temp_state.attributes.get("unit_of_measurement", "°C")
+            )
+            errors["temperature_sensor"] = "unrealistic_temperature"
 
         if not temp_state.entity_id.startswith("sensor."):
             _LOGGER.warning("Temperature entity %s is not a sensor domain", temp_sensor)
