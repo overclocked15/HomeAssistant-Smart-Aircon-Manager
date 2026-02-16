@@ -145,8 +145,13 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
         hass.config_entries.async_update_entry(config_entry, data=new_data, version=2)
         _LOGGER.info("Migrated config entry from version 1 to 2")
+        return True
 
-    return True
+    if config_entry.version == 2:
+        return True
+
+    _LOGGER.error("Cannot migrate config entry from unsupported version %s", config_entry.version)
+    return False
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -526,12 +531,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    # Cleanup optimizer resources
-    optimizer = hass.data[DOMAIN][entry.entry_id]["optimizer"]
-    await optimizer.async_cleanup()
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+
+    # Cleanup optimizer resources (may not exist if setup failed partway)
+    optimizer = entry_data.get("optimizer")
+    if optimizer:
+        await optimizer.async_cleanup()
 
     # Stop critical room monitor
-    critical_monitor = hass.data[DOMAIN][entry.entry_id].get("critical_monitor")
+    critical_monitor = entry_data.get("critical_monitor")
     if critical_monitor:
         await critical_monitor.async_stop()
 

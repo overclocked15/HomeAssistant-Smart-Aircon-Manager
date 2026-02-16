@@ -38,7 +38,8 @@
       "invalid_domain": "Entity must be from a supported domain (sensor for temperature, cover for zone control)",
       "missing_position_attribute": "Cover entity is missing the current_position attribute required for fan speed control",
       "invalid_position_range": "Cover entity position is outside the valid range (0-100)",
-      "non_numeric_position": "Cover entity position is not a numeric value"
+      "non_numeric_position": "Cover entity position is not a numeric value",
+      "critical_safe_above_max": "Safe target temperature must be lower than critical threshold"
     },
     "abort": {
       "already_configured": "Integration is already configured"

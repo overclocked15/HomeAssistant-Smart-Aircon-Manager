@@ -137,18 +137,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            # Validate entities
-            validation_errors = self._validate_entities(
-                user_input[CONF_TEMPERATURE_SENSOR],
-                user_input[CONF_COVER_ENTITY]
-            )
+            # Check for duplicate room name
+            new_name = user_input[CONF_ROOM_NAME].strip()
+            existing_names = [r[CONF_ROOM_NAME].lower() for r in self._rooms]
+            if new_name.lower() in existing_names:
+                errors["base"] = "duplicate_room_name"
 
-            if validation_errors:
-                errors = validation_errors
-            else:
-                # Add the current room to the list
+            # Validate entities
+            if not errors:
+                validation_errors = self._validate_entities(
+                    user_input[CONF_TEMPERATURE_SENSOR],
+                    user_input[CONF_COVER_ENTITY]
+                )
+
+                if validation_errors:
+                    errors = validation_errors
+
+            if not errors:
+                # Add the current room to the list (use stripped name)
                 new_room = {
-                    CONF_ROOM_NAME: user_input[CONF_ROOM_NAME],
+                    CONF_ROOM_NAME: new_name,
                     CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
                     CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
                 }
@@ -165,17 +173,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if user_input.get("add_another"):
                     return await self.async_step_add_room()
                 else:
-                    # Done adding rooms
-                    if len(self._rooms) == 0:
-                        return self.async_show_form(
-                            step_id="add_room",
-                            data_schema=self._get_room_schema(),
-                            description_placeholders={
-                                "rooms_added": str(len(self._rooms)),
-                            },
-                            errors={"base": "no_rooms"},
-                        )
-
                     self._data[CONF_ROOM_CONFIGS] = self._rooms
                     return self.async_create_entry(
                         title="Smart Aircon Manager", data=self._data
@@ -1254,10 +1251,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             else:
                 notify_services = []
 
+            # Validate temp_safe < temp_max
+            temp_max = user_input[CONF_CRITICAL_TEMP_MAX]
+            temp_safe = user_input[CONF_CRITICAL_TEMP_SAFE]
+            if temp_safe >= temp_max:
+                return self.async_show_form(
+                    step_id="configure_critical_room",
+                    data_schema=self._get_critical_room_schema(room_name, existing_config),
+                    description_placeholders={"room_name": room_name},
+                    errors={"base": "critical_safe_above_max"},
+                )
+
             # Save the critical room configuration
             critical_rooms[room_name] = {
-                CONF_CRITICAL_TEMP_MAX: user_input[CONF_CRITICAL_TEMP_MAX],
-                CONF_CRITICAL_TEMP_SAFE: user_input[CONF_CRITICAL_TEMP_SAFE],
+                CONF_CRITICAL_TEMP_MAX: temp_max,
+                CONF_CRITICAL_TEMP_SAFE: temp_safe,
                 CONF_CRITICAL_WARNING_OFFSET: user_input[CONF_CRITICAL_WARNING_OFFSET],
                 CONF_CRITICAL_NOTIFY_SERVICES: notify_services,
             }

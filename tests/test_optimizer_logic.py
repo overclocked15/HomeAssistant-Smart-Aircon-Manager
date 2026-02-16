@@ -93,8 +93,8 @@ class TestFanSpeedCalculation:
 
     def test_auto_mode(self):
         opt = _make_optimizer(hvac_mode="auto", temperature_deadband=0.5)
-        # Active conditioning uses adaptive bands
-        assert opt._calculate_fan_speed(2.0, 2.0) == 70
+        # Auto mode now delegates to cool/heat mappings (M2 fix)
+        assert opt._calculate_fan_speed(2.0, 2.0) == 75  # Same as cool mode
         assert opt._calculate_fan_speed(4.0, 4.0) == 100
         # Overshoot detection: in auto mode (defaults to cool), temp_diff < 0 is overshoot
         assert opt._calculate_fan_speed(-2.0, 2.0) < 50  # Should reduce, not blast
@@ -105,7 +105,7 @@ class TestFanSpeedCalculation:
         opt._last_hvac_mode = "heat"
         assert opt._calculate_fan_speed(2.0, 2.0) < 50  # Overshoot in heat mode
         # Negative temp_diff in heat mode = needs heating (active conditioning)
-        assert opt._calculate_fan_speed(-2.0, 2.0) == 70
+        assert opt._calculate_fan_speed(-2.0, 2.0) == 75  # Same as heat mode
 
     def test_no_discontinuity_at_deadband_boundary(self):
         """Fan speed should not decrease when crossing from in-deadband to out-of-deadband."""
@@ -253,7 +253,8 @@ class TestWeatherAdjustment:
         assert result < 24.0
 
     def test_cold_weather_raises_target(self):
-        opt = _make_optimizer(weather_influence_factor=0.5)
+        # Cold weather raises target only in heat mode (L2 fix: cross-mode suppression)
+        opt = _make_optimizer(hvac_mode="heat", weather_influence_factor=0.5)
         result = opt._calculate_weather_adjusted_target(24.0, 10.0)
         assert result > 24.0
 

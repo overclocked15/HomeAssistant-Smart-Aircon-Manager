@@ -228,8 +228,8 @@ class RoomTemperatureDifferenceSensor(AirconManagerSensorBase):
             "target_temperature": state["target_temperature"],
             "deadband": deadband,
             "status": (
-                "too_hot" if state["current_temperature"] and state["current_temperature"] > state["target_temperature"] + deadband
-                else "too_cold" if state["current_temperature"] and state["current_temperature"] < state["target_temperature"] - deadband
+                "too_hot" if state["current_temperature"] is not None and state["target_temperature"] is not None and state["current_temperature"] > state["target_temperature"] + deadband
+                else "too_cold" if state["current_temperature"] is not None and state["target_temperature"] is not None and state["current_temperature"] < state["target_temperature"] - deadband
                 else "at_target"
             ),
         }
@@ -363,8 +363,10 @@ class OptimizationStatusSensor(AirconManagerSensorBase):
             return "equalizing"
         elif any_too_hot:
             return "cooling"
+        elif any_too_cold:
+            return "heating"
         else:
-            return "reducing_cooling"
+            return "maintaining"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -581,7 +583,7 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
             return "no_rooms"
 
         target_temp = first_room.get("target_temperature")
-        if not target_temp:
+        if target_temp is None:
             return "no_target_temp"
 
         # Get HVAC mode from climate state
@@ -1078,8 +1080,8 @@ class ACTemperatureRecommendationSensor(AirconManagerSensorBase):
             attrs["temperature_deviation"] = round(deviation, 1)
 
             # Determine control mode
-            if deviation > 2:
-                attrs["control_mode"] = "aggressive_cooling" if avg_temp > target_temp else "aggressive_heating"
+            if abs(deviation) > 2:
+                attrs["control_mode"] = "aggressive_cooling" if deviation > 0 else "aggressive_heating"
             elif abs(deviation) > 0.5:
                 attrs["control_mode"] = "moderate"
             else:
@@ -2191,7 +2193,7 @@ class ComfortIndexSensor(AirconManagerSensorBase):
             avg_humidity = optimizer._house_avg_humidity
         else:
             # Try to get from room states
-            humidities = [s["current_humidity"] for s in room_states.values() if s["current_humidity"] is not None]
+            humidities = [s.get("current_humidity") for s in room_states.values() if s.get("current_humidity") is not None]
             if humidities:
                 avg_humidity = sum(humidities) / len(humidities)
 
@@ -2218,7 +2220,7 @@ class ComfortIndexSensor(AirconManagerSensorBase):
 
         # Get average temperature
         temps = [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
-        humidities = [s["current_humidity"] for s in room_states.values() if s["current_humidity"] is not None]
+        humidities = [s.get("current_humidity") for s in room_states.values() if s.get("current_humidity") is not None]
 
         attrs = {
             "description": "Feels-like temperature combining temp + humidity",
@@ -2266,8 +2268,9 @@ class CriticalRoomStatusSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._config_entry = config_entry
         self._room_name = room_name
+        room_id = room_name.lower().replace(" ", "_")
         self._attr_name = f"{room_name} Critical Status"
-        self._attr_unique_id = f"{config_entry.entry_id}_{room_name}_critical_status"
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_critical_status"
         self._attr_icon = "mdi:shield-alert"
         self._attr_device_class = None
 
@@ -2333,8 +2336,9 @@ class CriticalRoomMarginSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._config_entry = config_entry
         self._room_name = room_name
+        room_id = room_name.lower().replace(" ", "_")
         self._attr_name = f"{room_name} Critical Margin"
-        self._attr_unique_id = f"{config_entry.entry_id}_{room_name}_critical_margin"
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_critical_margin"
         self._attr_icon = "mdi:thermometer-alert"
         self._attr_device_class = SensorDeviceClass.TEMPERATURE
         self._attr_native_unit_of_measurement = "°C"

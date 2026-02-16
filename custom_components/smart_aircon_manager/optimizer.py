@@ -409,12 +409,14 @@ class AirconOptimizer:
             config_entry_id = self.config_entry.entry_id if self.config_entry else "default"
             state_file = storage_path / f"smart_aircon_manager.{config_entry_id}.state.json"
 
-            if state_file.exists():
-                def _load():
-                    with open(state_file, 'r') as f:
-                        return json.load(f)
+            def _load():
+                if not state_file.exists():
+                    return None
+                with open(state_file, 'r') as f:
+                    return json.load(f)
 
-                data = await self.hass.async_add_executor_job(_load)
+            data = await self.hass.async_add_executor_job(_load)
+            if data is not None:
 
                 # Restore timestamps if they exist and are recent (within last 24 hours)
                 # This prevents using very stale data after long HA downtime
@@ -900,22 +902,33 @@ class AirconOptimizer:
 
     def _calculate_weather_adjusted_target(self, base_target: float, outdoor_temp: float) -> float:
         """Calculate weather-adjusted target temperature."""
+        operating_mode = self._get_effective_operating_mode()
+
         if outdoor_temp > 30:
-            adjustment = -0.5 * self.weather_influence_factor
-            _LOGGER.debug("Hot weather (%.1f°C) - adjusting target by %.1f°C", outdoor_temp, adjustment)
+            raw_adj = -0.5
+            _LOGGER.debug("Hot weather (%.1f°C)", outdoor_temp)
         elif outdoor_temp > 25:
-            adjustment = -0.25 * self.weather_influence_factor
-            _LOGGER.debug("Warm weather (%.1f°C) - adjusting target by %.1f°C", outdoor_temp, adjustment)
+            raw_adj = -0.25
+            _LOGGER.debug("Warm weather (%.1f°C)", outdoor_temp)
         elif outdoor_temp < 15:
-            adjustment = 0.5 * self.weather_influence_factor
-            _LOGGER.debug("Cold weather (%.1f°C) - adjusting target by %.1f°C", outdoor_temp, adjustment)
+            raw_adj = 0.5
+            _LOGGER.debug("Cold weather (%.1f°C)", outdoor_temp)
         elif outdoor_temp < 20:
-            adjustment = 0.25 * self.weather_influence_factor
-            _LOGGER.debug("Cool weather (%.1f°C) - adjusting target by %.1f°C", outdoor_temp, adjustment)
+            raw_adj = 0.25
+            _LOGGER.debug("Cool weather (%.1f°C)", outdoor_temp)
         else:
-            adjustment = 0.0
+            raw_adj = 0.0
             _LOGGER.debug("Mild weather (%.1f°C) - no adjustment", outdoor_temp)
 
+        # Only apply adjustments that help the current operating mode
+        # In cool mode: only apply negative adjustments (lower target = more cooling)
+        # In heat mode: only apply positive adjustments (raise target = more heating)
+        if operating_mode == "cool" and raw_adj > 0:
+            raw_adj = 0.0
+        elif operating_mode == "heat" and raw_adj < 0:
+            raw_adj = 0.0
+
+        adjustment = raw_adj * self.weather_influence_factor
         adjusted = base_target + adjustment
         return round(adjusted, 1)
 
@@ -1041,7 +1054,7 @@ class AirconOptimizer:
         # This prevents sensor glitches from skewing the regression
         if len(temps) >= 5:  # Only filter if we have enough data
             temp_mean = sum(temps) / len(temps)
-            temp_variance = sum((t - temp_mean) ** 2 for t in temps) / len(temps)
+            temp_variance = sum((t - temp_mean) ** 2 for t in temps) / max(len(temps) - 1, 1)
             temp_std = temp_variance ** 0.5
 
             if temp_std > 0.1:  # Only filter if there's meaningful variation
@@ -1391,6 +1404,7 @@ class AirconOptimizer:
 
         recommendations = self._last_recommendations if self._last_recommendations else {}
         main_fan_speed = self._last_main_fan_speed
+        optimization_ran = False
 
         if not self.main_climate_entity or main_ac_running:
             if should_run_optimization:
@@ -1418,6 +1432,7 @@ class AirconOptimizer:
                 self._last_recommendations = recommendations
                 self._last_main_fan_speed = main_fan_speed
                 self._last_optimization = current_time
+                optimization_ran = True
             else:
                 time_until_next = self._optimization_interval - (current_time - self._last_optimization)
                 _LOGGER.debug(
@@ -1425,7 +1440,13 @@ class AirconOptimizer:
                     time_until_next
                 )
         else:
-            _LOGGER.debug("Main AC is not running - skipping optimization")
+            _LOGGER.debug("Main AC is not running - pre-positioning dampers")
+            # Pre-position dampers to neutral so airflow is ready when AC starts
+            neutral_speed = max(50, int(self.min_airflow_percent)) if hasattr(self, 'min_airflow_percent') else 50
+            pre_position = {room: neutral_speed for room in room_states}
+            if pre_position != self._last_recommendations:
+                await self._apply_recommendations(pre_position)
+                self._last_recommendations = pre_position
 
         # End performance tracking
         cycle_end = time.time()
@@ -1436,8 +1457,8 @@ class AirconOptimizer:
         uptime_hours = (cycle_end - self._startup_time) / 3600 if self._startup_time else 1
         error_rate = self._error_count / uptime_hours if uptime_hours > 0 else 0
 
-        # Track performance data for adaptive learning
-        if self.learning_manager and self.learning_manager.enabled:
+        # Track performance data for adaptive learning (only when optimization actually ran)
+        if self.learning_manager and self.learning_manager.enabled and optimization_ran:
             # Calculate actual wall-clock interval between cycles (NOT processing time)
             actual_interval = 0.0
             if self._last_cycle_timestamp is not None:
@@ -1852,49 +1873,64 @@ class AirconOptimizer:
                     return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
                 return base_speed
         else:
-            # Auto mode - determine effective direction and handle overshoot
+            # Auto mode - resolve to cool/heat and use the same speed mappings
             effective_mode = self._get_effective_operating_mode()
 
-            # Check for overshoot: room is on the wrong side of target
-            is_overshoot = (
-                (effective_mode == "cool" and temp_diff < 0) or  # Overcooled
-                (effective_mode == "heat" and temp_diff > 0)     # Overheated
-            )
-
-            if is_overshoot:
-                # Overshoot handling - reduce airflow progressively (same as cool/heat overshoot)
-                if abs_temp_diff >= self.overshoot_tier3_threshold:
-                    base_speed = 5
-                elif abs_temp_diff >= self.overshoot_tier2_threshold:
-                    base_speed = 12
-                elif abs_temp_diff >= self.overshoot_tier1_threshold:
-                    base_speed = 22
-                elif abs_temp_diff >= 0.7:
-                    base_speed = 20
+            if effective_mode == "cool":
+                if temp_diff > 0:
+                    # Needs cooling - same mappings as cool mode
+                    if abs_temp_diff >= bands['extreme']:
+                        base_speed = 100
+                    elif abs_temp_diff >= bands['very_high']:
+                        base_speed = 90
+                    elif abs_temp_diff >= bands['high']:
+                        base_speed = 75
+                    elif abs_temp_diff >= bands['moderate']:
+                        base_speed = 65
+                    elif abs_temp_diff >= bands['slight']:
+                        base_speed = 60
+                    else:
+                        base_speed = 55
                 else:
-                    base_speed = 15
-
-                if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
-                return base_speed
-
-            # Active conditioning - use adaptive bands
-            if abs_temp_diff >= bands['extreme']:
-                base_speed = 100
-            elif abs_temp_diff >= bands['very_high']:
-                base_speed = 85
-            elif abs_temp_diff >= bands['high']:
-                base_speed = 70
-            elif abs_temp_diff >= bands['moderate']:
-                base_speed = 60
-            elif abs_temp_diff >= bands['slight']:
-                base_speed = 50
-            elif abs_temp_diff >= bands['minimal']:
-                base_speed = 42
+                    # Overcooled - same overshoot logic as cool mode
+                    if abs_temp_diff >= self.overshoot_tier3_threshold:
+                        base_speed = 5
+                    elif abs_temp_diff >= self.overshoot_tier2_threshold:
+                        base_speed = 12
+                    elif abs_temp_diff >= self.overshoot_tier1_threshold:
+                        base_speed = 22
+                    elif abs_temp_diff >= 0.7:
+                        base_speed = 20
+                    else:
+                        base_speed = 15
             else:
-                base_speed = 35
+                if temp_diff < 0:
+                    # Needs heating - same mappings as heat mode
+                    if abs_temp_diff >= bands['extreme']:
+                        base_speed = 100
+                    elif abs_temp_diff >= bands['very_high']:
+                        base_speed = 90
+                    elif abs_temp_diff >= bands['high']:
+                        base_speed = 75
+                    elif abs_temp_diff >= bands['moderate']:
+                        base_speed = 65
+                    elif abs_temp_diff >= bands['slight']:
+                        base_speed = 60
+                    else:
+                        base_speed = 55
+                else:
+                    # Overheated - same overshoot logic as heat mode
+                    if abs_temp_diff >= self.overshoot_tier3_threshold:
+                        base_speed = 5
+                    elif abs_temp_diff >= self.overshoot_tier2_threshold:
+                        base_speed = 12
+                    elif abs_temp_diff >= self.overshoot_tier1_threshold:
+                        base_speed = 22
+                    elif abs_temp_diff >= 0.7:
+                        base_speed = 20
+                    else:
+                        base_speed = 15
 
-            # Apply efficiency adjustment if room provided
             if room_name:
                 return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
             return base_speed
@@ -1979,11 +2015,12 @@ class AirconOptimizer:
                         # 2. Apply relative convergence rate adjustment (additive, not multiplicative)
                         # This prevents the multiplier from affecting the learned bias component
                         convergence_adjustment = 0.0
-                        if self.hvac_mode == "cool":
+                        effective_mode = self._get_effective_operating_mode(room_states)
+                        if effective_mode == "cool":
                             # Fast heating room needs more cooling in cooling mode
                             # relative_heat_gain_rate > 1.0 means faster than average
                             convergence_adjustment = (profile.relative_heat_gain_rate - 1.0) * deviation_from_avg * 50
-                        elif self.hvac_mode == "heat":
+                        elif effective_mode == "heat":
                             # Fast cooling room needs more heating in heating mode
                             # relative_cool_rate > 1.0 means faster than average
                             convergence_adjustment = (1.0 - profile.relative_cool_rate) * deviation_from_avg * 50
@@ -2206,10 +2243,11 @@ class AirconOptimizer:
         else:
             self._quick_action_expiry = None
 
-        # Store original settings
+        # Store original settings (including hvac_mode so exit check uses entry-time mode)
         self._quick_action_original_settings = {
             "target_temperature": self.target_temperature,
             "temperature_deadband": self.temperature_deadband,
+            "hvac_mode": self.hvac_mode,
         }
 
         # Adjust settings for mode
@@ -2245,9 +2283,11 @@ class AirconOptimizer:
             if mode == "vacation":
                 mode_changed_deadband = (self.temperature_deadband == 2.0)
             elif mode == "sleep":
-                if self.hvac_mode == "cool" and original_temp:
+                # Use hvac_mode from entry time, not current (user may have changed mode during sleep)
+                entry_hvac_mode = self._quick_action_original_settings.get("hvac_mode", self.hvac_mode)
+                if entry_hvac_mode == "cool" and original_temp:
                     mode_changed_temp = abs(self.target_temperature - (original_temp + 1.0)) < 0.1
-                elif self.hvac_mode == "heat" and original_temp:
+                elif entry_hvac_mode == "heat" and original_temp:
                     mode_changed_temp = abs(self.target_temperature - (original_temp - 1.0)) < 0.1
 
             # Don't restore temp if a schedule is currently active (it takes priority)
@@ -2535,7 +2575,10 @@ class AirconOptimizer:
         if temp_variance <= 1.0 and avg_deviation <= 0.5:
             fan_speed = "low"
             _LOGGER.debug("Main fan -> LOW: Maintaining (variance: %.1f°C)", temp_variance)
-        elif self.hvac_mode == "cool":
+        # Resolve auto mode to cool/heat for consistent fan speed logic
+        effective_fan_mode = self._get_effective_operating_mode(room_states)
+
+        if effective_fan_mode == "cool":
             if avg_temp_diff >= self.main_fan_high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
                 fan_speed = "high"
                 _LOGGER.debug("Main fan -> HIGH: Aggressive cooling (avg: +%.1f°C)", avg_temp_diff)
@@ -2546,7 +2589,7 @@ class AirconOptimizer:
             else:
                 # Default to MEDIUM for moderate cooling needs
                 fan_speed = "medium"
-        elif self.hvac_mode == "heat":
+        else:
             if avg_temp_diff <= -self.main_fan_high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
                 fan_speed = "high"
                 _LOGGER.debug("Main fan -> HIGH: Aggressive heating (avg: %.1f°C)", avg_temp_diff)
@@ -2556,11 +2599,6 @@ class AirconOptimizer:
                 _LOGGER.debug("Main fan -> LOW: Well above target in heat mode (avg: %.1f°C)", avg_temp_diff)
             else:
                 # Default to MEDIUM for moderate heating needs
-                fan_speed = "medium"
-        else:
-            if avg_deviation >= 3.0 or temp_variance >= 3.0:
-                fan_speed = "high"
-            else:
                 fan_speed = "medium"
 
         fan_state = self.hass.states.get(self.main_fan_entity)

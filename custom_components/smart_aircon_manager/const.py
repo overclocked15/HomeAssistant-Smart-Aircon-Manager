@@ -205,7 +205,7 @@ CRITICAL_STATUS_RECOVERING = "recovering"
 # Days of week for scheduling
 # Configurable notification services for optimizer alerts
 CONF_NOTIFY_SERVICES = "notify_services"  # List of notification service targets
-DEFAULT_NOTIFY_SERVICES = []  # Empty = persistent_notification only (default behavior)
+DEFAULT_NOTIFY_SERVICES = ()  # Empty = persistent_notification only (default behavior)
 
 SCHEDULE_DAYS_OPTIONS = [
     "monday",
