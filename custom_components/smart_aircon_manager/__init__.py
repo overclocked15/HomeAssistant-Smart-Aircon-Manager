@@ -453,8 +453,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.info("Disabled learning for entry %s (data preserved)", config_entry_id)
                 else:
                     _LOGGER.warning("Learning manager not available for entry %s", config_entry_id)
-            else:
+            elif config_entry_id:
                 _LOGGER.error("Config entry %s not found", config_entry_id)
+            else:
+                # No config_entry_id provided - disable for all entries
+                for eid, edata in hass.data[DOMAIN].items():
+                    optimizer = edata.get("optimizer")
+                    if optimizer and optimizer.learning_manager:
+                        optimizer.learning_manager.enabled = False
+                        _LOGGER.info("Disabled learning for entry %s (data preserved)", eid)
 
         hass.services.async_register(DOMAIN, "disable_learning", async_disable_learning_service, SERVICE_SCHEMA_ENTRY_ID)
         _LOGGER.debug("Registered disable_learning service")
@@ -531,20 +538,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    # Unload platforms first (entities may reference optimizer during teardown)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    # Cleanup optimizer resources (may not exist if setup failed partway)
-    optimizer = entry_data.get("optimizer")
-    if optimizer:
-        await optimizer.async_cleanup()
+    if unload_ok:
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
 
-    # Stop critical room monitor
-    critical_monitor = entry_data.get("critical_monitor")
-    if critical_monitor:
-        await critical_monitor.async_stop()
+        # Cleanup optimizer resources (may not exist if setup failed partway)
+        optimizer = entry_data.get("optimizer")
+        if optimizer:
+            await optimizer.async_cleanup()
 
-    # Unload platforms
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        # Stop critical room monitor
+        critical_monitor = entry_data.get("critical_monitor")
+        if critical_monitor:
+            await critical_monitor.async_stop()
+
         hass.data[DOMAIN].pop(entry.entry_id)
 
         # Unregister services if this was the last entry

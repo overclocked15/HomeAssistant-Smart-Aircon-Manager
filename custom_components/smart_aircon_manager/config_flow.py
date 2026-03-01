@@ -252,7 +252,7 @@ def _validate_entities_common(hass, temp_sensor: str, cover_entity: str) -> dict
             )
             errors["temperature_sensor"] = "unrealistic_temperature"
 
-        if not temp_state.entity_id.startswith("sensor."):
+        if "temperature_sensor" not in errors and not temp_state.entity_id.startswith("sensor."):
             _LOGGER.warning("Temperature entity %s is not a sensor domain", temp_sensor)
             errors["temperature_sensor"] = "invalid_domain"
 
@@ -276,7 +276,7 @@ def _validate_entities_common(hass, temp_sensor: str, cover_entity: str) -> dict
                 _LOGGER.error("Cover %s has non-numeric position", cover_entity)
                 errors["cover_entity"] = "non_numeric_position"
 
-        if not cover_state.entity_id.startswith("cover."):
+        if "cover_entity" not in errors and not cover_state.entity_id.startswith("cover."):
             _LOGGER.warning("Cover entity %s is not a cover domain", cover_entity)
             errors["cover_entity"] = "invalid_domain"
 
@@ -361,7 +361,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_MAIN_CLIMATE_ENTITY,
-                        default=self.config_entry.data.get(CONF_MAIN_CLIMATE_ENTITY),
+                        **({'default': self.config_entry.data[CONF_MAIN_CLIMATE_ENTITY]}
+                           if CONF_MAIN_CLIMATE_ENTITY in self.config_entry.data else {}),
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="climate")
                     ),
@@ -379,7 +380,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ): cv.boolean,
                     vol.Optional(
                         CONF_MAIN_FAN_ENTITY,
-                        default=self.config_entry.data.get(CONF_MAIN_FAN_ENTITY),
+                        **({'default': self.config_entry.data[CONF_MAIN_FAN_ENTITY]}
+                           if CONF_MAIN_FAN_ENTITY in self.config_entry.data else {}),
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain=["fan", "climate"])
                     ),
@@ -637,7 +639,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if not errors:
                 # Update the room
                 updated_room = {
-                    CONF_ROOM_NAME: user_input[CONF_ROOM_NAME],
+                    CONF_ROOM_NAME: new_name,
                     CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
                     CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
                 }
@@ -657,7 +659,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 new_data = {**self.config_entry.data, CONF_ROOM_CONFIGS: updated_rooms}
 
                 # If room was renamed, migrate override and critical room settings
-                new_name = user_input[CONF_ROOM_NAME]
                 if new_name != room_to_edit_name:
                     # Migrate room overrides (keyed as "{room_name}_enabled")
                     overrides = dict(new_data.get(CONF_ROOM_OVERRIDES, {}))
@@ -920,27 +921,43 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Add a new schedule."""
+        errors = {}
         if user_input is not None:
             # Get existing schedules
             current_schedules = list(self.config_entry.data.get(CONF_SCHEDULES, []))
-            # Add new schedule
-            new_schedule = {
-                CONF_SCHEDULE_NAME: user_input[CONF_SCHEDULE_NAME],
-                CONF_SCHEDULE_DAYS: user_input[CONF_SCHEDULE_DAYS],
-                CONF_SCHEDULE_START_TIME: user_input[CONF_SCHEDULE_START_TIME],
-                CONF_SCHEDULE_END_TIME: user_input[CONF_SCHEDULE_END_TIME],
-                CONF_SCHEDULE_TARGET_TEMP: user_input[CONF_SCHEDULE_TARGET_TEMP],
-                CONF_SCHEDULE_ENABLED: user_input.get(CONF_SCHEDULE_ENABLED, True),
-            }
-            current_schedules.append(new_schedule)
 
-            # Update config
-            new_data = {**self.config_entry.data, CONF_SCHEDULES: current_schedules}
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
-            )
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data={})
+            # Validate: no duplicate schedule names
+            schedule_name = user_input[CONF_SCHEDULE_NAME].strip()
+            existing_names = [s.get(CONF_SCHEDULE_NAME, "").lower() for s in current_schedules]
+            if schedule_name.lower() in existing_names:
+                errors["base"] = "duplicate_schedule_name"
+
+            # Validate: start_time must be before end_time
+            if not errors:
+                start_time = user_input[CONF_SCHEDULE_START_TIME]
+                end_time = user_input[CONF_SCHEDULE_END_TIME]
+                if start_time >= end_time:
+                    errors["base"] = "schedule_start_after_end"
+
+            if not errors:
+                # Add new schedule
+                new_schedule = {
+                    CONF_SCHEDULE_NAME: schedule_name,
+                    CONF_SCHEDULE_DAYS: user_input[CONF_SCHEDULE_DAYS],
+                    CONF_SCHEDULE_START_TIME: user_input[CONF_SCHEDULE_START_TIME],
+                    CONF_SCHEDULE_END_TIME: user_input[CONF_SCHEDULE_END_TIME],
+                    CONF_SCHEDULE_TARGET_TEMP: user_input[CONF_SCHEDULE_TARGET_TEMP],
+                    CONF_SCHEDULE_ENABLED: user_input.get(CONF_SCHEDULE_ENABLED, True),
+                }
+                current_schedules.append(new_schedule)
+
+                # Update config
+                new_data = {**self.config_entry.data, CONF_SCHEDULES: current_schedules}
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                return self.async_create_entry(title="", data={})
 
         return self.async_show_form(
             step_id="add_schedule",
@@ -964,6 +981,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(CONF_SCHEDULE_ENABLED, default=True): cv.boolean,
                 }
             ),
+            errors=errors if errors else None,
         )
 
     async def async_step_edit_schedule(
@@ -1161,6 +1179,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 }
             ),
+            errors=errors if errors else None,
         )
 
     async def async_step_critical_rooms(
@@ -1260,7 +1279,45 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if temp_safe >= temp_max:
                 return self.async_show_form(
                     step_id="configure_critical_room",
-                    data_schema=self._get_critical_room_schema(room_name, existing_config),
+                    data_schema=vol.Schema(
+                        {
+                            vol.Required("enable_protection", default=True): cv.boolean,
+                            vol.Required(
+                                CONF_CRITICAL_TEMP_MAX,
+                                default=temp_max,
+                            ): selector.NumberSelector(
+                                selector.NumberSelectorConfig(
+                                    min=20, max=40, step=0.5,
+                                    unit_of_measurement="°C",
+                                    mode=selector.NumberSelectorMode.BOX,
+                                )
+                            ),
+                            vol.Required(
+                                CONF_CRITICAL_TEMP_SAFE,
+                                default=temp_safe,
+                            ): selector.NumberSelector(
+                                selector.NumberSelectorConfig(
+                                    min=18, max=35, step=0.5,
+                                    unit_of_measurement="°C",
+                                    mode=selector.NumberSelectorMode.BOX,
+                                )
+                            ),
+                            vol.Optional(
+                                CONF_CRITICAL_WARNING_OFFSET,
+                                default=user_input.get(CONF_CRITICAL_WARNING_OFFSET, DEFAULT_CRITICAL_WARNING_OFFSET),
+                            ): selector.NumberSelector(
+                                selector.NumberSelectorConfig(
+                                    min=0.5, max=5.0, step=0.5,
+                                    unit_of_measurement="°C",
+                                    mode=selector.NumberSelectorMode.BOX,
+                                )
+                            ),
+                            vol.Optional(
+                                CONF_CRITICAL_NOTIFY_SERVICES,
+                                default=user_input.get(CONF_CRITICAL_NOTIFY_SERVICES, ""),
+                            ): cv.string,
+                        }
+                    ),
                     description_placeholders={"room_name": room_name},
                     errors={"base": "critical_safe_above_max"},
                 )
@@ -1290,7 +1347,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required("enable_protection", default=is_enabled): cv.boolean,
-                    vol.Optional(
+                    vol.Required(
                         CONF_CRITICAL_TEMP_MAX,
                         default=existing_config.get(CONF_CRITICAL_TEMP_MAX, 30),
                     ): selector.NumberSelector(
@@ -1302,7 +1359,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
-                    vol.Optional(
+                    vol.Required(
                         CONF_CRITICAL_TEMP_SAFE,
                         default=existing_config.get(CONF_CRITICAL_TEMP_SAFE, 24),
                     ): selector.NumberSelector(
@@ -1341,15 +1398,37 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle advanced settings configuration."""
+        errors = {}
         if user_input is not None:
-            # Merge with existing data and update the config entry
-            new_data = {**self.config_entry.data, **user_input}
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
+            # Cross-validate tier ordering
+            from .const import (
+                CONF_OVERSHOOT_TIER1_THRESHOLD,
+                CONF_OVERSHOOT_TIER2_THRESHOLD,
+                CONF_OVERSHOOT_TIER3_THRESHOLD,
+                CONF_MAIN_FAN_HIGH_THRESHOLD,
+                CONF_MAIN_FAN_MEDIUM_THRESHOLD,
             )
-            # Reload the integration to apply changes
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data={})
+            t1 = user_input.get(CONF_OVERSHOOT_TIER1_THRESHOLD)
+            t2 = user_input.get(CONF_OVERSHOOT_TIER2_THRESHOLD)
+            t3 = user_input.get(CONF_OVERSHOOT_TIER3_THRESHOLD)
+            if t1 is not None and t2 is not None and t3 is not None:
+                if not (t1 < t2 < t3):
+                    errors["base"] = "invalid_tier_ordering"
+            fan_med = user_input.get(CONF_MAIN_FAN_MEDIUM_THRESHOLD)
+            fan_high = user_input.get(CONF_MAIN_FAN_HIGH_THRESHOLD)
+            if fan_med is not None and fan_high is not None:
+                if fan_med >= fan_high:
+                    errors["base"] = "invalid_fan_threshold_ordering"
+
+            if not errors:
+                # Merge with existing data and update the config entry
+                new_data = {**self.config_entry.data, **user_input}
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                # Reload the integration to apply changes
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                return self.async_create_entry(title="", data={})
 
         from .const import (
             CONF_MAIN_FAN_HIGH_THRESHOLD,

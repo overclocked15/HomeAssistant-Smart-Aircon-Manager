@@ -275,7 +275,9 @@ class RoomFanRecommendationSensor(AirconManagerSensorBase):
         current_position = state["cover_position"]
         recommended = recommendations.get(self._room_name, current_position)
 
-        change = recommended - current_position if recommended is not None else 0
+        change = (recommended - current_position
+                  if recommended is not None and current_position is not None
+                  else 0)
 
         return {
             "current_fan_speed": current_position,
@@ -344,11 +346,13 @@ class OptimizationStatusSensor(AirconManagerSensorBase):
         all_at_target = True
         any_too_hot = False
         any_too_cold = False
+        any_valid_data = False
 
         for state in room_states.values():
             if state["current_temperature"] is None:
                 continue
 
+            any_valid_data = True
             diff = state["current_temperature"] - state["target_temperature"]
             if abs(diff) > deadband:
                 all_at_target = False
@@ -357,6 +361,8 @@ class OptimizationStatusSensor(AirconManagerSensorBase):
                 else:
                     any_too_cold = True
 
+        if not any_valid_data:
+            return "no_data"
         if all_at_target:
             return "maintaining"
         elif any_too_hot and any_too_cold:
@@ -577,14 +583,16 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         if not temps:
             return "no_valid_temps"
 
-        # Get target temp from first room (they all share same target)
-        first_room = next(iter(room_states.values()), None)
-        if not first_room:
-            return "no_rooms"
-
-        target_temp = first_room.get("target_temperature")
-        if target_temp is None:
+        # Average target across all rooms (rooms may have different per-room targets)
+        room_targets = [
+            s.get("target_temperature")
+            for s in room_states.values()
+            if s.get("target_temperature") is not None
+        ]
+        if not room_targets:
             return "no_target_temp"
+
+        target_temp = sum(room_targets) / len(room_targets)
 
         # Get HVAC mode from climate state
         main_climate_state = self.coordinator.data.get("main_climate_state", {})
@@ -1398,7 +1406,7 @@ class ErrorRateSensor(AirconManagerSensorBase):
 class TotalOptimizationsRunSensor(AirconManagerSensorBase):
     """Sensor showing total number of optimizations run since startup."""
 
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1639,7 +1647,7 @@ class RoomLearningConfidenceSensor(AirconManagerSensorBase):
 class RoomDataPointsSensor(AirconManagerSensorBase):
     """Sensor showing number of data points collected for a room."""
 
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
         """Initialize the sensor."""
@@ -2016,7 +2024,7 @@ class HouseAverageHumiditySensor(AirconManagerSensorBase):
             "total_rooms": len(room_states),
         }
 
-        if optimizer._house_avg_humidity is not None:
+        if hasattr(optimizer, '_house_avg_humidity') and optimizer._house_avg_humidity is not None:
             deviation = optimizer._house_avg_humidity - optimizer.target_humidity
             attrs["deviation_from_target"] = round(deviation, 1)
             attrs["needs_dehumidification"] = optimizer._house_avg_humidity >= optimizer.dry_mode_humidity_threshold
@@ -2133,8 +2141,8 @@ class ComfortIndexSensor(AirconManagerSensorBase):
         self._attr_unique_id = f"{config_entry.entry_id}_comfort_index"
         self._attr_name = "Comfort Index"
         self._attr_icon = "mdi:weather-partly-cloudy"
-        self._attr_device_class = "temperature"
-        self._attr_native_unit_of_measurement = "°C"
+        self._attr_device_class = SensorDeviceClass.TEMPERATURE
+        self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
 
     def _calculate_heat_index(self, temp_c: float, humidity: float) -> float:
         """Calculate heat index (feels-like temperature) from temperature and humidity.
@@ -2341,7 +2349,7 @@ class CriticalRoomMarginSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_critical_margin"
         self._attr_icon = "mdi:thermometer-alert"
         self._attr_device_class = SensorDeviceClass.TEMPERATURE
-        self._attr_native_unit_of_measurement = "°C"
+        self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property

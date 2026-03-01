@@ -39,7 +39,11 @@
       "missing_position_attribute": "Cover entity is missing the current_position attribute required for fan speed control",
       "invalid_position_range": "Cover entity position is outside the valid range (0-100)",
       "non_numeric_position": "Cover entity position is not a numeric value",
-      "critical_safe_above_max": "Safe target temperature must be lower than critical threshold"
+      "critical_safe_above_max": "Safe target temperature must be lower than critical threshold",
+      "duplicate_schedule_name": "A schedule with this name already exists",
+      "schedule_start_after_end": "Start time must be before end time",
+      "invalid_tier_ordering": "Overshoot tiers must be in ascending order (tier 1 < tier 2 < tier 3)",
+      "invalid_fan_threshold_ordering": "Main fan medium threshold must be less than high threshold"
     },
     "abort": {
       "already_configured": "Integration is already configured"

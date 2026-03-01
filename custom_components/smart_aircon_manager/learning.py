@@ -91,9 +91,17 @@ class PerformanceTracker:
 
         convergence_rates = []
         for point in recent_points:
-            temp_change = abs(point["temp_after"] - point["temp_before"])
+            target = point.get("target_temp")
+            if target is None:
+                # Fallback: use absolute change rate if no target available
+                temp_change = abs(point["temp_after"] - point["temp_before"])
+            else:
+                # Only count movement toward target as convergence
+                dist_before = abs(point["temp_before"] - target)
+                dist_after = abs(point["temp_after"] - target)
+                temp_change = max(0, dist_before - dist_after)  # 0 if diverging
             time_minutes = point["cycle_duration"] / 60.0
-            if time_minutes > 0:
+            if time_minutes > 0 and temp_change > 0:
                 rate = temp_change / time_minutes
                 convergence_rates.append(rate)
 

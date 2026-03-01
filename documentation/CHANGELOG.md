@@ -1,5 +1,52 @@
 # Changelog
 
+## v2.13.0 - Full Bug & Logic Review (29 fixes)
+
+**Release Date**: 2026-03-01
+
+Fixed 29 issues (1 critical + 1 high + 15 medium + 12 low) found during comprehensive bug and logic review.
+
+### Critical Fix
+- **Config flow crash on critical room validation**: `_get_critical_room_schema()` method didn't exist — entering `temp_safe >= temp_max` crashed the config flow with `AttributeError`
+
+### High Severity Fix
+- **Weather entity temperature not normalized for Fahrenheit**: Weather entity fallback used raw temperature without F→C conversion, causing wildly wrong weather adjustments for Fahrenheit users
+
+### Optimizer Fixes (5 medium)
+- **Main fan "low for stable conditions" was dead code**: Low-speed setting for stable rooms was always overwritten by mode-specific logic; now short-circuits correctly
+- **Auto mode AC turn-on ignored outlier rooms**: Unlike cool/heat modes, auto mode only checked average temp, missing individual rooms far from target
+- **Auto mode AC decisions used stale mode**: `_check_if_ac_needed` was called before `_determine_optimal_hvac_mode`, using previous cycle's mode direction
+- **Occupancy setback ignored by AC/stability decisions**: `_get_house_effective_target` and `_check_rooms_stable` now include occupancy-adjusted targets
+- **Fan speed calculation ignored humidity mode switches**: Now uses effective operating mode instead of raw configured mode
+
+### Config Flow Fixes (4 medium)
+- **Edit room saved unstripped name**: Room names with spaces caused override key mismatches
+- **No duplicate schedule name validation**: Duplicate names caused mass deletion when deleting by name
+- **No schedule time ordering validation**: Users could create schedules with start_time >= end_time
+- **No cross-validation of advanced thresholds**: Overshoot tiers and fan thresholds now validated for correct ordering
+
+### Sensor Fixes (5 medium)
+- **TypeError when cover_position is None**: `RoomFanRecommendationSensor` now guards both values
+- **"maintaining" status when all sensors unavailable**: Now correctly returns "no_data"
+- **AttributeError on first optimization cycle**: `HouseAverageHumiditySensor` attributes now use `hasattr` guard
+- **TOTAL_INCREASING wrong for capped data points**: `RoomDataPointsSensor` changed to MEASUREMENT
+- **TOTAL_INCREASING counter inflated on restart**: `TotalOptimizationsRunSensor` changed to MEASUREMENT
+
+### Other Fixes (1 medium + 12 low)
+- **Unload ordering**: Platforms now unloaded before optimizer cleanup to prevent teardown errors
+- **disable_learning service**: Now operates on all entries when `config_entry_id` omitted
+- **Manual override state**: Now persisted across HA restarts
+- **Convergence rate metric**: Now measures actual convergence toward target, not direction-agnostic change
+- **Fan recommendation sensor**: Uses average of all room targets instead of first room only
+- **Hardcoded unit strings**: Replaced with HA constants (`SensorDeviceClass.TEMPERATURE`, `UnitOfTemperature.CELSIUS`)
+- **Domain error overwrites**: Validation now preserves more specific temperature/position errors
+- **Entity selector defaults**: No longer passes `None` as default for optional entity selectors
+- **Critical room fields**: Changed from `vol.Optional` to `vol.Required` for safety-critical thresholds
+- **Coupled rooms log**: Fixed `coupled_rooms` (list) vs `coupling_factors` (dict) mismatch
+- **Humidity log**: Fixed falsy check that logged 0% instead of actual value for humidity
+
+---
+
 ## v2.8.2 - Full Code Review Bug Fixes
 
 **Release Date**: 2026-02-08

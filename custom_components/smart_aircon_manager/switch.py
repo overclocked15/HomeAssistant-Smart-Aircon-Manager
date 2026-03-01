@@ -41,9 +41,11 @@ class ManualOverrideSwitch(SwitchEntity):
         self._attr_unique_id = f"{config_entry.entry_id}_manual_override"
         self._attr_icon = "mdi:account-wrench"
 
-        # Initialize the override state in the optimizer
+        self._hass = None  # Set when added to hass
+        # Restore override state from config entry data, or default to False
+        saved_state = config_entry.data.get("manual_override_enabled", False)
         if not hasattr(self._optimizer, 'manual_override_enabled'):
-            self._optimizer.manual_override_enabled = False
+            self._optimizer.manual_override_enabled = saved_state
 
     @property
     def device_info(self):
@@ -67,11 +69,23 @@ class ManualOverrideSwitch(SwitchEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable manual override mode."""
         self._optimizer.manual_override_enabled = True
+        self._persist_state(True)
         self.async_write_ha_state()
         _LOGGER.info("Manual override ENABLED - automatic optimization disabled")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Disable manual override mode."""
         self._optimizer.manual_override_enabled = False
+        self._persist_state(False)
         self.async_write_ha_state()
         _LOGGER.info("Manual override DISABLED - automatic optimization enabled")
+
+    def _persist_state(self, enabled: bool) -> None:
+        """Persist manual override state to config entry."""
+        try:
+            new_data = {**self._config_entry.data, "manual_override_enabled": enabled}
+            self.hass.config_entries.async_update_entry(
+                self._config_entry, data=new_data
+            )
+        except Exception:
+            _LOGGER.debug("Could not persist manual override state")

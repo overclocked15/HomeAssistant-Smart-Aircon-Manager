@@ -732,7 +732,7 @@ class AirconOptimizer:
             _LOGGER.debug(
                 "Temperature and humidity within targets (temp: %.1f°C/%.1f°C, humidity: %.1f%%/%.1f%%) → FAN_ONLY mode (candidate)",
                 avg_temp, effective_target,
-                avg_humidity if avg_humidity else 0, self.target_humidity
+                avg_humidity if avg_humidity is not None else 0, self.target_humidity
             )
 
         # Apply hysteresis logic to prevent mode thrashing
@@ -873,6 +873,14 @@ class AirconOptimizer:
                 if temp is not None:
                     try:
                         fresh_temp = float(temp)
+                        # Weather entities report temp in system's configured unit
+                        temp_unit = weather_state.attributes.get("temperature_unit", "°C")
+                        if temp_unit in ["°F", "fahrenheit", "F"]:
+                            fresh_temp = (fresh_temp - 32) * 5.0 / 9.0
+                            _LOGGER.debug(
+                                "Converted weather temperature from %.1f°F to %.1f°C",
+                                float(temp), fresh_temp
+                            )
                     except (ValueError, TypeError) as e:
                         _LOGGER.warning("Could not read weather temperature: %s", e)
 
@@ -1172,18 +1180,19 @@ class AirconOptimizer:
         return [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
 
     def _get_house_effective_target(self, room_states: dict[str, dict[str, Any]]) -> float:
-        """Compute the average target temperature across all rooms.
+        """Compute the average effective target temperature across all rooms.
 
         When rooms have different per-room targets, using any single room's
         target for house-wide decisions (AC on/off, main fan speed) is wrong.
-        This returns the mean of all per-room targets, falling back to the
-        global target_temperature if no room data is available.
+        This returns the mean of all per-room effective targets (including
+        occupancy setback), falling back to the global target_temperature
+        if no room data is available.
         """
-        targets = [
-            s["target_temperature"]
-            for s in room_states.values()
-            if s.get("target_temperature") is not None
-        ]
+        targets = []
+        for room_name, s in room_states.items():
+            base_target = s.get("target_temperature")
+            if base_target is not None:
+                targets.append(self._get_room_effective_target(room_name, base_target))
         if targets:
             return sum(targets) / len(targets)
         return self.target_temperature
@@ -1328,10 +1337,10 @@ class AirconOptimizer:
                     or (hvac_mode and hvac_mode not in ["off", "unavailable"])
                 )
 
-        needs_ac = await self._check_if_ac_needed(room_states, main_ac_running)
-
-        # Determine optimal HVAC mode (cool/heat/dry/fan_only)
+        # Determine optimal HVAC mode first so _check_if_ac_needed uses current mode
         optimal_hvac_mode = self._determine_optimal_hvac_mode(room_states, effective_target)
+
+        needs_ac = await self._check_if_ac_needed(room_states, main_ac_running)
 
         if self.auto_control_main_ac and self.main_climate_entity:
             await self._control_main_ac(needs_ac, main_climate_state, optimal_hvac_mode)
@@ -1782,7 +1791,10 @@ class AirconOptimizer:
                 return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
             return base_speed
 
-        if self.hvac_mode == "cool":
+        # Resolve effective operating mode (handles auto → cool/heat and humidity mode switches)
+        effective_mode = self._get_effective_operating_mode()
+
+        if effective_mode == "cool":
             if temp_diff > 0:
                 # Room is too hot - needs cooling (using adaptive bands)
                 if abs_temp_diff >= bands['extreme']:
@@ -1820,7 +1832,7 @@ class AirconOptimizer:
                     return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
                 return base_speed
 
-        elif self.hvac_mode == "heat":
+        elif effective_mode == "heat":
             if temp_diff < 0:
                 # Room is too cold - needs heating (using adaptive bands)
                 if abs_temp_diff >= bands['extreme']:
@@ -2025,7 +2037,7 @@ class AirconOptimizer:
                         _LOGGER.debug(
                             "  %s: Applied adaptive balancing (learned_bias=%.1f, convergence_adj=%.1f, %d coupled rooms)",
                             room_name, clamped_learned_bias, convergence_adjustment,
-                            len(profile.coupled_rooms)
+                            len(profile.coupling_factors)
                         )
 
             # Flip the bias sign for heating mode to ensure correct behavior:
@@ -2557,34 +2569,36 @@ class AirconOptimizer:
 
         fan_speed = "medium"
 
+        # If all rooms are stable and close to target, use LOW speed
         if temp_variance <= 1.0 and avg_deviation <= 0.5:
+            _LOGGER.debug("Main fan -> LOW: Maintaining (variance: %.1f°C, deviation: %.1f°C)", temp_variance, avg_deviation)
             fan_speed = "low"
-            _LOGGER.debug("Main fan -> LOW: Maintaining (variance: %.1f°C)", temp_variance)
-        # Resolve auto mode to cool/heat for consistent fan speed logic
-        effective_fan_mode = self._get_effective_operating_mode(room_states)
-
-        if effective_fan_mode == "cool":
-            if avg_temp_diff >= self.main_fan_high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
-                fan_speed = "high"
-                _LOGGER.debug("Main fan -> HIGH: Aggressive cooling (avg: +%.1f°C)", avg_temp_diff)
-            elif avg_temp_diff <= -0.5:
-                # Only set LOW when well below target (overcooled)
-                fan_speed = "low"
-                _LOGGER.debug("Main fan -> LOW: Well below target in cool mode (avg: %.1f°C)", avg_temp_diff)
-            else:
-                # Default to MEDIUM for moderate cooling needs
-                fan_speed = "medium"
         else:
-            if avg_temp_diff <= -self.main_fan_high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
-                fan_speed = "high"
-                _LOGGER.debug("Main fan -> HIGH: Aggressive heating (avg: %.1f°C)", avg_temp_diff)
-            elif avg_temp_diff >= 0.5:
-                # Only set LOW when well above target (overheated)
-                fan_speed = "low"
-                _LOGGER.debug("Main fan -> LOW: Well above target in heat mode (avg: %.1f°C)", avg_temp_diff)
+            # Resolve auto mode to cool/heat for consistent fan speed logic
+            effective_fan_mode = self._get_effective_operating_mode(room_states)
+
+            if effective_fan_mode == "cool":
+                if avg_temp_diff >= self.main_fan_high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
+                    fan_speed = "high"
+                    _LOGGER.debug("Main fan -> HIGH: Aggressive cooling (avg: +%.1f°C)", avg_temp_diff)
+                elif avg_temp_diff <= -0.5:
+                    # Only set LOW when well below target (overcooled)
+                    fan_speed = "low"
+                    _LOGGER.debug("Main fan -> LOW: Well below target in cool mode (avg: %.1f°C)", avg_temp_diff)
+                else:
+                    # Default to MEDIUM for moderate cooling needs
+                    fan_speed = "medium"
             else:
-                # Default to MEDIUM for moderate heating needs
-                fan_speed = "medium"
+                if avg_temp_diff <= -self.main_fan_high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
+                    fan_speed = "high"
+                    _LOGGER.debug("Main fan -> HIGH: Aggressive heating (avg: %.1f°C)", avg_temp_diff)
+                elif avg_temp_diff >= 0.5:
+                    # Only set LOW when well above target (overheated)
+                    fan_speed = "low"
+                    _LOGGER.debug("Main fan -> LOW: Well above target in heat mode (avg: %.1f°C)", avg_temp_diff)
+                else:
+                    # Default to MEDIUM for moderate heating needs
+                    fan_speed = "medium"
 
         fan_state = self.hass.states.get(self.main_fan_entity)
         if not fan_state:
@@ -2622,7 +2636,7 @@ class AirconOptimizer:
         return fan_speed
 
     def _check_rooms_stable(self, room_states: dict[str, dict[str, Any]]) -> bool:
-        """Check if all rooms are stable."""
+        """Check if all rooms are stable (using occupancy-adjusted targets)."""
         if not room_states:
             return False
 
@@ -2633,7 +2647,9 @@ class AirconOptimizer:
             if current_temp is None or target_temp is None:
                 return False
 
-            temp_diff = abs(current_temp - target_temp)
+            # Apply occupancy setback to get effective target
+            effective_target = self._get_room_effective_target(room_name, target_temp)
+            temp_diff = abs(current_temp - effective_target)
             if temp_diff > self.temperature_deadband:
                 return False
 
@@ -2723,7 +2739,20 @@ class AirconOptimizer:
                     return not overheated
             else:
                 # To turn ON: must exceed turn_on_threshold in either direction
-                return abs(temp_diff) >= self.ac_turn_on_threshold
+                max_temp = max(temps)
+                min_temp = min(temps)
+                max_deviation = max_temp - effective_target
+                min_deviation = effective_target - min_temp
+
+                turn_on_avg = abs(temp_diff) >= self.ac_turn_on_threshold
+                # Check for outlier rooms (1.5x threshold) like cool/heat modes
+                turn_on_outlier = max(max_deviation, min_deviation) >= (self.ac_turn_on_threshold * 1.5)
+
+                turn_on = turn_on_avg or turn_on_outlier
+                if turn_on and turn_on_outlier and not turn_on_avg:
+                    _LOGGER.info("AC turn ON (auto, outlier room): max_dev=%.1f°C, min_dev=%.1f°C, avg=%.1f°C",
+                                 max_deviation, min_deviation, avg_temp)
+                return turn_on
 
     async def _set_hvac_mode(self, optimal_mode: str, main_climate_state: dict[str, Any] | None) -> None:
         """Set the HVAC mode on the main climate entity.
