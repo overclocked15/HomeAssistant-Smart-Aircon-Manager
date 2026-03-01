@@ -10,6 +10,7 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -33,8 +34,19 @@ async def async_setup_entry(
     if optimizer.main_climate_entity:
         entities.append(MainClimateRunningSensor(coordinator, config_entry))
 
-    if entities:
-        async_add_entities(entities)
+    # Add quick action mode binary sensors
+    for mode, icon in [
+        ("vacation", "mdi:airplane"),
+        ("boost", "mdi:rocket-launch"),
+        ("sleep", "mdi:sleep"),
+        ("party", "mdi:party-popper"),
+    ]:
+        entities.append(QuickActionModeBinarySensor(coordinator, config_entry, optimizer, mode, icon))
+
+    # Add AC needs sensor
+    entities.append(ACNeededBinarySensor(coordinator, config_entry))
+
+    async_add_entities(entities)
 
 
 class MainClimateRunningSensor(CoordinatorEntity, BinarySensorEntity):
@@ -97,3 +109,70 @@ class MainClimateRunningSensor(CoordinatorEntity, BinarySensorEntity):
             "target_temperature": main_climate_state.get("temperature"),
             "current_temperature": main_climate_state.get("current_temperature"),
         }
+
+
+class QuickActionModeBinarySensor(CoordinatorEntity, BinarySensorEntity):
+    """Binary sensor showing if a quick action mode is active."""
+
+    def __init__(self, coordinator, config_entry: ConfigEntry, optimizer, mode: str, icon: str) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._optimizer = optimizer
+        self._mode = mode
+        self._attr_unique_id = f"{config_entry.entry_id}_{mode}_mode_active"
+        self._attr_name = f"{mode.title()} Mode Active"
+        self._attr_icon = icon
+
+    @property
+    def device_info(self):
+        """Return device information."""
+        from . import get_device_info
+        return get_device_info(self._config_entry)
+
+    @property
+    def is_on(self) -> bool:
+        """Return true if this quick action mode is active."""
+        return getattr(self._optimizer, '_quick_action_mode', None) == self._mode
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional attributes."""
+        if not self.is_on:
+            return {}
+        import time
+        expiry = getattr(self._optimizer, '_quick_action_expiry', None)
+        if expiry:
+            remaining = max(0, expiry - time.time())
+            return {
+                "remaining_minutes": round(remaining / 60, 1),
+                "expires_at": expiry,
+            }
+        return {}
+
+
+class ACNeededBinarySensor(CoordinatorEntity, BinarySensorEntity):
+    """Binary sensor showing if the system has determined AC is needed."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._config_entry = config_entry
+        self._attr_unique_id = f"{config_entry.entry_id}_ac_needed"
+        self._attr_name = "AC Needed"
+        self._attr_icon = "mdi:snowflake-thermometer"
+
+    @property
+    def device_info(self):
+        """Return device information."""
+        from . import get_device_info
+        return get_device_info(self._config_entry)
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if the system has determined AC is needed."""
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("needs_ac", False)

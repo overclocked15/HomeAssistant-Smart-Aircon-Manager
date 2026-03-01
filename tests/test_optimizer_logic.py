@@ -23,6 +23,7 @@ def _make_optimizer(**kwargs):
     hass.config = MagicMock()
     hass.config.path = MagicMock(return_value="/tmp/test_storage")
     hass.async_add_executor_job = AsyncMock()
+    hass.async_create_task = MagicMock()
 
     defaults = {
         "hass": hass,
@@ -53,18 +54,18 @@ class TestFanSpeedCalculation:
 
     def test_cool_mode_hot_room_tiers(self):
         opt = _make_optimizer(hvac_mode="cool", temperature_deadband=0.5)
-        # Just above deadband
-        assert opt._calculate_fan_speed(0.6, 0.6) == 55
-        # 1°C above
-        assert opt._calculate_fan_speed(1.0, 1.0) == 60
-        # 1.5°C above
-        assert opt._calculate_fan_speed(1.5, 1.5) == 65
-        # 2°C above
-        assert opt._calculate_fan_speed(2.0, 2.0) == 75
-        # 3°C above
-        assert opt._calculate_fan_speed(3.0, 3.0) == 90
-        # 4°C+ above - maximum
-        assert opt._calculate_fan_speed(5.0, 5.0) == 100
+        # Proportional curve: 50 + 50 * min(1.0, (diff/4.0)^0.8)
+        # Speed increases monotonically with temperature difference
+        s06 = opt._calculate_fan_speed(0.6, 0.6)
+        s10 = opt._calculate_fan_speed(1.0, 1.0)
+        s15 = opt._calculate_fan_speed(1.5, 1.5)
+        s20 = opt._calculate_fan_speed(2.0, 2.0)
+        s30 = opt._calculate_fan_speed(3.0, 3.0)
+        s50 = opt._calculate_fan_speed(5.0, 5.0)
+        # Verify monotonically increasing
+        assert 50 < s06 < s10 < s15 < s20 < s30 <= s50
+        # 4°C+ above - should reach maximum
+        assert s50 == 100
 
     def test_cool_mode_overcooled_room(self):
         opt = _make_optimizer(hvac_mode="cool", temperature_deadband=0.5)
@@ -79,11 +80,15 @@ class TestFanSpeedCalculation:
 
     def test_heat_mode_cold_room_tiers(self):
         opt = _make_optimizer(hvac_mode="heat", temperature_deadband=0.5)
-        # Room is below target - needs heating
-        assert opt._calculate_fan_speed(-0.6, 0.6) == 55
-        assert opt._calculate_fan_speed(-1.0, 1.0) == 60
-        assert opt._calculate_fan_speed(-2.0, 2.0) == 75
-        assert opt._calculate_fan_speed(-4.0, 4.0) == 100
+        # Room is below target - needs heating (proportional curve)
+        s06 = opt._calculate_fan_speed(-0.6, 0.6)
+        s10 = opt._calculate_fan_speed(-1.0, 1.0)
+        s20 = opt._calculate_fan_speed(-2.0, 2.0)
+        s40 = opt._calculate_fan_speed(-4.0, 4.0)
+        # Verify monotonically increasing
+        assert 50 < s06 < s10 < s20 < s40
+        # 4°C should be at or very near max
+        assert s40 >= 95
 
     def test_heat_mode_overheated_room(self):
         opt = _make_optimizer(hvac_mode="heat", temperature_deadband=0.5)
@@ -93,9 +98,11 @@ class TestFanSpeedCalculation:
 
     def test_auto_mode(self):
         opt = _make_optimizer(hvac_mode="auto", temperature_deadband=0.5)
-        # Auto mode now delegates to cool/heat mappings (M2 fix)
-        assert opt._calculate_fan_speed(2.0, 2.0) == 75  # Same as cool mode
-        assert opt._calculate_fan_speed(4.0, 4.0) == 100
+        # Auto mode delegates to cool/heat via proportional curve
+        s20 = opt._calculate_fan_speed(2.0, 2.0)
+        s40 = opt._calculate_fan_speed(4.0, 4.0)
+        assert s20 > 50  # Active conditioning
+        assert s40 >= 95  # Near max
         # Overshoot detection: in auto mode (defaults to cool), temp_diff < 0 is overshoot
         assert opt._calculate_fan_speed(-2.0, 2.0) < 50  # Should reduce, not blast
 
@@ -105,7 +112,8 @@ class TestFanSpeedCalculation:
         opt._last_hvac_mode = "heat"
         assert opt._calculate_fan_speed(2.0, 2.0) < 50  # Overshoot in heat mode
         # Negative temp_diff in heat mode = needs heating (active conditioning)
-        assert opt._calculate_fan_speed(-2.0, 2.0) == 75  # Same as heat mode
+        s20 = opt._calculate_fan_speed(-2.0, 2.0)
+        assert s20 > 50  # Active conditioning in heat mode
 
     def test_no_discontinuity_at_deadband_boundary(self):
         """Fan speed should not decrease when crossing from in-deadband to out-of-deadband."""

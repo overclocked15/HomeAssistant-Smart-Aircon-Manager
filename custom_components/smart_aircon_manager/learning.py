@@ -452,9 +452,21 @@ class LearningProfile:
 
         Returns True if update was successful, False if insufficient data.
         """
-        # Always update confidence based on data points collected
-        data_count = tracker.get_data_point_count(self.room_name)
-        self.confidence = min(1.0, data_count / 200.0)  # Full confidence at 200+ points
+        # Always update confidence based on data points collected, weighted by recency
+        import time as time_module
+        data_points = tracker._data_points.get(self.room_name, [])
+        if not data_points:
+            self.confidence = 0.0
+        else:
+            # Weight data points by recency: full weight within 24h, halving every 7 days
+            now = time_module.time()
+            HALF_LIFE_SECONDS = 7 * 24 * 3600  # 7 days
+            weighted_count = 0.0
+            for point in data_points:
+                age = now - point.get("timestamp", 0)
+                weight = 0.5 ** (age / HALF_LIFE_SECONDS)
+                weighted_count += weight
+            self.confidence = min(1.0, weighted_count / 200.0)
 
         # Estimate thermal characteristics
         thermal_mass = tracker.estimate_thermal_mass(self.room_name)
@@ -463,7 +475,7 @@ class LearningProfile:
         if thermal_mass is None or cooling_efficiency is None:
             _LOGGER.debug(
                 "Insufficient data to update thermal characteristics for %s (need 50+ data points), confidence=%.2f (%d points)",
-                self.room_name, self.confidence, data_count
+                self.room_name, self.confidence, len(data_points)
             )
             return False
 
@@ -480,15 +492,40 @@ class LearningProfile:
 
         self.overshoot_rate_per_day = overshoot_freq
 
-        # Adjust smoothing based on observed behavior
-        if overshoot_freq > 2.0:  # More than 2 overshoots per day
-            # Increase smoothing to reduce oscillation
-            self.optimal_smoothing_factor = min(0.85, self.optimal_smoothing_factor + 0.05)
-            self.optimal_smoothing_threshold = min(15, self.optimal_smoothing_threshold + 2)
-        elif overshoot_freq < 0.5:  # Very stable
-            # Decrease smoothing for faster response
-            self.optimal_smoothing_factor = max(0.6, self.optimal_smoothing_factor - 0.05)
-            self.optimal_smoothing_threshold = max(5, self.optimal_smoothing_threshold - 2)
+        # Smoothing parameter learning: compare recent performance windows
+        # Split recent data into two halves and compare metrics
+        data_points = tracker._data_points.get(self.room_name, [])
+        recent_points = [p for p in data_points if p.get("timestamp", 0) > time_module.time() - 48 * 3600]
+
+        if len(recent_points) >= 40:
+            midpoint = len(recent_points) // 2
+            first_half = recent_points[:midpoint]
+            second_half = recent_points[midpoint:]
+
+            # Calculate overshoot rate for each half
+            def half_overshoot_count(points):
+                count = 0
+                for i in range(1, len(points)):
+                    prev_diff = points[i-1].get("temp_diff_from_target", 0)
+                    curr_diff = points[i].get("temp_diff_from_target", 0)
+                    if (prev_diff > 0 and curr_diff < -0.3) or (prev_diff < 0 and curr_diff > 0.3):
+                        count += 1
+                return count
+
+            first_overshoots = half_overshoot_count(first_half)
+            second_overshoots = half_overshoot_count(second_half)
+
+            # If overshoots increased, increase smoothing (more dampening)
+            # If overshoots decreased, keep current direction
+            if second_overshoots > first_overshoots + 1:
+                # Performance worsened - increase smoothing
+                self.optimal_smoothing_factor = min(0.95, self.optimal_smoothing_factor + 0.02)
+                self.optimal_smoothing_threshold = min(20, self.optimal_smoothing_threshold + 1)
+            elif second_overshoots < first_overshoots and first_overshoots > 0:
+                # Performance improved - cautiously decrease smoothing for responsiveness
+                self.optimal_smoothing_factor = max(0.5, self.optimal_smoothing_factor - 0.01)
+                self.optimal_smoothing_threshold = max(5, self.optimal_smoothing_threshold - 1)
+            # If same: keep parameters unchanged (they're working)
 
         # Update adaptive balancing characteristics
         relative_rate = tracker.get_relative_convergence_rate(self.room_name)

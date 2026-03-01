@@ -8,6 +8,10 @@ from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
     HVACMode,
+    FAN_AUTO,
+    FAN_LOW,
+    FAN_MEDIUM,
+    FAN_HIGH,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
@@ -40,9 +44,13 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
     _attr_name = "Smart Aircon Manager"
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_supported_features = (
-        ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.FAN_MODE
     )
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT, HVACMode.AUTO]
+    _attr_fan_modes = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
 
     def __init__(self, coordinator, optimizer, config_entry: ConfigEntry) -> None:
         """Initialize the climate entity."""
@@ -95,6 +103,45 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         if not self._is_on:
             return HVACMode.OFF
         return self._attr_hvac_mode
+
+    @property
+    def fan_mode(self) -> str | None:
+        """Return the current fan mode."""
+        if not self.coordinator.data:
+            return FAN_AUTO
+        main_fan_speed = self.coordinator.data.get("main_fan_speed")
+        if main_fan_speed == "low":
+            return FAN_LOW
+        elif main_fan_speed == "medium":
+            return FAN_MEDIUM
+        elif main_fan_speed == "high":
+            return FAN_HIGH
+        return FAN_AUTO
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        """Set new fan mode (overrides automatic main fan control)."""
+        if not self._optimizer.main_fan_entity:
+            _LOGGER.warning("Cannot set fan mode - no main fan entity configured")
+            return
+
+        fan_state = self.hass.states.get(self._optimizer.main_fan_entity)
+        if not fan_state or fan_state.state in ["unavailable", "unknown"]:
+            return
+
+        if self._optimizer.main_fan_entity.startswith("climate."):
+            await self.hass.services.async_call(
+                "climate", "set_fan_mode",
+                {"entity_id": self._optimizer.main_fan_entity, "fan_mode": fan_mode},
+            )
+        elif self._optimizer.main_fan_entity.startswith("fan."):
+            # Map to percentage for fan entities
+            pct_map = {FAN_LOW: 33, FAN_MEDIUM: 66, FAN_HIGH: 100, FAN_AUTO: 66}
+            await self.hass.services.async_call(
+                "fan", "set_percentage",
+                {"entity_id": self._optimizer.main_fan_entity, "percentage": pct_map.get(fan_mode, 66)},
+            )
+
+        self.async_write_ha_state()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""

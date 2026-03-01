@@ -12,6 +12,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -183,6 +184,7 @@ class RoomTemperatureDifferenceSensor(AirconManagerSensorBase):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
         """Initialize the sensor."""
@@ -460,6 +462,8 @@ class QuickActionModeSensor(AirconManagerSensorBase):
 class LastResponseSensor(AirconManagerSensorBase):
     """Sensor showing the last optimization response for debugging."""
 
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
@@ -707,6 +711,8 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
 class SystemStatusDebugSensor(AirconManagerSensorBase):
     """Debug sensor showing overall system status."""
 
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
@@ -757,6 +763,7 @@ class LastOptimizationTimeSensor(AirconManagerSensorBase):
     """Sensor showing when last optimization ran."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -807,6 +814,7 @@ class LastActualOptimizationSensor(AirconManagerSensorBase):
     """Sensor showing when last optimization ran (not just coordinator updates)."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -871,6 +879,7 @@ class NextOptimizationTimeSensor(AirconManagerSensorBase):
     """Sensor showing when next optimization will run."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -949,6 +958,8 @@ class NextOptimizationTimeSensor(AirconManagerSensorBase):
 class ErrorTrackingSensor(AirconManagerSensorBase):
     """Sensor tracking errors and warnings."""
 
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
@@ -977,6 +988,8 @@ class ErrorTrackingSensor(AirconManagerSensorBase):
 
 class ValidSensorsCountSensor(AirconManagerSensorBase):
     """Sensor showing count of valid temperature sensors."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1041,6 +1054,7 @@ class ACTemperatureRecommendationSensor(AirconManagerSensorBase):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1104,6 +1118,7 @@ class ACCurrentTemperatureSensor(AirconManagerSensorBase):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1162,6 +1177,7 @@ class OutdoorTemperatureSensor(AirconManagerSensorBase):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1190,6 +1206,7 @@ class WeatherAdjustmentSensor(AirconManagerSensorBase):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1277,6 +1294,7 @@ class EffectiveTargetTemperatureSensor(AirconManagerSensorBase):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1320,6 +1338,7 @@ class OptimizationCycleTimeSensor(AirconManagerSensorBase):
 
     _attr_native_unit_of_measurement = "ms"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1358,6 +1377,7 @@ class ErrorRateSensor(AirconManagerSensorBase):
 
     _attr_native_unit_of_measurement = "errors/hour"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1407,6 +1427,7 @@ class TotalOptimizationsRunSensor(AirconManagerSensorBase):
     """Sensor showing total number of optimizations run since startup."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1444,6 +1465,7 @@ class SensorDataQualitySensor(AirconManagerSensorBase):
 
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1639,7 +1661,7 @@ class RoomLearningConfidenceSensor(AirconManagerSensorBase):
             ),
             "threshold_for_activation": f"{threshold}%",
             "last_updated": profile.last_updated,
-            "data_points_needed": max(0, int(200 * self._optimizer.learning_manager.confidence_threshold) - 
+            "data_points_needed": max(0, int(200 * self._optimizer.learning_manager.confidence_threshold) -
                                      self._optimizer.learning_manager.tracker.get_data_point_count(self._room_name)),
         }
 
@@ -1648,6 +1670,7 @@ class RoomDataPointsSensor(AirconManagerSensorBase):
     """Sensor showing number of data points collected for a room."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
         """Initialize the sensor."""
@@ -1691,6 +1714,7 @@ class RoomOvershootRateSensor(AirconManagerSensorBase):
 
     _attr_native_unit_of_measurement = "overshoots/day"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry, room_name: str, optimizer=None) -> None:
         """Initialize the sensor."""
@@ -1760,6 +1784,7 @@ class HouseAverageTemperatureSensor(AirconManagerSensorBase):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1803,6 +1828,7 @@ class RoomTemperatureVarianceSensor(AirconManagerSensorBase):
 
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -1851,6 +1877,8 @@ class RoomTemperatureVarianceSensor(AirconManagerSensorBase):
 
 class BalancingActiveSensor(AirconManagerSensorBase):
     """Sensor showing whether room balancing is currently active."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -2035,6 +2063,8 @@ class HouseAverageHumiditySensor(AirconManagerSensorBase):
 class DryModeActiveSensor(AirconManagerSensorBase):
     """Sensor showing whether dry mode is currently active."""
 
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator, config_entry)
@@ -2079,6 +2109,8 @@ class DryModeActiveSensor(AirconManagerSensorBase):
 
 class FanOnlyModeActiveSensor(AirconManagerSensorBase):
     """Sensor showing whether fan-only mode is currently active."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -2134,6 +2166,8 @@ class FanOnlyModeActiveSensor(AirconManagerSensorBase):
 
 class ComfortIndexSensor(AirconManagerSensorBase):
     """Sensor showing the comfort index (feels-like temperature) combining temperature and humidity."""
+
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -2338,6 +2372,8 @@ class CriticalRoomStatusSensor(CoordinatorEntity, SensorEntity):
 
 class CriticalRoomMarginSensor(CoordinatorEntity, SensorEntity):
     """Sensor showing degrees until critical threshold."""
+
+    _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator, config_entry, room_name):
         """Initialize the sensor."""

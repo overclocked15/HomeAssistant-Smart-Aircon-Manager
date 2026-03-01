@@ -223,6 +223,7 @@ class AirconOptimizer:
         self._current_schedule = None
         self._outdoor_temperature = None
         self._outdoor_temperature_timestamp = None  # Timestamp when outdoor temp was last fetched
+        self._outdoor_temp_history = []  # [(timestamp, temp)] for trend detection
         self._last_fan_speeds = {}  # For smoothing
 
         # Performance metrics tracking
@@ -436,6 +437,16 @@ class AirconOptimizer:
                         _LOGGER.debug("Restored AC last turned off timestamp: %.0f seconds ago",
                                      current_time - self._ac_last_turned_off)
 
+                # Restore quick action state if not expired
+                if data.get('quick_action_mode') and data.get('quick_action_expiry'):
+                    if data['quick_action_expiry'] > current_time:
+                        self._quick_action_mode = data['quick_action_mode']
+                        self._quick_action_expiry = data['quick_action_expiry']
+                        self._quick_action_original_settings = data.get('quick_action_original_settings', {})
+                        remaining = (self._quick_action_expiry - current_time) / 60
+                        _LOGGER.info("Restored quick action mode '%s' (%.1f min remaining)",
+                                    self._quick_action_mode, remaining)
+
                 _LOGGER.info("Compressor protection state loaded successfully")
             else:
                 _LOGGER.debug("No existing compressor state file found, starting fresh")
@@ -454,6 +465,9 @@ class AirconOptimizer:
             data = {
                 'ac_last_turned_on': self._ac_last_turned_on,
                 'ac_last_turned_off': self._ac_last_turned_off,
+                'quick_action_mode': self._quick_action_mode,
+                'quick_action_expiry': self._quick_action_expiry,
+                'quick_action_original_settings': self._quick_action_original_settings,
                 'saved_at': time.time(),
             }
 
@@ -884,10 +898,16 @@ class AirconOptimizer:
                     except (ValueError, TypeError) as e:
                         _LOGGER.warning("Could not read weather temperature: %s", e)
 
-        # If we got fresh temperature, cache it and return
+        # If we got fresh temperature, cache it and track history
         if fresh_temp is not None:
             self._outdoor_temperature = fresh_temp
             self._outdoor_temperature_timestamp = current_time
+            # Track history for trend detection (keep last 2 hours)
+            self._outdoor_temp_history.append((current_time, fresh_temp))
+            cutoff = current_time - 7200  # 2 hours
+            self._outdoor_temp_history = [
+                (t, v) for t, v in self._outdoor_temp_history if t >= cutoff
+            ]
             return fresh_temp
 
         # No fresh temperature available - check if we have cached value within max age
@@ -902,6 +922,37 @@ class AirconOptimizer:
                              cache_age, CACHE_MAX_AGE)
 
         return None
+
+    def _get_outdoor_temp_trend(self) -> float:
+        """Get outdoor temperature trend in °C per hour.
+
+        Positive = warming, Negative = cooling.
+        Returns 0.0 if insufficient data.
+        """
+        history = self._outdoor_temp_history
+        if len(history) < 3:
+            return 0.0
+
+        # Need at least 15 minutes of data for meaningful trend
+        time_span = history[-1][0] - history[0][0]
+        if time_span < 900:  # 15 minutes
+            return 0.0
+
+        # Simple linear regression
+        n = len(history)
+        times = [h[0] for h in history]
+        temps = [h[1] for h in history]
+        t_mean = sum(times) / n
+        temp_mean = sum(temps) / n
+
+        numerator = sum((t - t_mean) * (temp - temp_mean) for t, temp in zip(times, temps))
+        denominator = sum((t - t_mean) ** 2 for t in times)
+
+        if denominator == 0:
+            return 0.0
+
+        # Convert from °C/second to °C/hour
+        return (numerator / denominator) * 3600.0
 
     def _calculate_weather_adjusted_target(self, base_target: float, outdoor_temp: float) -> float:
         """Calculate weather-adjusted target temperature."""
@@ -922,6 +973,15 @@ class AirconOptimizer:
         else:
             raw_adj = 0.0
             _LOGGER.debug("Mild weather (%.1f°C) - no adjustment", outdoor_temp)
+
+        # Apply trend-based adjustment: if outdoor temp is rising fast,
+        # anticipate increased cooling need (and vice versa)
+        trend = self._get_outdoor_temp_trend()
+        if abs(trend) > 1.0:  # Only if trend > 1°C/hour
+            # Scale: ±0.25 for every 2°C/hour of trend
+            trend_adj = -0.125 * trend  # Negative because rising outdoor = need more cooling
+            raw_adj += max(-0.5, min(0.5, trend_adj))
+            _LOGGER.debug("Weather trend: %.1f°C/hr, trend adjustment: %.2f°C", trend, trend_adj)
 
         # Only apply adjustments that help the current operating mode
         # In cool mode: only apply negative adjustments (lower target = more cooling)
@@ -1073,13 +1133,24 @@ class AirconOptimizer:
                             len(history) - len(filtered_data), room_name
                         )
 
-        # Calculate slope using least squares regression
+        # Calculate slope using weighted least squares regression
+        # Recent readings get higher weight (exponential decay with 5-minute half-life)
         n = len(times)
-        t_mean = sum(times) / n
-        temp_mean = sum(temps) / n
+        latest_time = times[-1]
+        half_life = 300.0  # 5 minutes in seconds
 
-        numerator = sum((t - t_mean) * (temp - temp_mean) for t, temp in zip(times, temps))
-        denominator = sum((t - t_mean) ** 2 for t in times)
+        weights = []
+        for t in times:
+            age = latest_time - t
+            w = 2.0 ** (-age / half_life) if half_life > 0 else 1.0
+            weights.append(w)
+
+        total_weight = sum(weights)
+        t_mean = sum(w * t for w, t in zip(weights, times)) / total_weight
+        temp_mean = sum(w * temp for w, temp in zip(weights, temps)) / total_weight
+
+        numerator = sum(w * (t - t_mean) * (temp - temp_mean) for w, t, temp in zip(weights, times, temps))
+        denominator = sum(w * (t - t_mean) ** 2 for w, t in zip(weights, times))
 
         if denominator == 0:
             return 0.0
@@ -1100,11 +1171,12 @@ class AirconOptimizer:
         if rate is None:
             return None
 
-        # Apply exponential decay dampening factor
-        # Linear prediction overestimates because it assumes constant rate
-        # Reality: rate slows as temp approaches equilibrium
-        # Dampen by 60% to account for this (empirically determined)
-        DECAY_DAMPING_FACTOR = 0.6
+        # Apply dynamic dampening factor based on proximity to target
+        # Linear prediction overestimates because rate slows near equilibrium
+        # Dampen more when close to target (rate is already decelerating)
+        temp_gap = abs(current_temp - self.target_temperature)
+        # Scale damping: 0.4 when very close to target, 0.7 when far away
+        DECAY_DAMPING_FACTOR = 0.4 + 0.3 * min(1.0, temp_gap / 3.0)
 
         predicted_change = rate * self.predictive_lookahead_minutes * DECAY_DAMPING_FACTOR
         predicted = current_temp + predicted_change
@@ -1445,9 +1517,20 @@ class AirconOptimizer:
                 )
         else:
             _LOGGER.debug("Main AC is not running - pre-positioning dampers")
-            # Pre-position dampers to neutral so airflow is ready when AC starts
-            neutral_speed = max(50, int(self.min_airflow_percent)) if hasattr(self, 'min_airflow_percent') else 50
-            pre_position = {room: neutral_speed for room in room_states}
+            # Smart pre-positioning: rooms further from target get more airflow
+            # so they are ready for faster convergence when AC starts
+            effective_target = self._get_house_effective_target()
+            min_pos = max(30, int(self.min_airflow_percent)) if hasattr(self, 'min_airflow_percent') else 30
+            pre_position = {}
+            for room, state in room_states.items():
+                temp = state.get("current_temperature")
+                if temp is not None:
+                    deviation = abs(temp - effective_target)
+                    # Scale: 30% at target, up to 80% at 3°C+ deviation
+                    pre_pos = min(80, int(min_pos + (80 - min_pos) * min(1.0, deviation / 3.0)))
+                else:
+                    pre_pos = 50  # Default neutral for unavailable sensors
+                pre_position[room] = pre_pos
             if pre_position != self._last_recommendations:
                 await self._apply_recommendations(pre_position)
                 self._last_recommendations = pre_position
@@ -1796,19 +1879,9 @@ class AirconOptimizer:
 
         if effective_mode == "cool":
             if temp_diff > 0:
-                # Room is too hot - needs cooling (using adaptive bands)
-                if abs_temp_diff >= bands['extreme']:
-                    base_speed = 100  # Extreme heat - maximum cooling
-                elif abs_temp_diff >= bands['very_high']:
-                    base_speed = 90   # Very hot - aggressive cooling
-                elif abs_temp_diff >= bands['high']:
-                    base_speed = 75   # Hot - strong cooling
-                elif abs_temp_diff >= bands['moderate']:
-                    base_speed = 65   # Moderately hot - good cooling
-                elif abs_temp_diff >= bands['slight']:
-                    base_speed = 60   # Slightly hot - moderate cooling
-                else:
-                    base_speed = 55   # Just outside deadband - slightly above baseline
+                # Continuous proportional speed: smooth curve from baseline to max
+                # Uses power curve for natural response: gentle near target, aggressive far away
+                base_speed = min(100, int(50 + 50 * min(1.0, (abs_temp_diff / bands['extreme']) ** 0.8)))
 
                 # Apply efficiency adjustment if room provided
                 if room_name:
@@ -1834,19 +1907,8 @@ class AirconOptimizer:
 
         elif effective_mode == "heat":
             if temp_diff < 0:
-                # Room is too cold - needs heating (using adaptive bands)
-                if abs_temp_diff >= bands['extreme']:
-                    base_speed = 100  # Extreme cold - maximum heating
-                elif abs_temp_diff >= bands['very_high']:
-                    base_speed = 90   # Very cold - aggressive heating
-                elif abs_temp_diff >= bands['high']:
-                    base_speed = 75   # Cold - strong heating
-                elif abs_temp_diff >= bands['moderate']:
-                    base_speed = 65   # Moderately cold - good heating
-                elif abs_temp_diff >= bands['slight']:
-                    base_speed = 60   # Slightly cold - moderate heating
-                else:
-                    base_speed = 55   # Just outside deadband - slightly above baseline
+                # Continuous proportional speed: smooth curve from baseline to max
+                base_speed = min(100, int(50 + 50 * min(1.0, (abs_temp_diff / bands['extreme']) ** 0.8)))
 
                 # Apply efficiency adjustment if room provided
                 if room_name:
@@ -1870,63 +1932,25 @@ class AirconOptimizer:
                     return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
                 return base_speed
         else:
-            # Auto mode - resolve to cool/heat and use the same speed mappings
+            # Auto mode fallback - resolve to cool/heat and use proportional curve
             effective_mode = self._get_effective_operating_mode()
+            needs_conditioning = (effective_mode == "cool" and temp_diff > 0) or \
+                                 (effective_mode == "heat" and temp_diff < 0)
 
-            if effective_mode == "cool":
-                if temp_diff > 0:
-                    # Needs cooling - same mappings as cool mode
-                    if abs_temp_diff >= bands['extreme']:
-                        base_speed = 100
-                    elif abs_temp_diff >= bands['very_high']:
-                        base_speed = 90
-                    elif abs_temp_diff >= bands['high']:
-                        base_speed = 75
-                    elif abs_temp_diff >= bands['moderate']:
-                        base_speed = 65
-                    elif abs_temp_diff >= bands['slight']:
-                        base_speed = 60
-                    else:
-                        base_speed = 55
-                else:
-                    # Overcooled - same overshoot logic as cool mode
-                    if abs_temp_diff >= self.overshoot_tier3_threshold:
-                        base_speed = 5
-                    elif abs_temp_diff >= self.overshoot_tier2_threshold:
-                        base_speed = 12
-                    elif abs_temp_diff >= self.overshoot_tier1_threshold:
-                        base_speed = 22
-                    elif abs_temp_diff >= 0.7:
-                        base_speed = 20
-                    else:
-                        base_speed = 15
+            if needs_conditioning:
+                base_speed = min(100, int(50 + 50 * min(1.0, (abs_temp_diff / bands['extreme']) ** 0.8)))
             else:
-                if temp_diff < 0:
-                    # Needs heating - same mappings as heat mode
-                    if abs_temp_diff >= bands['extreme']:
-                        base_speed = 100
-                    elif abs_temp_diff >= bands['very_high']:
-                        base_speed = 90
-                    elif abs_temp_diff >= bands['high']:
-                        base_speed = 75
-                    elif abs_temp_diff >= bands['moderate']:
-                        base_speed = 65
-                    elif abs_temp_diff >= bands['slight']:
-                        base_speed = 60
-                    else:
-                        base_speed = 55
+                # Overshoot - reduce fan progressively
+                if abs_temp_diff >= self.overshoot_tier3_threshold:
+                    base_speed = 5
+                elif abs_temp_diff >= self.overshoot_tier2_threshold:
+                    base_speed = 12
+                elif abs_temp_diff >= self.overshoot_tier1_threshold:
+                    base_speed = 22
+                elif abs_temp_diff >= 0.7:
+                    base_speed = 20
                 else:
-                    # Overheated - same overshoot logic as heat mode
-                    if abs_temp_diff >= self.overshoot_tier3_threshold:
-                        base_speed = 5
-                    elif abs_temp_diff >= self.overshoot_tier2_threshold:
-                        base_speed = 12
-                    elif abs_temp_diff >= self.overshoot_tier1_threshold:
-                        base_speed = 22
-                    elif abs_temp_diff >= 0.7:
-                        base_speed = 20
-                    else:
-                        base_speed = 15
+                    base_speed = 15
 
             if room_name:
                 return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
@@ -2084,25 +2108,13 @@ class AirconOptimizer:
         operating_mode = self._get_effective_operating_mode(room_states)
 
         if operating_mode == "cool":
-            if temp_diff >= 2.0:
-                # Far above target - aggressive cooling
-                base_setpoint = effective_target - 4.0
-            elif temp_diff >= 0.5:
-                # Moderately above target - moderate cooling
-                base_setpoint = effective_target - 2.0
-            else:
-                # Near target - gentle cooling
-                base_setpoint = effective_target
+            # Continuous proportional setpoint: gradually offset more as deviation increases
+            offset = min(4.0, max(0.0, temp_diff * 2.0))
+            base_setpoint = effective_target - offset
         elif operating_mode == "heat":
-            if temp_diff <= -2.0:
-                # Far below target - aggressive heating
-                base_setpoint = effective_target + 4.0
-            elif temp_diff <= -0.5:
-                # Moderately below target - moderate heating
-                base_setpoint = effective_target + 2.0
-            else:
-                # Near target - gentle heating
-                base_setpoint = effective_target
+            # Continuous proportional setpoint for heating
+            offset = min(4.0, max(0.0, abs(temp_diff) * 2.0))
+            base_setpoint = effective_target + offset
         else:
             return effective_target
 
@@ -2260,6 +2272,9 @@ class AirconOptimizer:
         expiry_str = f"in {duration}min" if duration else "manual exit only"
         _LOGGER.info("Entered quick action mode: %s (expires: %s)", mode, expiry_str)
 
+        # Persist state for restart recovery
+        self.hass.async_create_task(self._save_compressor_state())
+
     def _exit_quick_action_mode(self):
         """Exit quick action mode and restore settings."""
         if not self._quick_action_mode:
@@ -2309,6 +2324,9 @@ class AirconOptimizer:
         self._quick_action_original_settings = {}
 
         _LOGGER.info("Exited quick action mode: %s", mode)
+
+        # Persist cleared state
+        self.hass.async_create_task(self._save_compressor_state())
 
     def _get_adaptive_temperature_bands(self, room_name: str) -> dict[str, float]:
         """Get temperature bands adjusted for room thermal characteristics.
@@ -2528,6 +2546,19 @@ class AirconOptimizer:
                     cover_entity, room_name, cover_state.state
                 )
                 continue
+
+            # Debounce: skip if position change is ≤3% to reduce unnecessary commands
+            current_pos = cover_state.attributes.get("current_position")
+            if current_pos is not None:
+                try:
+                    if abs(int(current_pos) - int(position)) <= 3:
+                        _LOGGER.debug(
+                            "Skipping %s position change (%d%% → %d%%) - within 3%% debounce",
+                            room_name, int(current_pos), int(position)
+                        )
+                        continue
+                except (ValueError, TypeError):
+                    pass  # Can't parse current position, proceed with update
 
             # Use retry logic for cover position changes
             success = await self._retry_service_call(
