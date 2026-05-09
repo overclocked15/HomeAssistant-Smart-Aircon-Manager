@@ -16,7 +16,7 @@ Uses smart logic-based algorithms to achieve precise temperature control across 
 ### Comfort
 - **Manual Override**: Toggle switch to temporarily disable automation
 - **Quick Actions**: One-tap vacation, boost, sleep, and party modes
-- **Humidity Control**: Automatic mode switching (cool/heat/dry/fan_only) based on humidity
+- **Humidity Control**: Automatic mode switching (cool/heat/dry/fan_only) based on humidity (dry mode is suppressed in heat mode to avoid fighting the heat loop)
 - **Occupancy Control**: Temperature setbacks for vacant rooms
 - **Comfort Index**: Heat index combining temperature and humidity
 
@@ -158,7 +158,12 @@ logger:
 
 See [Changelog](documentation/CHANGELOG.md) for full version history.
 
-- **v2.8.2** (Current): 10 bug fixes from full code review
+- **v2.15.0** (Current): Heating-mode fixes (dry mode suppressed in heat mode, adaptive setpoint/efficiency mode-aware, sleep mode resolves auto), critical pre-positioning crash fix, sensor threshold consistency
+- **v2.14.0**: Optimization improvements (proportional fan curve, weighted rate-of-change, dynamic prediction damping, continuous AC setpoint, smart pre-positioning, debounced cover positions, weather trend, FAN_MODE support, quick-action binary sensors, diagnostics platform, learning confidence decay)
+- **v2.13.0**: Full bug & logic review (29 fixes — 1 critical + 1 high + 15 medium + 12 low)
+- **v2.12.0**: 4 code review fixes, 91-test pytest suite
+- **v2.11.0**: 23 audit fixes (16 medium + 7 low)
+- **v2.8.2**: 10 bug fixes from full code review
 - **v2.8.1**: Enhanced compressor protection
 - **v2.8.0**: 15 critical logic fixes
 - **v2.7.0**: Quick actions, smart learning, adaptive balancing

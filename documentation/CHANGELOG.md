@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.15.0 - Heating Mode & Code Review Fixes
+
+**Release Date**: 2026-05-09
+
+Fixed 8 issues found during a follow-up code review, with a focus on heating-mode behavior in winter.
+
+### Critical Fix
+- **Pre-positioning crashed every cycle**: `_get_house_effective_target()` was called without its required `room_states` argument in the AC-off pre-positioning branch ([optimizer.py:1522](../custom_components/smart_aircon_manager/optimizer.py#L1522)). The `TypeError` was swallowed by the broad exception handler in `async_optimize`, so the v2.14.0 smart pre-positioning feature silently never ran. Now passes `room_states` correctly.
+
+### High Severity Fixes
+- **Dry mode no longer fires in heat mode**: When humidity control is enabled, the optimizer would switch the AC to `dry` mode whenever indoor humidity exceeded the threshold — including while heating. On most split units, dry mode runs the compressor in a low-flow refrigeration cycle that actively cools the air, fighting the heat loop. In heat mode (and auto-resolved-to-heat), dry mode is now suppressed; the system mixes only between `heat` and `fan_only` for circulation. Cool/auto-cool behavior is unchanged.
+- **Adaptive AC setpoint inverted in heat mode**: When `enable_adaptive_ac_setpoint=True`, high learned efficiency added `+1.0°C` to the base setpoint. In cool mode this means a warmer setpoint = less aggressive (correct). In heat mode the base setpoint is *above* target, so `+1.0` made it MORE aggressive — the opposite of intent. The adaptive branch now short-circuits in heat mode (the underlying metric only models cooling response).
+- **Adaptive efficiency fan adjustment skipped in heat mode**: `_apply_efficiency_adjustment` used `cooling_efficiency` for both modes. In heat mode this is meaningless at best and inverted at worst (a poorly-insulated room cools fast, getting flagged as "efficient" and having its heating fan reduced). Now skipped in heat mode.
+
+### Medium Severity Fixes
+- **Sleep mode no-op in auto mode**: `_enter_quick_action_mode("sleep")` checked `self.hvac_mode == "cool"/"heat"` directly, so users in auto mode got no temperature setback. Now resolves via `_get_effective_operating_mode()`. Entry-time resolved mode is also stored so exit-time restoration works correctly even if the user toggles modes during sleep.
+- **Main fan recommendation sensor used hardcoded thresholds**: `MainFanSpeedRecommendationSensor.native_value` had `3.0` and `1.0` literals while the actual main-fan logic in the optimizer reads `main_fan_high_threshold` from config. The debug sensor now reads the same value, eliminating UI/behavior drift for non-default thresholds.
+
+### Documentation
+- **README version history outdated**: README claimed `v2.8.2 (Current)` while manifest was at `2.14.0`. Refreshed through v2.14.0 with one-line summaries for each release.
+- **README HVAC mode list**: Notes the heat-mode dry-suppression behavior so users running humidity control in winter aren't surprised.
+
+### Tests
+- Added `TestHeatModeDryModeSuppression` (5 cases): heat + high humidity → `fan_only`; heat + humidity excess (below dry threshold) → `fan_only`; cool + high humidity still → `dry` (regression guard); auto with last-mode=heat → `fan_only`; heat + temp out-of-band → `heat` (priority preserved). Suite is now 96 tests, all passing.
+
+---
+
 ## v2.13.0 - Full Bug & Logic Review (29 fixes)
 
 **Release Date**: 2026-03-01

@@ -622,9 +622,14 @@ class AirconOptimizer:
         Logic-based decision making with hysteresis to prevent mode thrashing:
         1. Temperature ALWAYS has priority over humidity
         2. If temperature needs attention (>deadband from target) -> cool/heat mode
-        3. If temperature is OK but humidity is high -> dry mode
+        3. If temperature is OK but humidity is high -> dry mode (cooling/auto only)
         4. If both temperature and humidity are OK -> fan_only mode for circulation
         5. Hysteresis prevents rapid mode switching unless deviation is severe
+
+        Heating exception: dry mode is suppressed when heating, since dry mode
+        runs the compressor in a low-flow refrigeration cycle that actively
+        cools the air — which fights the heating loop in winter. In heat mode,
+        the system mixes only between heat and fan_only.
 
         Returns: "cool", "heat", "dry", or "fan_only"
         """
@@ -732,12 +737,31 @@ class AirconOptimizer:
         elif avg_humidity is not None:
             humidity_excess = avg_humidity - self.target_humidity
 
-            # High humidity - use dry mode
-            if avg_humidity >= self.dry_mode_humidity_threshold or humidity_excess > self.humidity_deadband:
+            # Skip dry mode when heating: dry runs a low-flow refrigeration cycle
+            # that cools the air, fighting the heat loop. In heat mode, fall through
+            # to fan_only for circulation only.
+            in_heating = (
+                self.hvac_mode == "heat"
+                or (self.hvac_mode == "auto" and self._last_hvac_mode == "heat")
+            )
+
+            # High humidity - use dry mode (cooling/auto-cool only)
+            if not in_heating and (
+                avg_humidity >= self.dry_mode_humidity_threshold
+                or humidity_excess > self.humidity_deadband
+            ):
                 optimal_mode = "dry"
                 _LOGGER.debug(
                     "Humidity control: %.1f%% (target: %.1f%%, threshold: %.1f%%) → DRY mode (candidate)",
                     avg_humidity, self.target_humidity, self.dry_mode_humidity_threshold
+                )
+            elif in_heating and (
+                avg_humidity >= self.dry_mode_humidity_threshold
+                or humidity_excess > self.humidity_deadband
+            ):
+                _LOGGER.debug(
+                    "Humidity high (%.1f%%) but heating active — suppressing DRY mode, using FAN_ONLY",
+                    avg_humidity
                 )
 
         # Priority 3: Both temperature and humidity OK - use fan only for circulation
@@ -1519,7 +1543,7 @@ class AirconOptimizer:
             _LOGGER.debug("Main AC is not running - pre-positioning dampers")
             # Smart pre-positioning: rooms further from target get more airflow
             # so they are ready for faster convergence when AC starts
-            effective_target = self._get_house_effective_target()
+            effective_target = self._get_house_effective_target(room_states)
             min_pos = max(30, int(self.min_airflow_percent)) if hasattr(self, 'min_airflow_percent') else 30
             pre_position = {}
             for room, state in room_states.items():
@@ -2125,6 +2149,11 @@ class AirconOptimizer:
         if not self.learning_manager:
             return base_setpoint
 
+        # Adaptive efficiency learning currently only models cooling response.
+        # Skip in heat mode to avoid applying meaningless adjustments.
+        if operating_mode != "cool":
+            return base_setpoint
+
         # Calculate average efficiency across all rooms with sufficient confidence
         efficiencies = []
         for room_name in room_states.keys():
@@ -2141,7 +2170,10 @@ class AirconOptimizer:
         import statistics
         avg_efficiency = statistics.mean(efficiencies)
 
-        # Adjust setpoint based on house-wide efficiency
+        # Adjust setpoint based on house-wide efficiency.
+        # In cool mode, base_setpoint = target - offset, so a higher (warmer)
+        # setpoint is less aggressive and a lower (colder) setpoint is more
+        # aggressive. (Heat mode is short-circuited above.)
         if avg_efficiency > 0.7:
             # High efficiency house - less aggressive AC needed
             adjusted_setpoint = base_setpoint + 1.0
@@ -2252,21 +2284,27 @@ class AirconOptimizer:
         else:
             self._quick_action_expiry = None
 
-        # Store original settings (including hvac_mode so exit check uses entry-time mode)
+        # Store original settings (including hvac_mode so exit check uses entry-time mode).
+        # Also persist the resolved operating mode so sleep-mode restoration works
+        # correctly when the user is in auto mode at entry time.
         self._quick_action_original_settings = {
             "target_temperature": self.target_temperature,
             "temperature_deadband": self.temperature_deadband,
             "hvac_mode": self.hvac_mode,
+            "resolved_mode": self._get_effective_operating_mode(),
         }
 
         # Adjust settings for mode
         if mode == "vacation":
             self.temperature_deadband = 2.0  # Wider tolerance
         elif mode == "sleep":
-            # Adjust target slightly for sleep comfort
-            if self.hvac_mode == "cool":
+            # Adjust target slightly for sleep comfort.
+            # Resolve auto → cool/heat so the setback fires regardless of
+            # whether the user has the system in fixed or auto mode.
+            sleep_mode = self._get_effective_operating_mode()
+            if sleep_mode == "cool":
                 self.target_temperature += 1.0
-            elif self.hvac_mode == "heat":
+            elif sleep_mode == "heat":
                 self.target_temperature -= 1.0
 
         expiry_str = f"in {duration}min" if duration else "manual exit only"
@@ -2295,11 +2333,17 @@ class AirconOptimizer:
             if mode == "vacation":
                 mode_changed_deadband = (self.temperature_deadband == 2.0)
             elif mode == "sleep":
-                # Use hvac_mode from entry time, not current (user may have changed mode during sleep)
-                entry_hvac_mode = self._quick_action_original_settings.get("hvac_mode", self.hvac_mode)
-                if entry_hvac_mode == "cool" and original_temp:
+                # Use the resolved operating mode from entry time. This handles
+                # auto mode correctly (where hvac_mode == "auto" but the actual
+                # cool/heat decision was resolved at entry) and survives the user
+                # changing mode mid-sleep.
+                entry_resolved = self._quick_action_original_settings.get("resolved_mode")
+                if entry_resolved is None:
+                    # Backwards-compat with state saved before resolved_mode was added
+                    entry_resolved = self._quick_action_original_settings.get("hvac_mode", self.hvac_mode)
+                if entry_resolved == "cool" and original_temp:
                     mode_changed_temp = abs(self.target_temperature - (original_temp + 1.0)) < 0.1
-                elif entry_hvac_mode == "heat" and original_temp:
+                elif entry_resolved == "heat" and original_temp:
                     mode_changed_temp = abs(self.target_temperature - (original_temp - 1.0)) < 0.1
 
             # Don't restore temp if a schedule is currently active (it takes priority)
@@ -2384,18 +2428,27 @@ class AirconOptimizer:
         return adaptive_bands
 
     def _apply_efficiency_adjustment(self, base_speed: int, room_name: str, abs_temp_diff: float = 0.0) -> int:
-        """Adjust fan speed based on learned cooling/heating efficiency.
+        """Adjust fan speed based on learned cooling efficiency.
 
         Uses learned cooling_efficiency to optimize fan speeds:
-        - High efficiency (0.7-1.0): Room cools/heats easily - reduce fan speed
+        - High efficiency (0.7-1.0): Room cools easily - reduce fan speed
         - Low efficiency (0.0-0.4): Room struggles - increase fan speed
         - Medium efficiency (0.4-0.7): No adjustment needed
+
+        Only applied in cool mode. The learning system measures cooling
+        response only, so the metric is meaningless (or worse, inverted)
+        for heating, where a fast-cooling room is poorly insulated and
+        needs *more* fan, not less.
 
         Efficiency reductions are scaled back when the room is far from target,
         so that reaching the target takes priority over energy efficiency.
         """
         # Check if adaptive efficiency is enabled
         if not self.enable_adaptive_efficiency:
+            return base_speed
+
+        # Adaptive efficiency only models cooling response — skip in heat mode
+        if self._get_effective_operating_mode() != "cool":
             return base_speed
 
         if not self.learning_manager or not self.learning_manager.should_apply_learning(room_name):

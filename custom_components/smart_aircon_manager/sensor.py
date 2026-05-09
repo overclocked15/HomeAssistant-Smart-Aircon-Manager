@@ -127,7 +127,7 @@ async def async_setup_entry(
 
     # Add main fan speed recommendation debug sensor if configured
     if optimizer.main_fan_entity:
-        entities.append(MainFanSpeedRecommendationSensor(coordinator, config_entry))
+        entities.append(MainFanSpeedRecommendationSensor(coordinator, config_entry, optimizer))
 
     # Add AC temperature control sensors if auto control is enabled
     if optimizer.auto_control_ac_temperature and optimizer.main_climate_entity:
@@ -553,9 +553,9 @@ class MainFanSpeedSensor(AirconManagerSensorBase):
 class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
     """Debug sensor showing the AI's recommendation for main fan speed."""
 
-    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+    def __init__(self, coordinator, config_entry: ConfigEntry, optimizer=None) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator, config_entry)
+        super().__init__(coordinator, config_entry, optimizer)
         self._attr_unique_id = f"{config_entry.entry_id}_main_fan_recommendation_debug"
         self._attr_name = "Main Fan Speed Recommendation"
         self._attr_icon = "mdi:fan-alert"
@@ -602,6 +602,13 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         main_climate_state = self.coordinator.data.get("main_climate_state", {})
         hvac_mode = main_climate_state.get("hvac_mode", "cool") if main_climate_state else "cool"
 
+        # Use the optimizer's configured fan-speed thresholds so this debug
+        # sensor matches the actual main-fan logic in _determine_and_set_main_fan_speed
+        high_threshold = (
+            getattr(self._optimizer, "main_fan_high_threshold", 3.0)
+            if self._optimizer is not None else 3.0
+        )
+
         # Calculate fan speed using same logic as optimizer
         avg_temp = sum(temps) / len(temps)
         max_temp = max(temps)
@@ -618,7 +625,7 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         # Mode-aware fan speed logic
         elif hvac_mode == "cool":
             # In cool mode: high fan only if temps are ABOVE target
-            if avg_temp_diff >= 3.0 or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
+            if avg_temp_diff >= high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
                 return "high"
             elif avg_temp_diff <= -1.0:
                 # Temps below target in cool mode - reduce cooling
@@ -627,7 +634,7 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
                 return "medium"
         elif hvac_mode == "heat":
             # In heat mode: high fan only if temps are BELOW target
-            if avg_temp_diff <= -3.0 or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
+            if avg_temp_diff <= -high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
                 return "high"
             elif avg_temp_diff >= 1.0:
                 # Temps above target in heat mode - reduce heating
@@ -637,7 +644,7 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         else:
             # Auto mode or unknown - use deviation magnitude
             max_deviation = max(abs(max_temp_diff), abs(min_temp_diff))
-            if max_deviation >= 3.0 or temp_variance >= 3.0:
+            if max_deviation >= high_threshold or temp_variance >= 3.0:
                 return "high"
             else:
                 return "medium"

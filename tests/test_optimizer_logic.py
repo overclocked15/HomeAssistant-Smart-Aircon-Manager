@@ -794,3 +794,90 @@ class TestACTurnOnOutlier:
         # max = 24.6, max_deviation = +0.6 < 1.5 (no outlier)
         result = await opt._check_if_ac_needed(room_states, ac_currently_on=False)
         assert result is False
+
+
+class TestHeatModeDryModeSuppression:
+    """Heat mode must not select dry mode (dry runs the compressor in a low-flow
+    refrigeration cycle and cools the air, fighting the heat loop)."""
+
+    def test_heat_mode_high_humidity_picks_fan_only_not_dry(self):
+        opt = _make_optimizer(
+            hvac_mode="heat",
+            enable_humidity_control=True,
+            target_humidity=60.0,
+            humidity_deadband=5.0,
+            dry_mode_humidity_threshold=65.0,
+            temperature_deadband=0.5,
+        )
+        # Temperature in deadband, humidity above dry-mode threshold
+        room_states = {
+            "Room1": {"current_temperature": 24.0, "target_temperature": 24.0, "current_humidity": 70.0},
+        }
+        result = opt._determine_optimal_hvac_mode(room_states, 24.0)
+        assert result == "fan_only", f"Expected fan_only in heat mode, got {result}"
+
+    def test_heat_mode_humidity_excess_picks_fan_only_not_dry(self):
+        opt = _make_optimizer(
+            hvac_mode="heat",
+            enable_humidity_control=True,
+            target_humidity=60.0,
+            humidity_deadband=5.0,
+            dry_mode_humidity_threshold=80.0,  # High threshold so only the deadband path can match
+            temperature_deadband=0.5,
+        )
+        # Humidity exceeds deadband (66 - 60 = 6 > 5) but below dry threshold (80)
+        room_states = {
+            "Room1": {"current_temperature": 24.0, "target_temperature": 24.0, "current_humidity": 66.0},
+        }
+        result = opt._determine_optimal_hvac_mode(room_states, 24.0)
+        assert result == "fan_only"
+
+    def test_cool_mode_high_humidity_still_picks_dry(self):
+        """Sanity check — dry-mode suppression must NOT affect cooling."""
+        opt = _make_optimizer(
+            hvac_mode="cool",
+            enable_humidity_control=True,
+            target_humidity=60.0,
+            humidity_deadband=5.0,
+            dry_mode_humidity_threshold=65.0,
+            temperature_deadband=0.5,
+        )
+        room_states = {
+            "Room1": {"current_temperature": 24.0, "target_temperature": 24.0, "current_humidity": 70.0},
+        }
+        result = opt._determine_optimal_hvac_mode(room_states, 24.0)
+        assert result == "dry"
+
+    def test_auto_mode_with_last_heat_picks_fan_only_not_dry(self):
+        """Auto mode that resolved to heat last cycle should also suppress dry."""
+        opt = _make_optimizer(
+            hvac_mode="auto",
+            enable_humidity_control=True,
+            target_humidity=60.0,
+            humidity_deadband=5.0,
+            dry_mode_humidity_threshold=65.0,
+            temperature_deadband=0.5,
+        )
+        opt._last_hvac_mode = "heat"
+        room_states = {
+            "Room1": {"current_temperature": 24.0, "target_temperature": 24.0, "current_humidity": 70.0},
+        }
+        result = opt._determine_optimal_hvac_mode(room_states, 24.0)
+        assert result == "fan_only"
+
+    def test_heat_mode_temp_priority_still_returns_heat(self):
+        """Temperature priority must still beat humidity in heat mode."""
+        opt = _make_optimizer(
+            hvac_mode="heat",
+            enable_humidity_control=True,
+            target_humidity=60.0,
+            humidity_deadband=5.0,
+            dry_mode_humidity_threshold=65.0,
+            temperature_deadband=0.5,
+        )
+        room_states = {
+            # Below target by more than deadband AND humidity is high
+            "Room1": {"current_temperature": 22.0, "target_temperature": 24.0, "current_humidity": 75.0},
+        }
+        result = opt._determine_optimal_hvac_mode(room_states, 24.0)
+        assert result == "heat"
