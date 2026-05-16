@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.16.2 - Per-Room Target Fixes
+
+**Release Date**: 2026-05-16
+
+Two coupled bugs around per-room target overrides, surfaced by a user whose 21°C global target was overshooting to 22–23°C while one room (Medical Supplies) had a 25°C override.
+
+### High Severity Fixes
+- **AC unit-level decisions averaged per-room targets instead of using the global target**: `_check_if_ac_needed`, `_calculate_ac_temperature`, and the rest of the unit-level pipeline asked `_get_house_effective_target` for a reference, which returns the *weighted average* of per-room targets. Result: a single 25°C override on one room pulled the effective target up to ~21.7°C, so the AC kept heating past the user's 21°C global target — overheating every other room. The fix introduces `_current_global_effective_target` (schedule + weather, **no** per-room weighting), set once per cycle in `_async_optimize_impl` ([optimizer.py:1513](../custom_components/smart_aircon_manager/optimizer.py#L1513)) and consumed by `_check_if_ac_needed` ([optimizer.py:2929](../custom_components/smart_aircon_manager/optimizer.py#L2929)) and `_calculate_ac_temperature` ([optimizer.py:2287](../custom_components/smart_aircon_manager/optimizer.py#L2287)). Per-room targets still drive per-room damper logic in `_calculate_fan_speed`, so they affect *individual* room conditioning but no longer hijack the central AC's reference. This gives per-room overrides "best-effort" semantics: a 25°C room override won't prevent the rest of the house from reaching the 21°C target.
+- **Per-room target override couldn't be removed from the UI**: `async_step_edit_room` rendered the optional fields with `vol.Optional(..., default=room_target)`. Voluptuous's `default=` substitutes the value back when the form is submitted empty, so clearing the field in the UI silently re-saved the original override. Switched both `CONF_HUMIDITY_SENSOR` and `CONF_ROOM_TARGET_TEMPERATURE` to `vol.Optional(..., description={"suggested_value": ...})`, which pre-fills the field for editing without forcing a substitution on empty submit. Clearing the field in the UI now actually removes the override.
+
+### Tests
+- Added `TestPerRoomTargetMath` (3 cases): AC turns off once the house exceeds the global target even with a higher per-room override; AC stays on while any room is below the global target; setpoint stays at the global target with a per-room override present.
+- Suite is now 119 tests, all passing.
+
+### Behavioral Note
+If you genuinely want one room to *reach* a higher target than the rest of the house, a single central AC can't satisfy that without overheating other rooms — there's no clean answer with one supply temperature. v2.16.2 chooses "don't overheat the house" as the default. If you want a room consistently warmer, consider a supplementary heat source for that room rather than a per-room target override.
+
+---
+
 ## v2.16.1 - Production-Stability Audit Fixes
 
 **Release Date**: 2026-05-16

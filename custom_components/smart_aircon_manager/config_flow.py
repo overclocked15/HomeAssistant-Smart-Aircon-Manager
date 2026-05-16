@@ -637,14 +637,20 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     errors = validation_errors
 
             if not errors:
-                # Update the room
+                # Update the room. A cleared optional field arrives as absent
+                # (not None) in user_input, so an `in` check is the right way
+                # to tell "user explicitly removed this" from "field omitted
+                # from this step's schema entirely".
                 updated_room = {
                     CONF_ROOM_NAME: new_name,
                     CONF_TEMPERATURE_SENSOR: user_input[CONF_TEMPERATURE_SENSOR],
                     CONF_COVER_ENTITY: user_input[CONF_COVER_ENTITY],
                 }
 
-                # Include optional fields if provided
+                # Include optional fields if provided. If the user cleared
+                # the field, voluptuous omits it from user_input — we
+                # intentionally drop the key from updated_room so the override
+                # is removed (rather than re-saving the old value).
                 if user_input.get(CONF_HUMIDITY_SENSOR):
                     updated_room[CONF_HUMIDITY_SENSOR] = user_input[CONF_HUMIDITY_SENSOR]
                 if user_input.get(CONF_ROOM_TARGET_TEMPERATURE) is not None:
@@ -694,34 +700,39 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             ),
         }
 
-        # Add humidity sensor with default if it exists
+        # Add humidity sensor with suggested value (pre-fills the field for
+        # editing but doesn't force the value back on an empty submit, so the
+        # user can actually clear the field).
         if humidity_sensor:
-            schema_dict[vol.Optional(CONF_HUMIDITY_SENSOR, default=humidity_sensor)] = selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
+            humidity_key = vol.Optional(
+                CONF_HUMIDITY_SENSOR,
+                description={"suggested_value": humidity_sensor},
             )
         else:
-            schema_dict[vol.Optional(CONF_HUMIDITY_SENSOR)] = selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
-            )
+            humidity_key = vol.Optional(CONF_HUMIDITY_SENSOR)
+        schema_dict[humidity_key] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="humidity")
+        )
 
-        # Add per-room target temperature with default if it exists
+        # Same pattern for per-room target temperature: pre-fill via
+        # suggested_value so clearing the field actually removes the override.
+        # Using vol.Optional(..., default=...) would substitute the default
+        # value back on empty submit, making removal impossible from the UI.
         room_target = room_to_edit.get(CONF_ROOM_TARGET_TEMPERATURE)
         if room_target is not None:
-            schema_dict[vol.Optional(CONF_ROOM_TARGET_TEMPERATURE, default=room_target)] = selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=10.0, max=35.0, step=0.5,
-                    unit_of_measurement="°C",
-                    mode=selector.NumberSelectorMode.BOX,
-                )
+            target_key = vol.Optional(
+                CONF_ROOM_TARGET_TEMPERATURE,
+                description={"suggested_value": room_target},
             )
         else:
-            schema_dict[vol.Optional(CONF_ROOM_TARGET_TEMPERATURE)] = selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=10.0, max=35.0, step=0.5,
-                    unit_of_measurement="°C",
-                    mode=selector.NumberSelectorMode.BOX,
-                )
+            target_key = vol.Optional(CONF_ROOM_TARGET_TEMPERATURE)
+        schema_dict[target_key] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=10.0, max=35.0, step=0.5,
+                unit_of_measurement="°C",
+                mode=selector.NumberSelectorMode.BOX,
             )
+        )
 
         return self.async_show_form(
             step_id="edit_room",

@@ -1007,6 +1007,69 @@ class TestQuickActionRestartRestoration:
         assert opt.target_temperature == pytest.approx(25.0)
 
 
+class TestPerRoomTargetMath:
+    """AC unit decisions must anchor to the GLOBAL target, not the weighted
+    average of per-room targets. Otherwise a single high-target override pulls
+    the house effective target up and the AC keeps running past the user's
+    actual set temperature.
+    """
+
+    @pytest.mark.asyncio
+    async def test_heat_mode_does_not_keep_ac_on_for_overridden_room(self):
+        """User sets 21°C global; one room overrides to 25°C. AC should turn
+        off once all rooms cross 21°C, not chase the 25°C override into
+        overheating the rest of the house."""
+        opt = _make_optimizer(hvac_mode="heat", target_temperature=21.0,
+                              ac_turn_off_threshold=0.3)
+        # Simulate the global effective target the optimization cycle would set.
+        opt._current_global_effective_target = 21.0
+        room_states = {
+            "Living": {"current_temperature": 21.5, "target_temperature": 21.0, "cover_position": 50},
+            "Office": {"current_temperature": 21.2, "target_temperature": 21.0, "cover_position": 50},
+            "MedicalSupplies": {"current_temperature": 23.8, "target_temperature": 25.0, "cover_position": 50},
+        }
+        # avg = (21.5 + 21.2 + 23.8) / 3 = 22.17; global target 21.0 →
+        # temp_diff = +1.17, well past the 0.3 turn-off threshold. min_temp =
+        # 21.2 >= global target 21.0. Pre-fix this would have used the
+        # weighted-avg target ~22.33 and concluded AC must stay on.
+        result = await opt._check_if_ac_needed(room_states, ac_currently_on=True)
+        assert result is False, "AC should turn off once house exceeds global target, even if one room has higher override"
+
+    @pytest.mark.asyncio
+    async def test_heat_mode_keeps_ac_on_for_cold_room(self):
+        """Per-room targets only affect dampers; if a room is below the
+        GLOBAL target, AC stays on."""
+        opt = _make_optimizer(hvac_mode="heat", target_temperature=21.0,
+                              ac_turn_off_threshold=0.3)
+        opt._current_global_effective_target = 21.0
+        room_states = {
+            "Living": {"current_temperature": 20.0, "target_temperature": 21.0, "cover_position": 50},
+            "MedicalSupplies": {"current_temperature": 23.8, "target_temperature": 25.0, "cover_position": 50},
+        }
+        # avg = 21.9, temp_diff = +0.9 (past threshold), but min_temp = 20.0
+        # < global target 21.0 → AC stays on.
+        result = await opt._check_if_ac_needed(room_states, ac_currently_on=True)
+        assert result is True
+
+    def test_ac_setpoint_uses_global_target_not_weighted_avg(self):
+        """In heat mode with one high-target room, AC setpoint should still
+        anchor to the user's global target, not the average."""
+        opt = _make_optimizer(hvac_mode="heat", target_temperature=21.0)
+        opt._current_global_effective_target = 21.0
+        room_states = {
+            "Living": {"current_temperature": 21.5, "target_temperature": 21.0, "cover_position": 50},
+            "MedicalSupplies": {"current_temperature": 23.8, "target_temperature": 25.0, "cover_position": 50},
+        }
+        # avg = 22.65, global target = 21.0 → temp_diff = +1.65, offset = 0
+        # (we're already above the global target in heat mode), so setpoint
+        # clamps to 21.0. Pre-fix the formula reached for the weighted-avg
+        # target (~23.0) and emitted a setpoint near 23°C.
+        result = opt._calculate_ac_temperature(room_states, effective_target=23.0)
+        assert result <= 21.0, (
+            f"Heat setpoint must not exceed global target with per-room override, got {result}°C"
+        )
+
+
 class TestHvacModeInitialization:
     """async_setup must only seed _last_hvac_mode with real conditioning modes."""
 

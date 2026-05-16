@@ -238,6 +238,10 @@ class AirconOptimizer:
         self._last_recommendations = {}
         self._last_main_fan_speed = None
         self._current_schedule = None
+        # Global effective target (schedule + weather, NO per-room weighting).
+        # Refreshed each optimization cycle by _async_optimize_impl. Falls back
+        # to self.target_temperature on first read before any cycle has run.
+        self._current_global_effective_target: float | None = None
         self._outdoor_temperature = None
         self._outdoor_temperature_timestamp = None  # Timestamp when outdoor temp was last fetched
         self._outdoor_temp_history = []  # [(timestamp, temp)] for trend detection
@@ -1509,6 +1513,14 @@ class AirconOptimizer:
                     effective_target
                 )
 
+        # Track the global effective target (after schedule + weather adjustment,
+        # before per-room overrides). This is the value the user actually "set" —
+        # AC unit-level decisions (setpoint, on/off, mode) reference this, while
+        # per-room targets only drive per-room damper logic. Storing on self lets
+        # the helpers below read it without threading another parameter through
+        # every call site.
+        self._current_global_effective_target = effective_target
+
         # Update occupancy state before collecting room states
         await self._update_occupancy_state()
 
@@ -2252,32 +2264,49 @@ class AirconOptimizer:
     def _calculate_ac_temperature(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> float:
         """Calculate optimal AC temperature setpoint.
 
+        Uses the GLOBAL effective target (schedule + weather, no per-room
+        weighting) as the reference, not the average of per-room targets.
+        A single high-target room (e.g. a server closet at 25°C) used to pull
+        the AC supply temperature up and overheat the rest of the house;
+        anchoring the setpoint to the user's actual "set temperature" gives
+        per-room targets a "best effort" semantics — they drive damper
+        positions but don't override the central AC's reference.
+
         Optionally uses adaptive setpoints based on house-wide cooling efficiency.
         """
         temps = self._valid_temps(room_states)
         if not temps:
             return effective_target
 
-        avg_temp = sum(temps) / len(temps)
-        temp_diff = avg_temp - effective_target
+        # Anchor to the global effective target (after schedule/weather),
+        # falling back to the weighted-avg `effective_target` parameter if the
+        # optimization cycle hasn't populated it yet (e.g. unit-test paths).
+        reference_target = (
+            self._current_global_effective_target
+            if self._current_global_effective_target is not None
+            else effective_target
+        )
 
-        # Get base setpoint using RELATIVE offsets from effective_target
-        # Resolve auto mode to cool/heat using existing helper
+        avg_temp = sum(temps) / len(temps)
+        temp_diff = avg_temp - reference_target
+
+        # Get base setpoint using RELATIVE offsets from reference_target.
+        # Resolve auto mode to cool/heat using existing helper.
         operating_mode = self._get_effective_operating_mode(room_states)
 
         if operating_mode == "cool":
             # Continuous proportional setpoint: gradually offset more as deviation increases
             offset = min(4.0, max(0.0, temp_diff * 2.0))
-            base_setpoint = effective_target - offset
+            base_setpoint = reference_target - offset
         elif operating_mode == "heat":
             # Symmetric to cool mode: only apply positive offset when BELOW target.
             # Using abs(temp_diff) here boosts the setpoint above target while the
             # house is already overshooting, telling the AC's internal thermostat
             # to keep heating past the user's target.
             offset = min(4.0, max(0.0, -temp_diff * 2.0))
-            base_setpoint = effective_target + offset
+            base_setpoint = reference_target + offset
         else:
-            return effective_target
+            return reference_target
 
         # Apply adaptive adjustment if enabled
         if not self.enable_adaptive_ac_setpoint:
@@ -2883,8 +2912,23 @@ class AirconOptimizer:
         return True
 
     async def _check_if_ac_needed(self, room_states: dict[str, dict[str, Any]], ac_currently_on: bool) -> bool:
-        """Check if AC is needed with hysteresis."""
-        effective_target = self._get_house_effective_target(room_states)
+        """Check if AC is needed with hysteresis.
+
+        Anchors on/off decisions to the GLOBAL effective target (the value the
+        user actually set, post-schedule and post-weather), NOT the weighted
+        average of per-room targets. With the old behavior, a single room
+        override like a 25°C server closet pulled the effective target up to
+        ~21.7°C and kept the AC running past the user's 21°C target,
+        overheating other rooms. Per-room targets still drive damper logic in
+        ``_calculate_fan_speed``.
+        """
+        # Fall back to weighted avg only if the optimization cycle hasn't
+        # populated the cached global target yet (unit-test paths).
+        effective_target = (
+            self._current_global_effective_target
+            if self._current_global_effective_target is not None
+            else self._get_house_effective_target(room_states)
+        )
 
         temps = self._valid_temps(room_states)
         if not temps:
