@@ -158,7 +158,8 @@ logger:
 
 See [Changelog](documentation/CHANGELOG.md) for full version history.
 
-- **v2.15.0** (Current): Heating-mode fixes (dry mode suppressed in heat mode, adaptive setpoint/efficiency mode-aware, sleep mode resolves auto), critical pre-positioning crash fix, sensor threshold consistency
+- **v2.15.1** (Current): Heat-mode setpoint overshoot fix — `abs(temp_diff)` in the proportional setpoint formula pushed AC setpoints above target during overshoot, causing 21°C target to drive rooms to 25–26°C
+- **v2.15.0**: Heating-mode fixes (dry mode suppressed in heat mode, adaptive setpoint/efficiency mode-aware, sleep mode resolves auto), critical pre-positioning crash fix, sensor threshold consistency
 - **v2.14.0**: Optimization improvements (proportional fan curve, weighted rate-of-change, dynamic prediction damping, continuous AC setpoint, smart pre-positioning, debounced cover positions, weather trend, FAN_MODE support, quick-action binary sensors, diagnostics platform, learning confidence decay)
 - **v2.13.0**: Full bug & logic review (29 fixes — 1 critical + 1 high + 15 medium + 12 low)
 - **v2.12.0**: 4 code review fixes, 91-test pytest suite

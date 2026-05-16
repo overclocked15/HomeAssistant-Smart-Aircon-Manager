@@ -573,6 +573,36 @@ class TestACTemperatureSetpoint:
         result = opt._calculate_ac_temperature(room_states, 24.0)
         assert result != 24.0  # Should apply optimization
 
+    def test_heat_mode_no_setpoint_boost_during_overshoot(self):
+        """Heat mode must NOT push setpoint above target when house is overshooting.
+
+        Regression: previously used abs(temp_diff) which sent the AC ever-higher
+        setpoints (e.g. target=21°C, avg=23°C → setpoint=25°C), telling the unit's
+        own thermostat to keep heating past the user's target.
+        """
+        opt = _make_optimizer(hvac_mode="heat", target_temperature=21.0)
+        # Mixed rooms: average above target, but AC may still be running due to
+        # hysteresis (e.g. one cold outlier room).
+        room_states = {
+            "Warm": {"current_temperature": 23.0, "target_temperature": 21.0, "cover_position": 50},
+            "Cold": {"current_temperature": 21.0, "target_temperature": 21.0, "cover_position": 50},
+        }
+        # avg = 22.0, target = 21.0 → overshoot of +1.0°C
+        result = opt._calculate_ac_temperature(room_states, 21.0)
+        assert result <= 21.0, (
+            f"Heat setpoint must not exceed target during overshoot, got {result}°C"
+        )
+
+    def test_heat_mode_aggressive_heat_offset(self):
+        """Far below target should apply +4°C offset (aggressive heating overdrive)."""
+        opt = _make_optimizer(hvac_mode="heat", target_temperature=21.0)
+        room_states = {
+            "Room1": {"current_temperature": 17.5, "target_temperature": 21.0, "cover_position": 50},
+        }
+        # avg = 17.5, target = 21.0 → deviation -3.5 → offset capped at 4.0
+        result = opt._calculate_ac_temperature(room_states, 21.0)
+        assert result == 25.0  # 21.0 + 4.0
+
 
 class TestOptimizerDisabled:
     """Test that optimizer respects is_enabled flag (C4 fix)."""

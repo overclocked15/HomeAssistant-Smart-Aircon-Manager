@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.15.1 - Heat-Mode Setpoint Overshoot Fix
+
+**Release Date**: 2026-05-16
+
+### High Severity Fix
+- **Heating runaway to target+4°C**: In heat mode, `_calculate_ac_temperature` used `abs(temp_diff) * 2.0` for the proportional setpoint offset ([optimizer.py:2140](../custom_components/smart_aircon_manager/optimizer.py#L2140)). Because `temp_diff = avg_temp - target`, the `abs()` caused the setpoint to climb *above* target whenever the house overshot — exactly when the AC unit's internal thermostat should be coasting toward target, not chasing a higher one. With target=21°C and avg=23°C, the integration was sending the AC a 25°C setpoint, so the unit's own return-air sensor kept driving heat until rooms read ~25–26°C. Now mirrors the cool-mode formula (`max(0.0, -temp_diff * 2.0)`): offset only applies when below target, and setpoint clamps to target during overshoot.
+
+### Tests
+- Added `test_heat_mode_no_setpoint_boost_during_overshoot` (regression guard: target=21°C with one cold outlier holding AC on, avg=22°C → setpoint must not exceed 21°C). The existing heat-mode test only covered heating *up to* target, so this case slipped through.
+- Added `test_heat_mode_aggressive_heat_offset` to pin the legitimate +4°C overdrive when far below target. Suite is now 98 tests, all passing.
+
+---
+
 ## v2.15.0 - Heating Mode & Code Review Fixes
 
 **Release Date**: 2026-05-09

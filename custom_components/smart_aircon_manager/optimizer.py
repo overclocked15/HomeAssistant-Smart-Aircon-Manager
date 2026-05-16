@@ -2136,8 +2136,11 @@ class AirconOptimizer:
             offset = min(4.0, max(0.0, temp_diff * 2.0))
             base_setpoint = effective_target - offset
         elif operating_mode == "heat":
-            # Continuous proportional setpoint for heating
-            offset = min(4.0, max(0.0, abs(temp_diff) * 2.0))
+            # Symmetric to cool mode: only apply positive offset when BELOW target.
+            # Using abs(temp_diff) here boosts the setpoint above target while the
+            # house is already overshooting, telling the AC's internal thermostat
+            # to keep heating past the user's target.
+            offset = min(4.0, max(0.0, -temp_diff * 2.0))
             base_setpoint = effective_target + offset
         else:
             return effective_target
