@@ -1183,7 +1183,8 @@ class AirconOptimizer:
         slope_per_second = numerator / denominator
         return slope_per_second * 60.0
 
-    def _predict_temperature(self, room_name: str, current_temp: float) -> float | None:
+    def _predict_temperature(self, room_name: str, current_temp: float,
+                              target_temp: float | None = None) -> float | None:
         """Predict temperature N minutes in the future based on rate of change.
 
         Uses dampening to account for exponential decay (Newton's law of cooling).
@@ -1195,10 +1196,12 @@ class AirconOptimizer:
         if rate is None:
             return None
 
-        # Apply dynamic dampening factor based on proximity to target
-        # Linear prediction overestimates because rate slows near equilibrium
-        # Dampen more when close to target (rate is already decelerating)
-        temp_gap = abs(current_temp - self.target_temperature)
+        # Apply dynamic dampening factor based on proximity to target.
+        # Use the room's effective target if provided so per-room overrides
+        # produce correct damping (falling back to global target preserves
+        # legacy behavior).
+        reference_target = target_temp if target_temp is not None else self.target_temperature
+        temp_gap = abs(current_temp - reference_target)
         # Scale damping: 0.4 when very close to target, 0.7 when far away
         DECAY_DAMPING_FACTOR = 0.4 + 0.3 * min(1.0, temp_gap / 3.0)
 
@@ -1215,7 +1218,7 @@ class AirconOptimizer:
         If prediction shows the room will undershoot, reduce fan speed.
         Uses adaptive boost factor based on learned convergence rate if enabled.
         """
-        predicted_temp = self._predict_temperature(room_name, current_temp)
+        predicted_temp = self._predict_temperature(room_name, current_temp, target_temp)
         if predicted_temp is None:
             return base_fan_speed
 
@@ -1541,17 +1544,28 @@ class AirconOptimizer:
                 )
         else:
             _LOGGER.debug("Main AC is not running - pre-positioning dampers")
-            # Smart pre-positioning: rooms further from target get more airflow
-            # so they are ready for faster convergence when AC starts
+            # Smart pre-positioning: rooms needing active conditioning in the
+            # current operating mode get more airflow so they are ready for
+            # faster convergence when AC starts. Direction matters: in cool
+            # mode only hot rooms benefit from a wide-open damper; in heat
+            # mode only cold rooms do. Pre-positioning the wrong side would
+            # over-condition those rooms the moment AC turns on.
             effective_target = self._get_house_effective_target(room_states)
+            operating_mode = self._get_effective_operating_mode(room_states)
             min_pos = max(30, int(self.min_airflow_percent)) if hasattr(self, 'min_airflow_percent') else 30
             pre_position = {}
             for room, state in room_states.items():
                 temp = state.get("current_temperature")
                 if temp is not None:
-                    deviation = abs(temp - effective_target)
-                    # Scale: 30% at target, up to 80% at 3°C+ deviation
-                    pre_pos = min(80, int(min_pos + (80 - min_pos) * min(1.0, deviation / 3.0)))
+                    temp_diff = temp - effective_target
+                    if operating_mode == "cool":
+                        # Only hot rooms need cooling — cold rooms get minimum airflow.
+                        relevant_diff = max(0.0, temp_diff)
+                    else:  # heat
+                        # Only cold rooms need heating — hot rooms get minimum airflow.
+                        relevant_diff = max(0.0, -temp_diff)
+                    # Scale: min_pos at target (or wrong-direction), up to 80% at 3°C+ deviation
+                    pre_pos = min(80, int(min_pos + (80 - min_pos) * min(1.0, relevant_diff / 3.0)))
                 else:
                     pre_pos = 50  # Default neutral for unavailable sensors
                 pre_position[room] = pre_pos
@@ -2058,17 +2072,26 @@ class AirconOptimizer:
                         balancing_bias += clamped_learned_bias * 10
 
                         # 2. Apply relative convergence rate adjustment (additive, not multiplicative)
-                        # This prevents the multiplier from affecting the learned bias component
+                        # This prevents the multiplier from affecting the learned bias component.
+                        #
+                        # IMPORTANT: this is computed in the "before flip" sign convention,
+                        # matching the base `deviation_from_avg * aggressiveness * 100`. The
+                        # bias for heat mode is flipped below, so writing it with `(1.0 -
+                        # relative_cool_rate)` here cancels out and inverts the effect after
+                        # the flip — fast-cooling cold rooms ended up with LESS heating fan,
+                        # the opposite of intent.
                         convergence_adjustment = 0.0
                         effective_mode = self._get_effective_operating_mode(room_states)
                         if effective_mode == "cool":
-                            # Fast heating room needs more cooling in cooling mode
-                            # relative_heat_gain_rate > 1.0 means faster than average
+                            # Fast heating room needs more cooling in cooling mode.
+                            # relative_heat_gain_rate > 1.0 means faster than average.
                             convergence_adjustment = (profile.relative_heat_gain_rate - 1.0) * deviation_from_avg * 50
                         elif effective_mode == "heat":
-                            # Fast cooling room needs more heating in heating mode
-                            # relative_cool_rate > 1.0 means faster than average
-                            convergence_adjustment = (1.0 - profile.relative_cool_rate) * deviation_from_avg * 50
+                            # Fast cooling room needs more heating in heating mode.
+                            # relative_cool_rate > 1.0 means faster than average.
+                            # Same (rate - 1.0) sign as cool mode so the post-flip result
+                            # reinforces the base bias instead of cancelling it.
+                            convergence_adjustment = (profile.relative_cool_rate - 1.0) * deviation_from_avg * 50
 
                         balancing_bias += convergence_adjustment
 

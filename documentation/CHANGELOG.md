@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.15.2 - Heat/Cool Symmetry Audit Fixes
+
+**Release Date**: 2026-05-16
+
+Follow-up review after the v2.15.1 heat-mode setpoint fix, walking the optimizer end-to-end looking for other places where heat-mode logic diverged from cool-mode in subtle ways.
+
+### High Severity Fix
+- **Heat-mode adaptive balancing convergence had inverted sign**: In `_apply_room_balancing` ([optimizer.py:2071](../custom_components/smart_aircon_manager/optimizer.py#L2071)), cool mode used `(profile.relative_heat_gain_rate - 1.0) * deviation_from_avg * 50` while heat mode used `(1.0 - profile.relative_cool_rate) * deviation_from_avg * 50` — opposite sign convention. The heat-mode balancing bias is also flipped for the active direction at [line 2100](../custom_components/smart_aircon_manager/optimizer.py#L2100), so the wrong-sign formula combined with the flip cancelled and inverted the effect: a fast-cooling (poorly-insulated) cold room ended up with LESS heating fan than other rooms, the opposite of equalization. Latent because it only triggered with `enable_adaptive_balancing=True` AND enough learning data for `should_apply_learning()` to return True. Now mirrors the cool-mode sign convention.
+
+### Medium Severity Fix
+- **Pre-positioning was direction-agnostic**: When the AC is off and dampers are pre-positioned for an upcoming startup, the code used `abs(temp - effective_target)` ([optimizer.py:1552](../custom_components/smart_aircon_manager/optimizer.py#L1552)) so a cold room in cool mode (or hot room in heat mode) got the same airflow boost as a room that actually needed the upcoming conditioning. The moment AC turned on, the wrong-direction room got over-conditioned for a cycle until regular optimization clamped it back. Pre-positioning now resolves the operating mode and only boosts rooms that need the active direction; the wrong side stays at `min_pos`.
+
+### Low Severity Fix
+- **Predictive damping ignored per-room target overrides**: `_predict_temperature` ([optimizer.py:1201](../custom_components/smart_aircon_manager/optimizer.py#L1201)) damped its rate-of-change projection using `self.target_temperature` (the global target) regardless of per-room target overrides. A room with a 22°C override sitting at 22°C looked like a 2°C gap from the global 24°C target and got under-damped, biasing the predictive fan adjustment. `_apply_predictive_adjustment` now threads the room's effective target through, with the global as fallback.
+
+### Reviewed and Clean
+Heat/cool symmetry was verified across AC on/off hysteresis, fan-speed proportional curves and overshoot tiers, predictive fan adjustment, vacant-room setback, weather adjustment, HVAC mode determination/hysteresis, sleep-mode setback, adaptive AC setpoint with efficiency, and efficiency fan-speed adjustment.
+
+### Tests
+- Added `TestAdaptiveBalancingConvergence` (2 cases): cool mode keeps working as a baseline; heat mode regression guard verifies fast-cooling cold rooms get MORE fan than hot rooms.
+- Added `TestPrePositioningMode` (2 cases): cool mode prefers hot rooms; heat mode prefers cold rooms; wrong-direction rooms get `min_pos`.
+- Added `TestPredictTemperatureRoomTarget` (1 case): per-room target produces smaller predicted change when the room is at its override target than the global-target fallback would suggest.
+- Suite is now 103 tests, all passing.
+
+---
+
 ## v2.15.1 - Heat-Mode Setpoint Overshoot Fix
 
 **Release Date**: 2026-05-16

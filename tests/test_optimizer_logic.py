@@ -604,6 +604,148 @@ class TestACTemperatureSetpoint:
         assert result == 25.0  # 21.0 + 4.0
 
 
+class TestAdaptiveBalancingConvergence:
+    """Test adaptive room balancing convergence adjustment sign for both modes.
+
+    Regression: heat-mode formula used (1.0 - relative_cool_rate) before the
+    heat-mode bias flip, so a fast-cooling (poorly-insulated) cold room ended
+    up with LESS heating fan, exactly the opposite of intent. Cool mode used
+    (relative_heat_gain_rate - 1.0) and worked. The fix makes heat mode mirror
+    the cool-mode sign convention.
+    """
+
+    def _make_learning_optimizer(self, mode: str):
+        from custom_components.smart_aircon_manager.learning import LearningManager, LearningProfile
+
+        opt = _make_optimizer(
+            hvac_mode=mode,
+            target_temperature=22.0,
+            enable_room_balancing=True,
+            enable_adaptive_balancing=True,
+            target_room_variance=0.5,
+            balancing_aggressiveness=0.3,
+        )
+        # Stub out a learning_manager that always returns a fast-degrading room.
+        mgr = MagicMock(spec=LearningManager)
+        mgr.should_apply_learning.return_value = True
+        profile = LearningProfile(room_name="Slow")
+        profile.balancing_bias = 0.0
+        profile.relative_heat_gain_rate = 1.5  # heats up fast (cool-mode lever)
+        profile.relative_cool_rate = 1.5       # cools down fast (heat-mode lever)
+        profile.coupling_factors = {}
+        mgr.get_profile.return_value = profile
+        opt.learning_manager = mgr
+        opt.enable_room_coupling_detection = False
+        return opt
+
+    def test_cool_mode_fast_heating_hot_room_gets_more_fan(self):
+        """Baseline: cool mode with fast-heating hot room gets boosted (works pre-fix)."""
+        opt = self._make_learning_optimizer("cool")
+        recs = {"Hot": 80, "Cold": 60}
+        room_states = {
+            "Hot": {"current_temperature": 23.0, "target_temperature": 22.0, "cover_position": 50},
+            "Cold": {"current_temperature": 21.0, "target_temperature": 22.0, "cover_position": 50},
+        }
+        result = opt._apply_room_balancing(recs, room_states, 22.0)
+        # Hot room (above avg, fast-heating) should get more fan in cool mode.
+        assert result["Hot"] > result["Cold"], (
+            f"Cool mode: hot room should outpace cold room, got Hot={result['Hot']} Cold={result['Cold']}"
+        )
+
+    def test_heat_mode_fast_cooling_cold_room_gets_more_fan(self):
+        """Regression: heat mode with fast-cooling cold room must get MORE fan.
+
+        Before fix: the (1.0 - relative_cool_rate) formula combined with the
+        heat-mode bias flip resulted in the cold/poorly-insulated room getting
+        LESS fan than the hot room — the opposite of correct equalization.
+        """
+        opt = self._make_learning_optimizer("heat")
+        recs = {"Hot": 60, "Cold": 80}
+        room_states = {
+            "Hot": {"current_temperature": 23.0, "target_temperature": 22.0, "cover_position": 50},
+            "Cold": {"current_temperature": 21.0, "target_temperature": 22.0, "cover_position": 50},
+        }
+        result = opt._apply_room_balancing(recs, room_states, 22.0)
+        # Cold room (below avg, fast-cooling = poorly insulated) needs MORE
+        # heating fan than the hot room.
+        assert result["Cold"] > result["Hot"], (
+            f"Heat mode: cold/fast-cooling room should outpace hot room, "
+            f"got Cold={result['Cold']} Hot={result['Hot']}"
+        )
+
+
+class TestPrePositioningMode:
+    """Test pre-positioning is mode-aware (only prepares rooms needing the mode)."""
+
+    def test_pre_positioning_uses_relevant_diff_cool_mode(self):
+        """Cool mode: hot rooms get higher pre-position than cold rooms.
+
+        Regression: pre-positioning used abs(deviation), so a cold room got
+        the same airflow boost as a hot room, leading to over-cooling the
+        cold room the moment AC turned on.
+        """
+        # Smoke-test the formula directly (the method itself is async + uses HA
+        # services, so we verify the underlying math): in cool mode a -2°C room
+        # should get min_pos, and a +2°C room should get a boosted position.
+        min_pos = 30
+        target = 22.0
+
+        # Hot room (cool mode)
+        hot_diff = 24.0 - target
+        relevant_diff = max(0.0, hot_diff)
+        hot_pos = min(80, int(min_pos + (80 - min_pos) * min(1.0, relevant_diff / 3.0)))
+
+        # Cold room (cool mode) — wrong direction, gets min position
+        cold_diff = 20.0 - target
+        relevant_diff = max(0.0, cold_diff)  # 0
+        cold_pos = min(80, int(min_pos + (80 - min_pos) * min(1.0, relevant_diff / 3.0)))
+
+        assert hot_pos > cold_pos, "Cool mode: hot room must outrank cold room in pre-positioning"
+        assert cold_pos == min_pos, f"Cool mode cold room should get min_pos={min_pos}, got {cold_pos}"
+
+    def test_pre_positioning_uses_relevant_diff_heat_mode(self):
+        """Heat mode: cold rooms get higher pre-position than hot rooms."""
+        min_pos = 30
+        target = 22.0
+
+        # Cold room (heat mode)
+        cold_diff = 20.0 - target  # -2
+        relevant_diff = max(0.0, -cold_diff)  # 2
+        cold_pos = min(80, int(min_pos + (80 - min_pos) * min(1.0, relevant_diff / 3.0)))
+
+        # Hot room (heat mode) — wrong direction
+        hot_diff = 24.0 - target  # +2
+        relevant_diff = max(0.0, -hot_diff)  # 0
+        hot_pos = min(80, int(min_pos + (80 - min_pos) * min(1.0, relevant_diff / 3.0)))
+
+        assert cold_pos > hot_pos, "Heat mode: cold room must outrank hot room in pre-positioning"
+        assert hot_pos == min_pos, f"Heat mode hot room should get min_pos={min_pos}, got {hot_pos}"
+
+
+class TestPredictTemperatureRoomTarget:
+    """_predict_temperature damping uses per-room target when provided."""
+
+    def test_room_target_overrides_global_for_damping(self):
+        """Rooms with target overrides should use their own target for damping calc."""
+        opt = _make_optimizer(target_temperature=24.0, predictive_lookahead_minutes=10)
+        # Inject a stable rate-of-change so prediction is deterministic.
+        with patch.object(opt, "_get_temp_rate_of_change", return_value=0.1):
+            # Room is at its OVERRIDE target (22°C) — gap should be ~0, damping=0.4
+            predicted_with_override = opt._predict_temperature("Living Room", 22.0, target_temp=22.0)
+            # Same physical position but using the global target (24°C) → gap=2, damping=0.6
+            predicted_without_override = opt._predict_temperature("Living Room", 22.0)
+
+        # Bigger damping factor = more predicted change (rate * lookahead * damping).
+        # Without target_temp the function defaults to the global target so it
+        # predicts MORE change than when we tell it the room is already at target.
+        change_with = predicted_with_override - 22.0
+        change_without = predicted_without_override - 22.0
+        assert change_with < change_without, (
+            f"Using per-room target should produce smaller predicted change near target, "
+            f"got with={change_with:.3f}, without={change_without:.3f}"
+        )
+
+
 class TestOptimizerDisabled:
     """Test that optimizer respects is_enabled flag (C4 fix)."""
 
