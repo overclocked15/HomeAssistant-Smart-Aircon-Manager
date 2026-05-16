@@ -361,12 +361,15 @@ class AirconOptimizer:
             self.learning_manager.learning_mode
         )
 
-        # Initialize HVAC mode tracking from current climate entity state
+        # Initialize HVAC mode tracking from current climate entity state.
+        # Only seed _last_hvac_mode with a real conditioning mode — accepting
+        # "off"/"unavailable" leaks non-mode strings into downstream logic that
+        # branches on cool/heat/dry/fan_only.
         if self.main_climate_entity:
             climate_state = self.hass.states.get(self.main_climate_entity)
             if climate_state:
                 current_hvac_mode = climate_state.state
-                if current_hvac_mode and current_hvac_mode != "unavailable":
+                if current_hvac_mode in ("cool", "heat", "dry", "fan_only"):
                     self._last_hvac_mode = current_hvac_mode
                     _LOGGER.info(
                         "Initialized HVAC mode tracking: %s (from climate entity %s)",
@@ -375,8 +378,8 @@ class AirconOptimizer:
                     )
                 else:
                     _LOGGER.debug(
-                        "Climate entity %s state unavailable, HVAC mode tracking will initialize on first optimization",
-                        self.main_climate_entity
+                        "Climate entity %s state is %r — HVAC mode tracking will initialize on first optimization",
+                        self.main_climate_entity, current_hvac_mode,
                     )
             else:
                 _LOGGER.debug(
@@ -502,9 +505,15 @@ class AirconOptimizer:
             }
 
             def _save():
+                # Atomic write: serialize into a temp file then rename. A crash
+                # mid-write leaves the previous valid file intact instead of
+                # corrupting the destination, so the next startup never sees
+                # a half-written JSON document.
                 storage_path.mkdir(parents=True, exist_ok=True)
-                with open(state_file, 'w') as f:
+                tmp_file = state_file.with_suffix(state_file.suffix + ".tmp")
+                with open(tmp_file, 'w') as f:
                     json.dump(data, f, indent=2)
+                tmp_file.replace(state_file)
 
             await self.hass.async_add_executor_job(_save)
             _LOGGER.debug("Compressor protection state saved")
@@ -3195,6 +3204,15 @@ class AirconOptimizer:
     async def async_cleanup(self) -> None:
         """Cleanup resources on unload."""
         _LOGGER.debug("Cleaning up AirconOptimizer resources")
+
+        # Persist compressor protection state and any active quick-action mode
+        # so an unload/reload doesn't reset the min on/off timers or drop the
+        # remaining time on sleep/boost/party/vacation.
+        try:
+            await self._save_compressor_state()
+            _LOGGER.debug("Saved compressor state")
+        except Exception as e:
+            _LOGGER.warning("Failed to save compressor state during cleanup: %s", e)
 
         # Save learning profiles before shutdown
         if self.learning_manager:

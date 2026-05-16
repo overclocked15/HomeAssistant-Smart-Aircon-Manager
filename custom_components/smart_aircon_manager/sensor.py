@@ -1087,24 +1087,22 @@ class ACTemperatureRecommendationSensor(AirconManagerSensorBase):
 
         room_states = self.coordinator.data.get("room_states", {})
 
-        # Calculate average room temperature and deviation from target
+        # Calculate average room temperature and per-room-aware target average.
+        # Per-room targets exist, so picking the first room's target is wrong —
+        # average across rooms to match _get_house_effective_target.
         temps = [s.get("current_temperature") for s in room_states.values() if s.get("current_temperature") is not None]
-        avg_temp = sum(temps) / len(temps) if temps else None
+        avg_temp = (sum(temps) / len(temps)) if temps else None
 
-        # Get target temperature from first room (they all use the same target)
-        target_temp = None
-        for state in room_states.values():
-            if state.get("target_temperature") is not None:
-                target_temp = state.get("target_temperature")
-                break
+        room_targets = [s.get("target_temperature") for s in room_states.values() if s.get("target_temperature") is not None]
+        target_temp = (sum(room_targets) / len(room_targets)) if room_targets else None
 
         attrs = {
-            "average_room_temperature": round(avg_temp, 1) if avg_temp else None,
-            "target_temperature": target_temp,
+            "average_room_temperature": round(avg_temp, 1) if avg_temp is not None else None,
+            "target_temperature": round(target_temp, 1) if target_temp is not None else None,
             "has_recommendation": self.native_value is not None,
         }
 
-        if avg_temp and target_temp:
+        if avg_temp is not None and target_temp is not None:
             deviation = avg_temp - target_temp
             attrs["temperature_deviation"] = round(deviation, 1)
 

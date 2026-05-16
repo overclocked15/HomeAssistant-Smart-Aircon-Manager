@@ -383,9 +383,16 @@ class PerformanceTracker:
                 else:
                     pruned_data[room_name] = points
 
-            # Write to file using executor to avoid blocking the event loop
+            # Atomic write via temp file + rename so a mid-write crash leaves
+            # the previous file untouched instead of producing partial JSON.
             data_str = json.dumps(pruned_data, indent=2)
-            await self.hass.async_add_executor_job(storage_file.write_text, data_str)
+
+            def _atomic_write():
+                tmp_file = storage_file.with_suffix(storage_file.suffix + ".tmp")
+                tmp_file.write_text(data_str)
+                tmp_file.replace(storage_file)
+
+            await self.hass.async_add_executor_job(_atomic_write)
             total_points = sum(len(points) for points in pruned_data.values())
             _LOGGER.debug("Saved %d data points across %d rooms (pruned to recent data)", total_points, len(pruned_data))
         except Exception as e:
@@ -658,9 +665,16 @@ class LearningManager:
                 for room_name, profile in self.profiles.items()
             }
 
-            # Write to file (non-blocking)
+            # Atomic write: temp file + rename so a crash mid-write keeps the
+            # previous valid file rather than half-writing the destination.
             data_str = json.dumps(data, indent=2)
-            await self.hass.async_add_executor_job(storage_file.write_text, data_str)
+
+            def _atomic_write():
+                tmp_file = storage_file.with_suffix(storage_file.suffix + ".tmp")
+                tmp_file.write_text(data_str)
+                tmp_file.replace(storage_file)
+
+            await self.hass.async_add_executor_job(_atomic_write)
             _LOGGER.debug("Saved %d learning profiles", len(self.profiles))
         except Exception as e:
             _LOGGER.error("Failed to save learning profiles: %s", e)

@@ -932,12 +932,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if schedule_name.lower() in existing_names:
                 errors["base"] = "duplicate_schedule_name"
 
-            # Validate: start_time must be before end_time
+            # Validate: start_time != end_time (an instantaneous schedule is
+            # useless). Overnight schedules (start > end, e.g. 22:00 → 06:00)
+            # are allowed — the optimizer's _get_active_schedule resolves them
+            # via the yesterday-anchor logic added in v2.16.0.
             if not errors:
                 start_time = user_input[CONF_SCHEDULE_START_TIME]
                 end_time = user_input[CONF_SCHEDULE_END_TIME]
-                if start_time >= end_time:
-                    errors["base"] = "schedule_start_after_end"
+                if start_time == end_time:
+                    errors["base"] = "schedule_start_equals_end"
 
             if not errors:
                 # Add new schedule

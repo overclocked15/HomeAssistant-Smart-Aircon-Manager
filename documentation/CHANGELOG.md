@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.16.1 - Production-Stability Audit Fixes
+
+**Release Date**: 2026-05-16
+
+In-depth review across every file in the integration (optimizer, climate, sensor, learning, critical_monitor, config_flow, persistence, services) looking for production-grade reliability issues. Six fixes shipped, ordered by impact.
+
+### High Severity Fix
+- **Overnight schedules couldn't be created via the UI**: `async_step_add_schedule` ([config_flow.py:939](../custom_components/smart_aircon_manager/config_flow.py#L939)) rejected `start_time >= end_time` with `schedule_start_after_end`, blocking any schedule that wraps midnight (e.g. `22:00 → 06:00`). The optimizer's `_get_active_schedule` was extended in v2.16.0 to handle the overnight case, but the UI validator wasn't updated to match. Now allows `start > end` and only blocks `start == end` (an instantaneous schedule is useless either way).
+
+### Medium Severity Fixes
+- **Non-atomic state-file writes**: `_save_compressor_state`, `async_save_profiles`, and `async_save_data_points` all wrote directly to the destination file. A Home Assistant crash mid-write would leave a half-written JSON document, and the next startup's `_load_*` would throw a `json.JSONDecodeError` and reset everything. All three now write to a `.tmp` sibling and atomically `replace()` the destination — the previous valid file stays intact on crash.
+- **HVAC mode tracker seeded with non-conditioning states on startup**: `async_setup` ([optimizer.py:368](../custom_components/smart_aircon_manager/optimizer.py#L368)) accepted any climate-entity state other than `"unavailable"` as `_last_hvac_mode`, so booting with the AC off persisted `_last_hvac_mode = "off"` until the next mode determination. Mode-dependent branches in adaptive efficiency, adaptive AC setpoint, and convergence adjustment all branch on `cool`/`heat`/`dry`/`fan_only`, so a leaked `"off"` left them in fall-through states longer than necessary. Now only seeds with real conditioning modes.
+- **Climate `set_temperature` accepted out-of-range values**: the UI's NumberSelector enforces 10°C–35°C, but `climate.set_temperature` service calls bypass it. The entity now declares `_attr_min_temp`/`_attr_max_temp` and `async_set_temperature` rejects values outside that range with a warning rather than silently propagating them to the optimizer.
+
+### Low Severity Fixes
+- **`ACTemperatureRecommendationSensor` attribute used wrong target source**: the `target_temperature` attribute read only the first room's target with a stale comment claiming "they all use the same target", which hasn't been true since per-room target overrides were added. Now averages across all rooms to match `_get_house_effective_target`. Also tightened `if avg_temp` checks to `is not None` so a literal 0°C reading (rare but valid) isn't treated as missing data.
+- **`async_cleanup` didn't persist compressor state**: on integration unload/reload, the in-memory `_ac_last_turned_on`/`_ac_last_turned_off` timestamps and any active quick-action expiry were lost. Cleanup now saves compressor state before saving learning profiles, so a reload preserves the min on/off timers.
+
+### Reviewed and Clean
+Audited (no issues found): service registration in `__init__.py`, climate entity hvac-mode persistence, binary sensor states, manual override switch persistence, learning math (overshoot frequency, thermal mass, cooling efficiency, correlation), critical room status machine, temperature normalization (F/C), diagnostics redaction, room/schedule duplicate name validation, optimizer's retry logic with exponential backoff.
+
+### Tests
+- Added `TestHvacModeInitialization` (2 cases): `"off"` state at startup must not seed `_last_hvac_mode`; a real conditioning mode (`"cool"`) at startup should seed it. Suite is now 116 tests, all passing.
+
+---
+
 ## v2.16.0 - Adaptive Deadband + Three Latent Bug Fixes
 
 **Release Date**: 2026-05-16

@@ -1007,6 +1007,52 @@ class TestQuickActionRestartRestoration:
         assert opt.target_temperature == pytest.approx(25.0)
 
 
+class TestHvacModeInitialization:
+    """async_setup must only seed _last_hvac_mode with real conditioning modes."""
+
+    @pytest.mark.asyncio
+    async def test_off_state_does_not_seed_last_hvac_mode(self):
+        """If the climate entity is off at startup, _last_hvac_mode stays None.
+
+        Regression: previously accepted any non-"unavailable" state, leaking
+        strings like "off" into mode-dependent branches.
+        """
+        opt = _make_optimizer(hvac_mode="auto", main_climate_entity="climate.ac")
+        opt.config_entry = MagicMock()
+        opt.config_entry.entry_id = "test_entry"
+        opt.config_entry.data = {}
+        # Climate entity is in "off" state on boot
+        climate_state = MagicMock()
+        climate_state.state = "off"
+        opt.hass.states.get.return_value = climate_state
+        # Stub async file I/O so async_setup doesn't try to touch disk
+        async def noop_executor(func, *args):
+            return None
+        opt.hass.async_add_executor_job = noop_executor
+
+        await opt.async_setup()
+        assert opt._last_hvac_mode is None, (
+            f"_last_hvac_mode should not be seeded with 'off', got {opt._last_hvac_mode!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cool_state_seeds_last_hvac_mode(self):
+        """A real conditioning mode at startup should seed tracking."""
+        opt = _make_optimizer(hvac_mode="auto", main_climate_entity="climate.ac")
+        opt.config_entry = MagicMock()
+        opt.config_entry.entry_id = "test_entry"
+        opt.config_entry.data = {}
+        climate_state = MagicMock()
+        climate_state.state = "cool"
+        opt.hass.states.get.return_value = climate_state
+        async def noop_executor(func, *args):
+            return None
+        opt.hass.async_add_executor_job = noop_executor
+
+        await opt.async_setup()
+        assert opt._last_hvac_mode == "cool"
+
+
 class TestOptimizerDisabled:
     """Test that optimizer respects is_enabled flag (C4 fix)."""
 

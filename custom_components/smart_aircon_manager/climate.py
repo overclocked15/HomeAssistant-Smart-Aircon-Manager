@@ -51,6 +51,11 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
     )
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT, HVACMode.AUTO]
     _attr_fan_modes = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
+    # Match the bounds used in the config flow's NumberSelector so service
+    # calls (which bypass the UI selector) can't push out-of-range targets.
+    _attr_min_temp = 10.0
+    _attr_max_temp = 35.0
+    _attr_target_temperature_step = 0.5
 
     def __init__(self, coordinator, optimizer, config_entry: ConfigEntry) -> None:
         """Initialize the climate entity."""
@@ -146,6 +151,22 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
         if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
+            return
+
+        # Validate against entity min/max so service calls can't push the
+        # optimizer to an absurd target. The UI selector enforces these
+        # bounds; service calls bypass that.
+        try:
+            temperature = float(temperature)
+        except (TypeError, ValueError):
+            _LOGGER.warning("Invalid temperature value: %r", temperature)
+            return
+        if not (self._attr_min_temp <= temperature <= self._attr_max_temp):
+            _LOGGER.warning(
+                "Requested target temperature %.1f°C is outside valid range "
+                "(%.1f-%.1f°C); ignoring",
+                temperature, self._attr_min_temp, self._attr_max_temp,
+            )
             return
 
         # Update optimizer
