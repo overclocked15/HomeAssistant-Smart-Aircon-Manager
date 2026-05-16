@@ -188,6 +188,14 @@ DEFAULT_COMPRESSOR_OVERHEAT_MARGIN = 0.5  # degrees C above target before switch
 DEFAULT_MIN_MODE_DURATION = 600  # seconds (10 minutes) - minimum time in cooling/heating before switching to fan
 DEFAULT_MIN_COMPRESSOR_RUN_CYCLES = 3  # minimum optimization cycles before allowing mode change (3 cycles = 90s at 30s/cycle)
 
+# Adaptive deadband (widens deadband when temperature is changing fast to reduce mode thrashing)
+CONF_ENABLE_ADAPTIVE_DEADBAND = "enable_adaptive_deadband"
+CONF_ADAPTIVE_DEADBAND_MAX_SCALE = "adaptive_deadband_max_scale"
+CONF_ADAPTIVE_DEADBAND_RATE_THRESHOLD = "adaptive_deadband_rate_threshold"
+DEFAULT_ENABLE_ADAPTIVE_DEADBAND = False  # Opt-in (changes mode-switching/stability behavior)
+DEFAULT_ADAPTIVE_DEADBAND_MAX_SCALE = 2.0  # Multiplier: 2.0 = up to 2× base deadband at high rate
+DEFAULT_ADAPTIVE_DEADBAND_RATE_THRESHOLD = 0.5  # °C/min — rate at which deadband reaches max scale
+
 # Critical room protection
 CONF_CRITICAL_ROOMS = "critical_rooms"  # Dict mapping room_name -> critical config
 CONF_CRITICAL_TEMP_MAX = "critical_temp_max"

@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.16.0 - Adaptive Deadband + Three Latent Bug Fixes
+
+**Release Date**: 2026-05-16
+
+### New: Adaptive Deadband
+Opt-in feature that widens the temperature deadband when the house is mid-swing and tightens it when stable, reducing mode-thrashing between active conditioning and fan-only/dry without sacrificing steady-state precision. Configured via the **Advanced** settings step:
+
+- `enable_adaptive_deadband` (default `False`)
+- `adaptive_deadband_max_scale` (default `2.0`× — i.e. up to double the base deadband at peak rate)
+- `adaptive_deadband_rate_threshold` (default `0.5` °C/min — rate at which max scale is reached)
+
+When enabled, `_get_adaptive_deadband()` derives the effective deadband from the house-wide absolute rate-of-change (averaged across rooms). It is plugged into the HVAC mode-determination deadband ([optimizer.py:743](../custom_components/smart_aircon_manager/optimizer.py#L743)), the hysteresis override threshold ([optimizer.py:888](../custom_components/smart_aircon_manager/optimizer.py#L888)), and the rooms-stable check ([optimizer.py:2853](../custom_components/smart_aircon_manager/optimizer.py#L2853)). Enhanced compressor protection margins now stack on top of the adaptive base instead of resetting to the static base.
+
+### Medium Severity Fixes
+- **Dry mode never auto-engaged on humidity-only demand**: with `auto_control_main_ac=True` and `enable_humidity_control=True`, `_check_if_ac_needed` only considered temperature, so the AC stayed off whenever temp was in deadband — even if humidity was high enough that `_determine_optimal_hvac_mode` resolved to "dry". `_async_optimize_impl` ([optimizer.py:1444](../custom_components/smart_aircon_manager/optimizer.py#L1444)) now coerces `needs_ac = True` when the resolved optimal mode is "dry" and humidity control is enabled, so the AC powers on for dehumidification.
+- **Overnight schedules with day-specific days didn't activate after midnight**: a `Mon 22:00 → 06:00` schedule with `schedule_days=["monday"]` failed to match at 03:00 Tuesday because day-matching used today's calendar day. `_get_active_schedule` ([optimizer.py:537](../custom_components/smart_aircon_manager/optimizer.py#L537)) now resolves the schedule's *anchor day* (today for the evening leg, yesterday for the morning leg) and matches `schedule_days` against the anchor day, so the morning hours of an overnight schedule activate correctly.
+
+### Low Severity Fix
+- **Quick-action sleep setback not restored after HA restart**: `_load_compressor_state` restored `_quick_action_mode` and `_quick_action_expiry` but `self.target_temperature` was reloaded from config (the original, pre-sleep value), so the ±1°C sleep setback silently vanished across restarts. The load path now re-applies the in-memory effects of the active quick-action (sleep's target shift, vacation's wider deadband) using the persisted `resolved_mode` to pick the correct direction.
+
+### Tests
+- Added `TestAdaptiveDeadband` (6 cases): off-state, zero-rate, max-clamp, mid-rate linearity, no-history safety, and negative-rate magnitude handling.
+- Added `TestDryModeAutoEngage` (1 case): humid+in-deadband must power on AC in dry mode.
+- Added `TestOvernightScheduleDays` (3 cases): morning leg uses yesterday's anchor, evening leg uses today, wrong day stays inactive.
+- Added `TestQuickActionRestartRestoration` (1 case): sleep mode's +1°C cool-mode setback is re-applied after restart.
+- Suite is now 114 tests, all passing.
+
+---
+
 ## v2.15.2 - Heat/Cool Symmetry Audit Fixes
 
 **Release Date**: 2026-05-16

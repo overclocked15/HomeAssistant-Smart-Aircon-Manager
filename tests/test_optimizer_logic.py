@@ -746,6 +746,267 @@ class TestPredictTemperatureRoomTarget:
         )
 
 
+class TestAdaptiveDeadband:
+    """Adaptive deadband widens with house-wide rate-of-change."""
+
+    def test_disabled_returns_base_deadband(self):
+        opt = _make_optimizer(temperature_deadband=0.5, enable_adaptive_deadband=False)
+        # Stuff history so rate-of-change is non-zero
+        with patch.object(opt, "_get_temp_rate_of_change", return_value=1.0):
+            opt._temp_history = {"Living Room": [(time.time(), 20.0)] * 3}
+            assert opt._get_adaptive_deadband() == 0.5
+
+    def test_zero_rate_yields_base_deadband(self):
+        opt = _make_optimizer(
+            temperature_deadband=0.5,
+            enable_adaptive_deadband=True,
+            adaptive_deadband_max_scale=2.0,
+            adaptive_deadband_rate_threshold=0.5,
+        )
+        # Force rate-of-change to 0
+        with patch.object(opt, "_get_temp_rate_of_change", return_value=0.0):
+            opt._temp_history = {"Living Room": [(time.time(), 20.0)] * 3}
+            assert opt._get_adaptive_deadband() == 0.5
+
+    def test_high_rate_clamps_to_max_scale(self):
+        opt = _make_optimizer(
+            temperature_deadband=0.5,
+            enable_adaptive_deadband=True,
+            adaptive_deadband_max_scale=2.0,
+            adaptive_deadband_rate_threshold=0.5,
+        )
+        # Rate well past threshold → max scale (2.0×)
+        with patch.object(opt, "_get_temp_rate_of_change", return_value=2.0):
+            opt._temp_history = {"Living Room": [(time.time(), 20.0)] * 3}
+            assert opt._get_adaptive_deadband() == 1.0  # 0.5 × 2.0
+
+    def test_mid_rate_scales_linearly(self):
+        opt = _make_optimizer(
+            temperature_deadband=0.5,
+            enable_adaptive_deadband=True,
+            adaptive_deadband_max_scale=2.0,
+            adaptive_deadband_rate_threshold=0.5,
+        )
+        # Rate = half of threshold → 1.5× scale
+        with patch.object(opt, "_get_temp_rate_of_change", return_value=0.25):
+            opt._temp_history = {"Living Room": [(time.time(), 20.0)] * 3}
+            assert opt._get_adaptive_deadband() == pytest.approx(0.75, abs=0.01)
+
+    def test_no_history_returns_base_deadband(self):
+        opt = _make_optimizer(
+            temperature_deadband=0.5,
+            enable_adaptive_deadband=True,
+        )
+        # No history available — must safely return base deadband
+        opt._temp_history = {}
+        assert opt._get_adaptive_deadband() == 0.5
+
+    def test_negative_rate_uses_magnitude(self):
+        """Falling rate (heat mode recovery) should widen deadband just like rising."""
+        opt = _make_optimizer(
+            temperature_deadband=0.5,
+            enable_adaptive_deadband=True,
+            adaptive_deadband_max_scale=2.0,
+            adaptive_deadband_rate_threshold=0.5,
+        )
+        with patch.object(opt, "_get_temp_rate_of_change", return_value=-2.0):
+            opt._temp_history = {"Living Room": [(time.time(), 20.0)] * 3}
+            assert opt._get_adaptive_deadband() == 1.0  # clamps to max regardless of sign
+
+
+class TestDryModeAutoEngage:
+    """Auto-control AC must engage dry mode for humidity-only demand."""
+
+    @pytest.mark.asyncio
+    async def test_dry_mode_powers_on_with_humid_air_in_deadband(self):
+        """Bug: when temp is in deadband and humidity is high, AC stayed off.
+
+        With enable_humidity_control=True and optimal_mode resolved to "dry",
+        needs_ac must be coerced True so the AC powers on for dehumidification.
+        """
+        opt = _make_optimizer(
+            hvac_mode="cool",
+            target_temperature=24.0,
+            auto_control_main_ac=True,
+            enable_humidity_control=True,
+            temperature_deadband=0.5,
+            target_humidity=50.0,
+        )
+        # Make sensor state lookups return sensible values
+        temp_state = MagicMock()
+        temp_state.state = "24.1"
+        temp_state.attributes = {"unit_of_measurement": "°C"}
+        humid_state = MagicMock()
+        humid_state.state = "75.0"
+        cover_state = MagicMock()
+        cover_state.state = "open"
+        cover_state.attributes = {"current_position": 50}
+        climate_state = MagicMock()
+        climate_state.state = "off"
+        climate_state.attributes = {
+            "temperature": 24.0,
+            "current_temperature": 24.0,
+            "hvac_mode": "off",
+            "hvac_action": "off",
+        }
+
+        def state_factory(eid):
+            if "climate" in eid:
+                return climate_state
+            if "humidity" in eid:
+                return humid_state
+            if "cover" in eid:
+                return cover_state
+            return temp_state
+
+        opt.hass.states.get.side_effect = state_factory
+        # Add humidity sensor to room config
+        opt.room_configs[0]["humidity_sensor"] = "sensor.lr_humidity"
+        opt.room_configs[1]["humidity_sensor"] = "sensor.br_humidity"
+
+        # Spy on _control_main_ac to see what needs_ac value it received
+        with patch.object(opt, "_control_main_ac", new=AsyncMock()) as control_spy:
+            await opt._async_optimize_impl()
+
+        # _control_main_ac is called with (needs_ac, state, optimal_mode)
+        assert control_spy.call_args is not None
+        needs_ac_arg = control_spy.call_args[0][0]
+        optimal_mode_arg = control_spy.call_args[0][2]
+        assert optimal_mode_arg == "dry", f"Expected dry mode, got {optimal_mode_arg}"
+        assert needs_ac_arg is True, (
+            "AC must be engaged when humidity is high and mode resolves to dry, "
+            f"but needs_ac was {needs_ac_arg}"
+        )
+
+
+class TestOvernightScheduleDays:
+    """Schedule day-matching honors yesterday's day during overnight wrap."""
+
+    def test_overnight_schedule_active_in_morning_leg(self):
+        """A 'Mon 22:00–06:00' schedule must be active at 03:00 Tuesday."""
+        import datetime
+        from unittest.mock import patch as patch_mod
+
+        opt = _make_optimizer(
+            enable_scheduling=True,
+            schedules=[
+                {
+                    "schedule_name": "Monday night",
+                    "schedule_enabled": True,
+                    "schedule_days": ["monday"],
+                    "schedule_start_time": "22:00",
+                    "schedule_end_time": "06:00",
+                    "schedule_target_temp": 19.0,
+                }
+            ],
+        )
+
+        # Mock now() to be Tuesday 03:00
+        fake_now = datetime.datetime(2026, 5, 19, 3, 0, 0)  # Tuesday
+        with patch_mod("homeassistant.util.dt.now", return_value=fake_now):
+            active = opt._get_active_schedule()
+
+        assert active is not None, "Overnight Monday schedule must still be active at 03:00 Tuesday"
+        assert active["schedule_name"] == "Monday night"
+
+    def test_overnight_schedule_inactive_when_wrong_anchor_day(self):
+        """A 'Mon 22:00–06:00' schedule must NOT be active at 03:00 Wednesday."""
+        import datetime
+        from unittest.mock import patch as patch_mod
+
+        opt = _make_optimizer(
+            enable_scheduling=True,
+            schedules=[
+                {
+                    "schedule_name": "Monday night",
+                    "schedule_enabled": True,
+                    "schedule_days": ["monday"],
+                    "schedule_start_time": "22:00",
+                    "schedule_end_time": "06:00",
+                    "schedule_target_temp": 19.0,
+                }
+            ],
+        )
+
+        # Wednesday 03:00 — Tuesday's leg already expired
+        fake_now = datetime.datetime(2026, 5, 20, 3, 0, 0)
+        with patch_mod("homeassistant.util.dt.now", return_value=fake_now):
+            active = opt._get_active_schedule()
+
+        assert active is None
+
+    def test_overnight_schedule_evening_leg_still_uses_today(self):
+        """A 'Mon 22:00–06:00' schedule on Monday at 23:00 should match today=Mon."""
+        import datetime
+        from unittest.mock import patch as patch_mod
+
+        opt = _make_optimizer(
+            enable_scheduling=True,
+            schedules=[
+                {
+                    "schedule_name": "Monday night",
+                    "schedule_enabled": True,
+                    "schedule_days": ["monday"],
+                    "schedule_start_time": "22:00",
+                    "schedule_end_time": "06:00",
+                    "schedule_target_temp": 19.0,
+                }
+            ],
+        )
+
+        # Monday 23:00 — evening leg, anchor day is today (Mon)
+        fake_now = datetime.datetime(2026, 5, 18, 23, 0, 0)  # Monday
+        with patch_mod("homeassistant.util.dt.now", return_value=fake_now):
+            active = opt._get_active_schedule()
+
+        assert active is not None
+        assert active["schedule_name"] == "Monday night"
+
+
+class TestQuickActionRestartRestoration:
+    """Quick-action setbacks survive HA restart (target_temp in particular)."""
+
+    @pytest.mark.asyncio
+    async def test_sleep_setback_reapplied_on_restart(self):
+        """If HA restarts mid-sleep, target_temp must reflect the sleep setback."""
+        import json
+        import tempfile
+
+        opt = _make_optimizer(target_temperature=24.0, hvac_mode="cool")
+        # Fake config_entry with an entry_id
+        opt.config_entry = MagicMock()
+        opt.config_entry.entry_id = "test_entry"
+        # Pretend HA storage path is a temp dir; build the state file there.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            opt.hass.config.path = MagicMock(return_value=tmpdir)
+            from pathlib import Path
+            state_file = Path(tmpdir) / "smart_aircon_manager.test_entry.state.json"
+            now = time.time()
+            state_file.write_text(json.dumps({
+                "ac_last_turned_on": None,
+                "ac_last_turned_off": None,
+                "quick_action_mode": "sleep",
+                "quick_action_expiry": now + 3600,  # 1h remaining
+                "quick_action_original_settings": {
+                    "target_temperature": 24.0,
+                    "temperature_deadband": 0.5,
+                    "hvac_mode": "cool",
+                    "resolved_mode": "cool",
+                },
+                "saved_at": now - 600,
+            }))
+            # Real async_add_executor_job: just call the func synchronously.
+            async def run_executor(func, *args):
+                return func(*args)
+            opt.hass.async_add_executor_job = run_executor
+
+            await opt._load_compressor_state()
+
+        assert opt._quick_action_mode == "sleep"
+        # Cool sleep mode adds +1°C — target must reflect this after restart.
+        assert opt.target_temperature == pytest.approx(25.0)
+
+
 class TestOptimizerDisabled:
     """Test that optimizer respects is_enabled flag (C4 fix)."""
 

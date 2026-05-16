@@ -59,6 +59,9 @@ from .const import (
     DEFAULT_COMPRESSOR_OVERHEAT_MARGIN,
     DEFAULT_MIN_MODE_DURATION,
     DEFAULT_MIN_COMPRESSOR_RUN_CYCLES,
+    DEFAULT_ENABLE_ADAPTIVE_DEADBAND,
+    DEFAULT_ADAPTIVE_DEADBAND_MAX_SCALE,
+    DEFAULT_ADAPTIVE_DEADBAND_RATE_THRESHOLD,
 )
 from .optimizer import AirconOptimizer
 from .critical_monitor import CriticalRoomMonitor
@@ -217,6 +220,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         compressor_overheat_margin=entry.data.get("compressor_overheat_margin", DEFAULT_COMPRESSOR_OVERHEAT_MARGIN),
         min_mode_duration=entry.data.get("min_mode_duration", DEFAULT_MIN_MODE_DURATION),
         min_compressor_run_cycles=entry.data.get("min_compressor_run_cycles", DEFAULT_MIN_COMPRESSOR_RUN_CYCLES),
+        enable_adaptive_deadband=entry.data.get("enable_adaptive_deadband", DEFAULT_ENABLE_ADAPTIVE_DEADBAND),
+        adaptive_deadband_max_scale=entry.data.get("adaptive_deadband_max_scale", DEFAULT_ADAPTIVE_DEADBAND_MAX_SCALE),
+        adaptive_deadband_rate_threshold=entry.data.get("adaptive_deadband_rate_threshold", DEFAULT_ADAPTIVE_DEADBAND_RATE_THRESHOLD),
     )
 
     # Get update interval from config

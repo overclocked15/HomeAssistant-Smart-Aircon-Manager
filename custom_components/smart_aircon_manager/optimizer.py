@@ -84,6 +84,9 @@ class AirconOptimizer:
         compressor_overheat_margin: float = 0.5,
         min_mode_duration: float = 600.0,
         min_compressor_run_cycles: int = 3,
+        enable_adaptive_deadband: bool = False,
+        adaptive_deadband_max_scale: float = 2.0,
+        adaptive_deadband_rate_threshold: float = 0.5,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -185,6 +188,20 @@ class AirconOptimizer:
         self._current_hvac_mode = None  # Track current HVAC mode (cool/heat/fan/off)
         self._mode_start_time = None  # Timestamp when current mode started
         self._compressor_run_cycle_count = 0  # Count optimization cycles in compressor mode
+
+        # Adaptive deadband (based on house-wide rate of change). When the
+        # house temperature is swinging fast, widen the deadband to avoid
+        # mode-thrashing; when it is stable, keep the base deadband for
+        # precise control.
+        self.enable_adaptive_deadband = enable_adaptive_deadband
+        self.adaptive_deadband_max_scale = self._validate_positive_float(
+            adaptive_deadband_max_scale, "adaptive_deadband_max_scale", 1.0, 5.0
+        )
+        # Rate (°C/min, absolute) at which the deadband reaches its max scale.
+        # Below this, the deadband scales linearly between 1.0× and max.
+        self.adaptive_deadband_rate_threshold = self._validate_positive_float(
+            adaptive_deadband_rate_threshold, "adaptive_deadband_rate_threshold", 0.05, 5.0
+        )
 
         # Predictive control
         self.enable_predictive_control = enable_predictive_control
@@ -447,6 +464,19 @@ class AirconOptimizer:
                         _LOGGER.info("Restored quick action mode '%s' (%.1f min remaining)",
                                     self._quick_action_mode, remaining)
 
+                        # Re-apply in-memory settings that the mode would have set
+                        # at entry time. Without this, settings like sleep's
+                        # target setback would silently vanish across restarts.
+                        if self._quick_action_mode == "vacation":
+                            self.temperature_deadband = 2.0
+                        elif self._quick_action_mode == "sleep":
+                            entry_resolved = self._quick_action_original_settings.get("resolved_mode")
+                            original_temp = self._quick_action_original_settings.get("target_temperature")
+                            if original_temp is not None and entry_resolved == "cool":
+                                self.target_temperature = original_temp + 1.0
+                            elif original_temp is not None and entry_resolved == "heat":
+                                self.target_temperature = original_temp - 1.0
+
                 _LOGGER.info("Compressor protection state loaded successfully")
             else:
                 _LOGGER.debug("No existing compressor state file found, starting fresh")
@@ -545,9 +575,31 @@ class AirconOptimizer:
             return None
 
         from homeassistant.util import dt as dt_util
+        from datetime import timedelta
         now = dt_util.now()
         current_time = now.time()
         current_day = now.strftime("%A").lower()
+        # For overnight schedules (start > end), the second half of the schedule
+        # logically belongs to the previous calendar day. A "Mon 22:00–06:00"
+        # schedule must still be considered active on Tuesday at 03:00. We
+        # resolve this by also checking yesterday's day name when the current
+        # clock time is in the morning leg of an overnight window.
+        yesterday_day = (now - timedelta(days=1)).strftime("%A").lower()
+
+        WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday"}
+        WEEKENDS = {"saturday", "sunday"}
+
+        def _day_priority(day_name: str, schedule_days: list[str]) -> int | None:
+            """Return specificity priority of a day match, or None if no match."""
+            if day_name in schedule_days:
+                return 3  # Exact day name
+            if "weekdays" in schedule_days and day_name in WEEKDAYS:
+                return 2
+            if "weekends" in schedule_days and day_name in WEEKENDS:
+                return 2
+            if "all" in schedule_days:
+                return 1
+            return None
 
         best_schedule = None
         best_priority = -1  # Higher = more specific
@@ -558,25 +610,6 @@ class AirconOptimizer:
 
             schedule_days = schedule.get("schedule_days", [])
             if not schedule_days:
-                continue
-
-            # Check day match and assign specificity priority
-            day_match = False
-            priority = 0
-            if current_day in schedule_days:
-                day_match = True
-                priority = 3  # Most specific: exact day name
-            elif "weekdays" in schedule_days and current_day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
-                day_match = True
-                priority = 2  # Medium: weekdays group
-            elif "weekends" in schedule_days and current_day in ["saturday", "sunday"]:
-                day_match = True
-                priority = 2  # Medium: weekends group
-            elif "all" in schedule_days:
-                day_match = True
-                priority = 1  # Least specific: all days
-
-            if not day_match:
                 continue
 
             # Check time range
@@ -594,13 +627,32 @@ class AirconOptimizer:
                 end_t = dt_time(end_hour, end_min)
 
                 time_match = False
+                # For day matching, the schedule's "anchor day" is the day on
+                # which it starts. For overnight schedules the anchor day is
+                # yesterday if we're past midnight but before the end time.
+                anchor_day = current_day
                 if start_t <= end_t:
+                    # Same-day schedule
                     time_match = start_t <= current_time <= end_t
                 else:
-                    # Crosses midnight
-                    time_match = current_time >= start_t or current_time <= end_t
+                    # Overnight schedule
+                    if current_time >= start_t:
+                        # Evening leg — anchor day is today
+                        time_match = True
+                        anchor_day = current_day
+                    elif current_time <= end_t:
+                        # Morning leg — anchor day is yesterday
+                        time_match = True
+                        anchor_day = yesterday_day
 
-                if time_match and priority > best_priority:
+                if not time_match:
+                    continue
+
+                priority = _day_priority(anchor_day, schedule_days)
+                if priority is None:
+                    continue
+
+                if priority > best_priority:
                     best_schedule = schedule
                     best_priority = priority
             except (ValueError, AttributeError) as e:
@@ -685,17 +737,21 @@ class AirconOptimizer:
         optimal_mode = None
 
         # Enhanced compressor protection: Adjust deadband based on current mode
-        # This creates hysteresis to reduce mode switching frequency
-        effective_deadband = self.temperature_deadband
+        # This creates hysteresis to reduce mode switching frequency.
+        # When adaptive deadband is enabled, start from the rate-scaled deadband
+        # so fast-moving conditions get a wider tolerance before mode switches.
+        effective_deadband = self._get_adaptive_deadband()
 
         if self.enable_enhanced_compressor_protection and self._current_hvac_mode in ["cool", "heat"]:
-            # If currently in compressor mode, require additional margin before switching to fan
+            # If currently in compressor mode, require additional margin before switching to fan.
+            # Build on the adaptive deadband (rather than base) so fast-moving
+            # conditions don't lose their rate-aware widening when this kicks in.
             if self._current_hvac_mode == "cool":
                 # In cooling mode: need to undercool before switching to fan
                 # temp must be BELOW target by (deadband + undercool_margin)
                 if temp_deviation < 0:  # Already below target
                     # Apply undercool margin - need to be even MORE below target
-                    effective_deadband = self.temperature_deadband + self.compressor_undercool_margin
+                    effective_deadband = effective_deadband + self.compressor_undercool_margin
                     _LOGGER.debug(
                         "Enhanced compressor protection (cooling): Temp %.1f°C below target, requiring %.1f°C total deviation before switching to fan",
                         abs(temp_deviation), effective_deadband
@@ -705,7 +761,7 @@ class AirconOptimizer:
                 # temp must be ABOVE target by (deadband + overheat_margin)
                 if temp_deviation > 0:  # Already above target
                     # Apply overheat margin - need to be even MORE above target
-                    effective_deadband = self.temperature_deadband + self.compressor_overheat_margin
+                    effective_deadband = effective_deadband + self.compressor_overheat_margin
                     _LOGGER.debug(
                         "Enhanced compressor protection (heating): Temp %.1f°C above target, requiring %.1f°C total deviation before switching to fan",
                         temp_deviation, effective_deadband
@@ -827,8 +883,10 @@ class AirconOptimizer:
                     )
                 # Don't apply hysteresis when exiting fan_only - allow immediate switch
             elif should_change_mode and time_since_last_change < self.mode_change_hysteresis_time:
-                # Within hysteresis period - only change if deviation is severe
-                hysteresis_threshold = self.temperature_deadband + self.mode_change_hysteresis_temp
+                # Within hysteresis period - only change if deviation is severe.
+                # Use the adaptive deadband so a swinging house also widens the
+                # threshold required to override hysteresis.
+                hysteresis_threshold = self._get_adaptive_deadband() + self.mode_change_hysteresis_temp
 
                 if abs_deviation < hysteresis_threshold:
                     # Deviation not severe enough to override hysteresis
@@ -1296,6 +1354,41 @@ class AirconOptimizer:
             return sum(targets) / len(targets)
         return self.target_temperature
 
+    def _get_adaptive_deadband(self) -> float:
+        """Return the current deadband, optionally widened by recent rate-of-change.
+
+        When the house temperature is changing fast (e.g. recovering from a
+        large setpoint change, weather swing, or door left open), a tight
+        deadband causes mode thrashing between active and fan-only/dry modes.
+        When the house is stable, the base deadband gives precise control.
+
+        Scales linearly from 1.0× (steady) to ``adaptive_deadband_max_scale``
+        as the average absolute house rate-of-change approaches
+        ``adaptive_deadband_rate_threshold`` (°C/min). Rates above the
+        threshold clamp at max scale.
+
+        Returns the base deadband unchanged when the feature is disabled or
+        when no per-room rate-of-change is available yet.
+        """
+        if not self.enable_adaptive_deadband:
+            return self.temperature_deadband
+
+        # Collect per-room rate-of-change magnitudes.
+        rates = []
+        for room_name in self._temp_history.keys():
+            rate = self._get_temp_rate_of_change(room_name)
+            if rate is not None:
+                rates.append(abs(rate))
+
+        if not rates:
+            return self.temperature_deadband
+
+        avg_rate = sum(rates) / len(rates)
+        # Linear scale: 0 rate → 1.0×, threshold rate → max scale.
+        scale_range = self.adaptive_deadband_max_scale - 1.0
+        scale = 1.0 + scale_range * min(1.0, avg_rate / self.adaptive_deadband_rate_threshold)
+        return self.temperature_deadband * scale
+
     def _get_effective_operating_mode(self, room_states: dict[str, dict[str, Any]] = None) -> str:
         """Get the actual operating mode, resolving 'auto' to 'cool' or 'heat'.
 
@@ -1440,6 +1533,15 @@ class AirconOptimizer:
         optimal_hvac_mode = self._determine_optimal_hvac_mode(room_states, effective_target)
 
         needs_ac = await self._check_if_ac_needed(room_states, main_ac_running)
+
+        # Humidity-only demand: _check_if_ac_needed only considers temperature, so
+        # when temp is in deadband but humidity is high the AC would never start
+        # for dehumidification. If the mode-resolver picked "dry", treat that as
+        # demand so the AC can power on. (Heat-mode-resolved-to-dry is already
+        # suppressed inside _determine_optimal_hvac_mode.)
+        if not needs_ac and optimal_hvac_mode == "dry" and self.enable_humidity_control:
+            _LOGGER.info("AC turn ON (humidity-only): optimal mode resolved to DRY")
+            needs_ac = True
 
         if self.auto_control_main_ac and self.main_climate_entity:
             await self._control_main_ac(needs_ac, main_climate_state, optimal_hvac_mode)
@@ -2746,9 +2848,15 @@ class AirconOptimizer:
         return fan_speed
 
     def _check_rooms_stable(self, room_states: dict[str, dict[str, Any]]) -> bool:
-        """Check if all rooms are stable (using occupancy-adjusted targets)."""
+        """Check if all rooms are stable (using occupancy-adjusted targets).
+
+        Uses the adaptive deadband: when the house is mid-swing, a wider
+        deadband prevents oscillation between "stable" and "active" classification.
+        """
         if not room_states:
             return False
+
+        deadband = self._get_adaptive_deadband()
 
         for room_name, state in room_states.items():
             current_temp = state.get("current_temperature")
@@ -2760,7 +2868,7 @@ class AirconOptimizer:
             # Apply occupancy setback to get effective target
             effective_target = self._get_room_effective_target(room_name, target_temp)
             temp_diff = abs(current_temp - effective_target)
-            if temp_diff > self.temperature_deadband:
+            if temp_diff > deadband:
                 return False
 
         return True

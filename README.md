@@ -158,7 +158,8 @@ logger:
 
 See [Changelog](documentation/CHANGELOG.md) for full version history.
 
-- **v2.15.2** (Current): Heat/cool symmetry audit — fixed inverted-sign adaptive balancing convergence in heat mode (poorly-insulated cold rooms were getting LESS fan), mode-agnostic pre-positioning (wrong-direction rooms got over-conditioned at AC startup), and predictive damping ignoring per-room target overrides
+- **v2.16.0** (Current): Adaptive deadband (opt-in: widens deadband during temperature swings to reduce mode thrashing), plus three latent bug fixes — dry mode never auto-engaged on humidity-only demand, overnight schedules with day-specific days didn't activate after midnight, and quick-action sleep setback was lost across HA restarts
+- **v2.15.2**: Heat/cool symmetry audit — fixed inverted-sign adaptive balancing convergence in heat mode (poorly-insulated cold rooms were getting LESS fan), mode-agnostic pre-positioning (wrong-direction rooms got over-conditioned at AC startup), and predictive damping ignoring per-room target overrides
 - **v2.15.1**: Heat-mode setpoint overshoot fix — `abs(temp_diff)` in the proportional setpoint formula pushed AC setpoints above target during overshoot, causing 21°C target to drive rooms to 25–26°C
 - **v2.15.0**: Heating-mode fixes (dry mode suppressed in heat mode, adaptive setpoint/efficiency mode-aware, sleep mode resolves auto), critical pre-positioning crash fix, sensor threshold consistency
 - **v2.14.0**: Optimization improvements (proportional fan curve, weighted rate-of-change, dynamic prediction damping, continuous AC setpoint, smart pre-positioning, debounced cover positions, weather trend, FAN_MODE support, quick-action binary sensors, diagnostics platform, learning confidence decay)

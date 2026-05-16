@@ -1437,12 +1437,18 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             CONF_OVERSHOOT_TIER1_THRESHOLD,
             CONF_OVERSHOOT_TIER2_THRESHOLD,
             CONF_OVERSHOOT_TIER3_THRESHOLD,
+            CONF_ENABLE_ADAPTIVE_DEADBAND,
+            CONF_ADAPTIVE_DEADBAND_MAX_SCALE,
+            CONF_ADAPTIVE_DEADBAND_RATE_THRESHOLD,
             DEFAULT_MAIN_FAN_HIGH_THRESHOLD,
             DEFAULT_MAIN_FAN_MEDIUM_THRESHOLD,
             DEFAULT_WEATHER_INFLUENCE_FACTOR,
             DEFAULT_OVERSHOOT_TIER1_THRESHOLD,
             DEFAULT_OVERSHOOT_TIER2_THRESHOLD,
             DEFAULT_OVERSHOOT_TIER3_THRESHOLD,
+            DEFAULT_ENABLE_ADAPTIVE_DEADBAND,
+            DEFAULT_ADAPTIVE_DEADBAND_MAX_SCALE,
+            DEFAULT_ADAPTIVE_DEADBAND_RATE_THRESHOLD,
         )
 
         return self.async_show_form(
@@ -1529,6 +1535,40 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             max=5.0,
                             step=0.5,
                             unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ENABLE_ADAPTIVE_DEADBAND,
+                        default=self.config_entry.data.get(
+                            CONF_ENABLE_ADAPTIVE_DEADBAND, DEFAULT_ENABLE_ADAPTIVE_DEADBAND
+                        ),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_ADAPTIVE_DEADBAND_MAX_SCALE,
+                        default=self.config_entry.data.get(
+                            CONF_ADAPTIVE_DEADBAND_MAX_SCALE, DEFAULT_ADAPTIVE_DEADBAND_MAX_SCALE
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1.0,
+                            max=5.0,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ADAPTIVE_DEADBAND_RATE_THRESHOLD,
+                        default=self.config_entry.data.get(
+                            CONF_ADAPTIVE_DEADBAND_RATE_THRESHOLD,
+                            DEFAULT_ADAPTIVE_DEADBAND_RATE_THRESHOLD,
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.1,
+                            max=5.0,
+                            step=0.1,
+                            unit_of_measurement="°C/min",
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
