@@ -1415,9 +1415,16 @@ class AirconOptimizer:
         if self._last_hvac_mode in ("cool", "heat"):
             return self._last_hvac_mode
 
-        # Fallback: infer from temperatures
+        # Fallback: infer from temperatures vs the GLOBAL target. Using the
+        # weighted-average per-room target here lets a single high-target room
+        # override flip the inferred direction (e.g. tip auto-mode into "heat"
+        # while the user is actually at/above their global setpoint).
         if room_states:
-            effective_target = self._get_house_effective_target(room_states)
+            effective_target = (
+                self._current_global_effective_target
+                if self._current_global_effective_target is not None
+                else self._get_house_effective_target(room_states)
+            )
             temps = self._valid_temps(room_states)
             if temps:
                 avg_temp = sum(temps) / len(temps)
@@ -1673,14 +1680,21 @@ class AirconOptimizer:
             # mode only hot rooms benefit from a wide-open damper; in heat
             # mode only cold rooms do. Pre-positioning the wrong side would
             # over-condition those rooms the moment AC turns on.
-            effective_target = self._get_house_effective_target(room_states)
+            #
+            # Use EACH ROOM'S own effective target (per-room override + weather
+            # + occupancy setback), not the house-wide weighted average. With
+            # the average, a room like Medical Supplies (override 25°C, current
+            # 23.8°C, target ~25°C) would compare to ~21.7°C house avg and
+            # appear "above target" → minimum pre-position, when it actually
+            # needs heating toward its own 25°C target.
             operating_mode = self._get_effective_operating_mode(room_states)
             min_pos = max(30, int(self.min_airflow_percent)) if hasattr(self, 'min_airflow_percent') else 30
             pre_position = {}
             for room, state in room_states.items():
                 temp = state.get("current_temperature")
-                if temp is not None:
-                    temp_diff = temp - effective_target
+                room_target = state.get("target_temperature")
+                if temp is not None and room_target is not None:
+                    temp_diff = temp - room_target
                     if operating_mode == "cool":
                         # Only hot rooms need cooling — cold rooms get minimum airflow.
                         relevant_diff = max(0.0, temp_diff)
@@ -2802,7 +2816,15 @@ class AirconOptimizer:
             _LOGGER.debug("Manual override active - skipping main fan speed control")
             return self._last_main_fan_speed or "medium"
 
-        effective_target = self._get_house_effective_target(room_states)
+        # Anchor the main-fan speed decision to the GLOBAL effective target so
+        # a single high-target room override can't quietly pull the weighted
+        # average up and trick this into picking LOW when MEDIUM/HIGH is
+        # warranted (and vice versa).
+        effective_target = (
+            self._current_global_effective_target
+            if self._current_global_effective_target is not None
+            else self._get_house_effective_target(room_states)
+        )
 
         temps = self._valid_temps(room_states)
         if not temps:

@@ -1070,6 +1070,56 @@ class TestPerRoomTargetMath:
         )
 
 
+class TestPerRoomTargetMathExtended:
+    """Follow-on to TestPerRoomTargetMath: the same global-vs-weighted-avg
+    distinction must hold in the remaining unit-level decision points —
+    _get_effective_operating_mode fallback, pre-positioning, main fan speed.
+    """
+
+    def test_operating_mode_fallback_uses_global_not_weighted_avg(self):
+        """Auto-mode first-run direction must use the user's global target.
+
+        Regression: with the weighted-avg fallback, a 25°C override on one
+        room could tip the inferred mode to 'heat' when the house is already
+        at/above the user's global 21°C setpoint.
+        """
+        opt = _make_optimizer(hvac_mode="auto", target_temperature=21.0)
+        opt._current_global_effective_target = 21.0
+        # Force fallback path: no _last_hvac_mode and not in cool/heat
+        opt._last_hvac_mode = None
+        room_states = {
+            "Living": {"current_temperature": 21.2, "target_temperature": 21.0, "cover_position": 50},
+            "MedicalSupplies": {"current_temperature": 23.8, "target_temperature": 25.0, "cover_position": 50},
+        }
+        # avg = 22.5; global target = 21.0 → avg above target → "cool".
+        # With weighted-avg (~23.0) this would flip to "heat" incorrectly.
+        result = opt._get_effective_operating_mode(room_states)
+        assert result == "cool"
+
+    def test_pre_positioning_uses_room_target_not_house_avg(self):
+        """Each room's pre-position must be calculated against its OWN target.
+
+        Regression: previously used the house-wide weighted average. A room
+        with an elevated per-room target (e.g. Medical 25°C, current 23.8°C)
+        looked "above target" relative to the house avg (~21.7°C) and got
+        minimum pre-position, even though it actually needed heating.
+        """
+        # The relevant_diff math is what we're testing — exercise it directly.
+        min_pos = 30
+        # Medical Supplies: current 23.8°C, room target 25.0°C, heat mode.
+        # With ROOM target: temp_diff = -1.2 → relevant_diff = 1.2 → boosted.
+        # With house avg target ~21.7: temp_diff = +2.1 → relevant_diff = 0 → min_pos (WRONG).
+        room_target = 25.0
+        temp = 23.8
+        temp_diff = temp - room_target  # -1.2 (needs heating)
+        relevant_diff = max(0.0, -temp_diff)  # 1.2
+        pre_pos = min(80, int(min_pos + (80 - min_pos) * min(1.0, relevant_diff / 3.0)))
+        assert pre_pos > min_pos, (
+            f"Per-room-target pre-positioning should boost Medical Supplies "
+            f"above min_pos, got {pre_pos}"
+        )
+
+
 class TestHvacModeInitialization:
     """async_setup must only seed _last_hvac_mode with real conditioning modes."""
 

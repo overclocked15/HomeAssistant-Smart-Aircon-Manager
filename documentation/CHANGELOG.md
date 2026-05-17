@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.16.3 - Pattern-Sweep Fixes (Same-Family Bugs from v2.16.2)
+
+**Release Date**: 2026-05-16
+
+After shipping v2.16.2, a targeted sweep for the same two patterns surfaced five more instances. None were user-reported, but all share root causes with bugs the user just hit.
+
+### Pattern 1 — UI removal blocked by `vol.Optional(..., default=...)`
+The same substitute-on-empty-submit bug that broke per-room target removal also affected:
+- **Weather entity** ([config_flow.py:818](../custom_components/smart_aircon_manager/config_flow.py#L818))
+- **Outdoor temperature sensor** ([config_flow.py:829](../custom_components/smart_aircon_manager/config_flow.py#L829))
+- **Main climate entity** ([config_flow.py:362](../custom_components/smart_aircon_manager/config_flow.py#L362)) in the settings step
+- **Main fan entity** ([config_flow.py:381](../custom_components/smart_aircon_manager/config_flow.py#L381)) in the settings step
+
+All four switched from `vol.Optional(..., default=...)` to `vol.Optional(..., description={"suggested_value": ...})` so clearing the field in the UI actually removes the entity. Booleans elsewhere (e.g. `CONF_AUTO_CONTROL_MAIN_AC`) keep `default=` — those don't have a "cleared" semantic.
+
+### Pattern 2 — Weighted-avg target leaking into unit-level decisions
+v2.16.2 fixed `_check_if_ac_needed` and `_calculate_ac_temperature`. Three more decision points were still pulling from `_get_house_effective_target` (the per-room weighted average):
+
+- **`_get_effective_operating_mode` fallback** ([optimizer.py:1418](../custom_components/smart_aircon_manager/optimizer.py#L1418)): when auto-mode's `_last_hvac_mode` isn't set yet, the function falls back to comparing house avg vs target to infer direction. A 25°C override could flip the inferred mode to "heat" while the user was already at/above their 21°C global setpoint. Now uses the cached global effective target.
+- **Pre-positioning** ([optimizer.py:1683](../custom_components/smart_aircon_manager/optimizer.py#L1683)): each room's pre-AC-startup damper position should compare against *that room's* own effective target, not the house weighted average. Previously, a room with an elevated per-room target (Medical Supplies at 25°C, current 23.8°C) compared to the house avg (~21.7°C), looked "above target", and got minimum pre-position — when it actually needed heating toward its own target. Now uses `state["target_temperature"]` per room.
+- **Main fan speed selection** ([optimizer.py:2805](../custom_components/smart_aircon_manager/optimizer.py#L2805)): same weighted-avg leak in `_determine_and_set_main_fan_speed`. A high-target room override could trick the fan speed selection into LOW when the global comparison would correctly pick MEDIUM/HIGH. Now anchors on the global effective target with the same fallback pattern.
+
+### Tests
+- `TestPerRoomTargetMathExtended` (2 cases): auto-mode fallback uses global target; per-room target boosts pre-positioning for a high-override room that still needs conditioning.
+- Suite is now 121 tests, all passing.
+
+### Why this matters
+The v2.16.2 release fixed the bug the user hit, but the *root cause* (weighted-avg target as the default reference for AC-unit decisions) lived in five places. v2.16.3 finishes the cleanup so per-room overrides behave consistently across every code path that branches on "is the house at target?". For users without per-room targets, all five fixes are no-ops — the weighted-avg target and the global target are identical when all room targets equal the global.
+
+---
+
 ## v2.16.2 - Per-Room Target Fixes
 
 **Release Date**: 2026-05-16

@@ -361,7 +361,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_MAIN_CLIMATE_ENTITY,
-                        **({'default': self.config_entry.data[CONF_MAIN_CLIMATE_ENTITY]}
+                        # suggested_value pre-fills the field for editing without
+                        # substituting on empty submit, so the user can clear it.
+                        **({'description': {'suggested_value': self.config_entry.data[CONF_MAIN_CLIMATE_ENTITY]}}
                            if CONF_MAIN_CLIMATE_ENTITY in self.config_entry.data else {}),
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="climate")
@@ -380,7 +382,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ): cv.boolean,
                     vol.Optional(
                         CONF_MAIN_FAN_ENTITY,
-                        **({'default': self.config_entry.data[CONF_MAIN_FAN_ENTITY]}
+                        **({'description': {'suggested_value': self.config_entry.data[CONF_MAIN_FAN_ENTITY]}}
                            if CONF_MAIN_FAN_ENTITY in self.config_entry.data else {}),
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain=["fan", "climate"])
@@ -812,27 +814,33 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             ): cv.boolean,
         }
 
-        # Only set default if weather entity exists
+        # Pre-fill via suggested_value (not default=) so clearing the field
+        # in the UI actually removes the entity. vol.Optional(..., default=X)
+        # substitutes X back on empty submit, making removal impossible — same
+        # pattern that broke per-room target removal in v2.16.2.
         weather_entity = self.config_entry.data.get(CONF_WEATHER_ENTITY)
         if weather_entity:
-            schema_dict[vol.Optional(CONF_WEATHER_ENTITY, default=weather_entity)] = selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="weather")
+            weather_key = vol.Optional(
+                CONF_WEATHER_ENTITY,
+                description={"suggested_value": weather_entity},
             )
         else:
-            schema_dict[vol.Optional(CONF_WEATHER_ENTITY)] = selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="weather")
-            )
+            weather_key = vol.Optional(CONF_WEATHER_ENTITY)
+        schema_dict[weather_key] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="weather")
+        )
 
-        # Only set default if outdoor temp sensor exists
         outdoor_sensor = self.config_entry.data.get(CONF_OUTDOOR_TEMP_SENSOR)
         if outdoor_sensor:
-            schema_dict[vol.Optional(CONF_OUTDOOR_TEMP_SENSOR, default=outdoor_sensor)] = selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
+            outdoor_key = vol.Optional(
+                CONF_OUTDOOR_TEMP_SENSOR,
+                description={"suggested_value": outdoor_sensor},
             )
         else:
-            schema_dict[vol.Optional(CONF_OUTDOOR_TEMP_SENSOR)] = selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
-            )
+            outdoor_key = vol.Optional(CONF_OUTDOOR_TEMP_SENSOR)
+        schema_dict[outdoor_key] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
+        )
 
         return self.async_show_form(
             step_id="weather",
