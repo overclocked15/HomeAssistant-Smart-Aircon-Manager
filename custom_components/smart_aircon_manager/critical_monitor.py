@@ -16,8 +16,11 @@ from .const import (
     CONF_CRITICAL_ROOMS,
     CONF_CRITICAL_TEMP_MAX,
     CONF_CRITICAL_TEMP_SAFE,
+    CONF_CRITICAL_TEMP_MIN,
+    CONF_CRITICAL_TEMP_MIN_SAFE,
     CONF_CRITICAL_WARNING_OFFSET,
     CONF_CRITICAL_NOTIFY_SERVICES,
+    DEFAULT_CRITICAL_WARNING_OFFSET,
     CRITICAL_STATUS_NORMAL,
     CRITICAL_STATUS_WARNING,
     CRITICAL_STATUS_CRITICAL,
@@ -119,68 +122,111 @@ class CriticalRoomMonitor:
                 )
                 continue
 
-            # Get critical thresholds
-            critical_temp_max = critical_config[CONF_CRITICAL_TEMP_MAX]
-            critical_temp_safe = critical_config[CONF_CRITICAL_TEMP_SAFE]
-            warning_offset = critical_config[CONF_CRITICAL_WARNING_OFFSET]
-
-            # Calculate warning threshold
-            warning_temp = critical_temp_max - warning_offset
-
             # Update room state
             room_state = self._room_states.get(room_name, {})
             old_status = room_state.get("status", CRITICAL_STATUS_NORMAL)
+            old_direction = room_state.get("direction", "hot")
             room_state["temperature"] = current_temp
             room_state["last_check"] = dt_util.now()
 
-            # Determine current status
-            new_status = self._determine_status(
-                current_temp, critical_temp_max, warning_temp, critical_temp_safe, old_status
+            # Determine current status (checks over-temp and, if configured,
+            # under-temp/freeze bounds)
+            new_status, direction = self._determine_status(
+                current_temp, critical_config, old_status, old_direction
             )
 
             # Update status
             room_state["status"] = new_status
+            room_state["direction"] = direction
             self._room_states[room_name] = room_state
 
             # Handle status changes
             if new_status != old_status:
                 await self._handle_status_change(
-                    room_name, old_status, new_status, current_temp, critical_config
+                    room_name, old_status, new_status, current_temp, critical_config, direction
                 )
 
-            # If critical and AC is off, turn it on
+            # If critical and AC is off, turn it on in the correct mode
             if new_status == CRITICAL_STATUS_CRITICAL:
-                await self._ensure_ac_running(room_name, current_temp, critical_config)
+                await self._ensure_ac_running(room_name, current_temp, critical_config, direction)
+
+    @staticmethod
+    def _side_status(
+        distance_past_critical: float,
+        distance_past_warning: float,
+        distance_past_safe: float,
+        old_status: str,
+    ) -> str:
+        """Status for one side (hot or cold) given signed distances past each
+        threshold (positive = past the threshold in the dangerous direction)."""
+        if distance_past_critical >= 0:
+            return CRITICAL_STATUS_CRITICAL
+        if distance_past_warning >= 0:
+            if old_status in [CRITICAL_STATUS_CRITICAL, CRITICAL_STATUS_RECOVERING]:
+                if distance_past_safe <= 0:
+                    return CRITICAL_STATUS_NORMAL
+                return CRITICAL_STATUS_RECOVERING
+            return CRITICAL_STATUS_WARNING
+        if old_status in [CRITICAL_STATUS_CRITICAL, CRITICAL_STATUS_RECOVERING]:
+            if distance_past_safe <= 0:
+                return CRITICAL_STATUS_NORMAL
+            return CRITICAL_STATUS_RECOVERING
+        return CRITICAL_STATUS_NORMAL
 
     def _determine_status(
         self,
         current_temp: float,
-        critical_temp: float,
-        warning_temp: float,
-        safe_temp: float,
+        critical_config: dict[str, Any],
         old_status: str,
-    ) -> str:
-        """Determine the current status based on temperature."""
-        if current_temp >= critical_temp:
-            return CRITICAL_STATUS_CRITICAL
-        elif current_temp >= warning_temp:
-            # Only transition to warning if not already in critical/recovering
-            if old_status in [CRITICAL_STATUS_CRITICAL, CRITICAL_STATUS_RECOVERING]:
-                # We're recovering from critical
-                if current_temp <= safe_temp:
-                    return CRITICAL_STATUS_NORMAL
-                else:
-                    return CRITICAL_STATUS_RECOVERING
-            else:
-                return CRITICAL_STATUS_WARNING
-        elif old_status in [CRITICAL_STATUS_CRITICAL, CRITICAL_STATUS_RECOVERING]:
-            # Recovering from critical state
-            if current_temp <= safe_temp:
-                return CRITICAL_STATUS_NORMAL
-            else:
-                return CRITICAL_STATUS_RECOVERING
-        else:
-            return CRITICAL_STATUS_NORMAL
+        old_direction: str,
+    ) -> tuple[str, str]:
+        """Determine status considering both over-temp and under-temp bounds.
+
+        Returns (status, direction) where direction is "hot" or "cold" — the
+        side that produced the status, used to pick the AC response mode.
+        """
+        warning_offset = critical_config.get(
+            CONF_CRITICAL_WARNING_OFFSET, DEFAULT_CRITICAL_WARNING_OFFSET
+        )
+
+        severity = {
+            CRITICAL_STATUS_NORMAL: 0,
+            CRITICAL_STATUS_RECOVERING: 1,
+            CRITICAL_STATUS_WARNING: 2,
+            CRITICAL_STATUS_CRITICAL: 3,
+        }
+
+        # Hot side (over-temperature)
+        hot_status = CRITICAL_STATUS_NORMAL
+        critical_max = critical_config.get(CONF_CRITICAL_TEMP_MAX)
+        if critical_max is not None:
+            safe_max = critical_config.get(CONF_CRITICAL_TEMP_SAFE, critical_max - warning_offset)
+            hot_old = old_status if old_direction == "hot" else CRITICAL_STATUS_NORMAL
+            hot_status = self._side_status(
+                current_temp - critical_max,
+                current_temp - (critical_max - warning_offset),
+                current_temp - safe_max,
+                hot_old,
+            )
+
+        # Cold side (under-temperature / freeze protection)
+        cold_status = CRITICAL_STATUS_NORMAL
+        critical_min = critical_config.get(CONF_CRITICAL_TEMP_MIN)
+        if critical_min is not None:
+            safe_min = critical_config.get(CONF_CRITICAL_TEMP_MIN_SAFE, critical_min + warning_offset)
+            cold_old = old_status if old_direction == "cold" else CRITICAL_STATUS_NORMAL
+            cold_status = self._side_status(
+                critical_min - current_temp,
+                (critical_min + warning_offset) - current_temp,
+                safe_min - current_temp,
+                cold_old,
+            )
+
+        if severity[cold_status] > severity[hot_status]:
+            return cold_status, "cold"
+        if severity[hot_status] > 0:
+            return hot_status, "hot"
+        return CRITICAL_STATUS_NORMAL, old_direction
 
     async def _handle_status_change(
         self,
@@ -189,17 +235,22 @@ class CriticalRoomMonitor:
         new_status: str,
         current_temp: float,
         critical_config: dict[str, Any],
+        direction: str = "hot",
     ) -> None:
         """Handle status transition and send notifications."""
-        critical_temp_max = critical_config[CONF_CRITICAL_TEMP_MAX]
+        if direction == "cold":
+            threshold = critical_config.get(CONF_CRITICAL_TEMP_MIN)
+        else:
+            threshold = critical_config.get(CONF_CRITICAL_TEMP_MAX)
         notify_services = critical_config.get(CONF_CRITICAL_NOTIFY_SERVICES, [])
 
         _LOGGER.info(
-            "Critical room %s status changed: %s -> %s (temp: %.1f°C)",
+            "Critical room %s status changed: %s -> %s (temp: %.1f°C, direction: %s)",
             room_name,
             old_status,
             new_status,
             current_temp,
+            direction,
         )
 
         # Send notifications
@@ -210,19 +261,25 @@ class CriticalRoomMonitor:
         message = None
         title = None
 
-        if new_status == CRITICAL_STATUS_WARNING:
-            title = f"⚠️ Warning: {room_name} Temperature Rising"
-            margin = critical_temp_max - current_temp
+        if new_status == CRITICAL_STATUS_WARNING and threshold is not None:
+            trend = "Rising" if direction == "hot" else "Falling"
+            title = f"⚠️ Warning: {room_name} Temperature {trend}"
+            margin = abs(threshold - current_temp)
             message = (
                 f"{room_name} temperature is {current_temp:.1f}°C, "
-                f"approaching critical threshold of {critical_temp_max}°C "
+                f"approaching critical threshold of {threshold}°C "
                 f"(margin: {margin:.1f}°C). Monitoring closely."
             )
-        elif new_status == CRITICAL_STATUS_CRITICAL:
-            title = f"🚨 CRITICAL: {room_name} Over Temperature!"
+        elif new_status == CRITICAL_STATUS_CRITICAL and threshold is not None:
+            if direction == "hot":
+                title = f"🚨 CRITICAL: {room_name} Over Temperature!"
+                action = "AC is being turned on automatically!"
+            else:
+                title = f"🥶 CRITICAL: {room_name} Under Temperature!"
+                action = "Heating is being turned on automatically!"
             message = (
                 f"{room_name} has reached critical temperature: {current_temp:.1f}°C "
-                f"(threshold: {critical_temp_max}°C). AC is being turned on automatically!"
+                f"(threshold: {threshold}°C). {action}"
             )
         elif new_status == CRITICAL_STATUS_NORMAL and old_status in [
             CRITICAL_STATUS_CRITICAL,
@@ -280,9 +337,14 @@ class CriticalRoomMonitor:
                 _LOGGER.error("Failed to send notification via %s: %s", service, e)
 
     async def _ensure_ac_running(
-        self, room_name: str, current_temp: float, critical_config: dict[str, Any]
+        self, room_name: str, current_temp: float, critical_config: dict[str, Any],
+        direction: str = "hot",
     ) -> None:
-        """Ensure AC is running when critical temperature is reached."""
+        """Ensure AC is running when critical temperature is reached.
+
+        Over-temperature responds with COOL; under-temperature (freeze
+        protection) responds with HEAT.
+        """
         if not self._main_climate_entity:
             _LOGGER.warning(
                 "Critical room %s at %.1f°C but no main climate entity configured to control AC",
@@ -310,23 +372,30 @@ class CriticalRoomMonitor:
 
         current_hvac_mode = climate_state.state
 
-        # If AC is off, turn it on
+        # If AC is off, turn it on in the mode that addresses the emergency
         if current_hvac_mode in ["off", STATE_UNAVAILABLE, STATE_UNKNOWN]:
+            if direction == "cold":
+                response_mode = HVACMode.HEAT
+                threshold = critical_config.get(CONF_CRITICAL_TEMP_MIN)
+            else:
+                response_mode = HVACMode.COOL
+                threshold = critical_config.get(CONF_CRITICAL_TEMP_MAX)
+
             _LOGGER.warning(
-                "🚨 CRITICAL: Turning on AC for %s (temp: %.1f°C, threshold: %.1f°C)",
+                "🚨 CRITICAL: Turning on AC (%s) for %s (temp: %.1f°C, threshold: %s°C)",
+                response_mode,
                 room_name,
                 current_temp,
-                critical_config[CONF_CRITICAL_TEMP_MAX],
+                threshold,
             )
 
             try:
-                # Turn on AC in cooling mode
                 await self.hass.services.async_call(
                     "climate",
                     "set_hvac_mode",
                     {
                         "entity_id": self._main_climate_entity,
-                        "hvac_mode": HVACMode.COOL,
+                        "hvac_mode": response_mode,
                     },
                 )
 
@@ -337,7 +406,7 @@ class CriticalRoomMonitor:
                 _LOGGER.error("Failed to turn on AC: %s", e)
         else:
             _LOGGER.debug(
-                "AC is already running (mode: %s), relying on normal optimization to cool %s",
+                "AC is already running (mode: %s), relying on normal optimization for %s",
                 current_hvac_mode,
                 room_name,
             )
@@ -368,7 +437,15 @@ class CriticalRoomMonitor:
         if not room_state or room_state["temperature"] is None:
             return None
 
-        critical_temp = critical_rooms[room_name][CONF_CRITICAL_TEMP_MAX]
         current_temp = room_state["temperature"]
+        config = critical_rooms[room_name]
+        critical_max = config.get(CONF_CRITICAL_TEMP_MAX)
+        critical_min = config.get(CONF_CRITICAL_TEMP_MIN)
 
-        return critical_temp - current_temp
+        # Margin to whichever bound is nearer (both are "distance to danger")
+        margins = []
+        if critical_max is not None:
+            margins.append(critical_max - current_temp)
+        if critical_min is not None:
+            margins.append(current_temp - critical_min)
+        return min(margins) if margins else None

@@ -1,5 +1,37 @@
 # Changelog
 
+## v3.0.0 - Full Logic Audit + Feature Release
+
+**Release Date**: 2026-07-05
+
+### Bug fixes (logic audit)
+
+- **Room balancing now respects per-room targets** (`_apply_room_balancing`): balancing previously equalized raw temperatures toward the house average, so a room intentionally held at a different setpoint (per-room override) was treated as an outlier and conditioned against its own target. Balancing now works on each room's deviation from *its own* effective target (override + occupancy setback), including the coupled-room contribution.
+- **Mode resolver no longer conditions in an unservable direction** (`_determine_optimal_hvac_mode`): in fixed cool mode with the house overcooled past the deadband (or fixed heat + overheated), the resolver used to pick the active mode anyway, deepening the overshoot. It now falls through to fan_only. Dry mode is also suppressed while the house is overcooled (dry cools too).
+- **Quick-action modes now expire even when the AC is off**: expiry was only processed inside the optimization branch, which requires the AC to be running — a sleep-mode ±1°C setback could outlive its window indefinitely. Expiry is now checked at the top of every poll cycle.
+- **Overshoot fan-speed tiers made monotonic**: speeds by overshoot depth were 15% → 20% → 22% → 12% → 5% (deeper overshoot got MORE airflow in the first three bands). Now a monotonically decreasing curve: 35% tapering to 22% below tier 1, then 22% / 12% / 5%, which also removes the 50%→15% cliff at the deadband edge.
+- **Fan-speed normalization no longer amplifies mild demand**: any room barely outside the deadband (~55% speed) used to be scaled to 100%, defeating the proportional curve, predictive adjustments, and smoothing exactly where fine control matters. Normalization now only engages under strong demand (max speed ≥ 80%).
+- **`main_fan_medium_threshold` is now actually used**: the main fan picks low below the medium threshold (unless rooms are unbalanced ≥2°C variance, which holds medium for equalization airflow); previously the setting was validated in the UI but dead in the logic.
+- **Enhanced compressor protection guards cool↔heat reversals**: minimum mode duration and run-cycle checks previously only guarded compressor→fan_only exits; a direct cool↔heat flip (the harshest transition) bypassed them.
+- **Weather adjustment direction-gating uses current temperatures**: the cool/heat gate resolved from the previous cycle's mode (defaulting to "cool" on the first cycle), which discarded helpful cold-weather adjustments in heating households. Room states are now collected first and passed in.
+- **Damper curves stay season-correct during dry/fan_only interludes**: in auto mode, `_get_effective_operating_mode` fell back to "cool" while circulating, driving heating-household dampers with cooling logic. The last active cool/heat resolution is now remembered across circulation periods.
+- **Exiting boost/sleep/party no longer resets the deadband**: only vacation mode changes the deadband, but exit restored it for all modes, silently reverting manual changes made mid-mode.
+- **Turning the manager climate entity OFF turns the physical AC off** (when *Auto Control Main AC* is enabled) instead of leaving it running unmanaged.
+- **Learning data is now season-tagged**: cooling efficiency is computed from cool-mode data only (heating-season data previously blended an unrelated signal into it), and relative convergence rates prefer season-specific data.
+- **Room removal cleans up per-room config**: removing a room now also removes its control override, critical-room thresholds, occupancy sensor mapping, and schedule per-room targets (renames migrate all of these too).
+- **Fan smoothing settings are wired up**: `enable_fan_smoothing`, `smoothing_factor`, and `smoothing_threshold` were documented but hardcoded; they're now applied and exposed in Advanced Settings.
+
+### Features
+
+- **Occupancy control & presence UI**: occupancy control (per-room sensors, setback, timeout) is now configurable from the options flow — previously documented but unreachable. Includes new **presence-linked away mode**: when all configured persons/device trackers are away for a delay, vacation mode engages automatically and exits when someone returns.
+- **Predictive control & open-window detection UI**: predictive control is now configurable from the UI. New **open window/door detection** pauses conditioning (minimum airflow + notification) for rooms moving rapidly against the active mode despite full airflow, resuming automatically.
+- **Compressor protection & AC thresholds UI**: basic + enhanced compressor protection, AC turn-on/turn-off thresholds, and mode-change hysteresis are now configurable from the UI.
+- **Fan-only idle shutdown**: optional timeout that turns the AC fully off after idling in fan_only mode (default 0 = keep circulating), instead of running the blower indefinitely.
+- **Dry-mode humidity weighting**: in dry mode, rooms above the humidity target get proportionally more airflow (up to +30%), so the dampest rooms are served first.
+- **Freeze protection for critical rooms**: critical rooms accept an optional minimum temperature; dropping below it triggers alerts and automatically turns on heating (mirrors the existing over-temperature protection).
+- **Per-room schedule targets**: schedules accept optional per-room targets (e.g. `Bedroom=18, Office=21.5`) that take precedence over per-room overrides during the schedule window.
+- **Runtime & filter tracking**: new *Compressor Runtime Today* and *Filter Runtime* sensors, a configurable filter-due threshold surfaced as a sensor attribute, and a `reset_filter_timer` service for after filter changes.
+
 ## v2.16.3 - Pattern-Sweep Fixes (Same-Family Bugs from v2.16.2)
 
 **Release Date**: 2026-05-16

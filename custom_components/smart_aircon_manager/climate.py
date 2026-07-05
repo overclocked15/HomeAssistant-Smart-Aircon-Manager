@@ -184,6 +184,11 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         if hvac_mode == HVACMode.OFF:
             self._is_on = False
             self._optimizer.is_enabled = False
+            # If the manager is authorized to control the physical AC, turning
+            # the manager off turns the AC off too — otherwise the AC keeps
+            # running unmanaged in whatever state it was left in.
+            if self._optimizer.auto_control_main_ac and self._optimizer.main_climate_entity:
+                await self._optimizer.async_turn_off_main_ac()
         else:
             self._is_on = True
             self._optimizer.is_enabled = True

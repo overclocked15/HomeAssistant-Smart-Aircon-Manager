@@ -107,6 +107,10 @@ async def async_setup_entry(
     # Add quick action mode sensor
     entities.append(QuickActionModeSensor(coordinator, config_entry, optimizer))
 
+    # Add runtime tracking sensors (compressor runtime + filter maintenance)
+    entities.append(CompressorRuntimeTodaySensor(coordinator, config_entry))
+    entities.append(FilterRuntimeSensor(coordinator, config_entry, optimizer))
+
     # Add adaptive learning sensors (if learning is enabled)
     _LOGGER.debug(
         "Checking learning sensors: learning_manager=%s, enabled=%s",
@@ -608,6 +612,10 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
             getattr(self._optimizer, "main_fan_high_threshold", 3.0)
             if self._optimizer is not None else 3.0
         )
+        medium_threshold = (
+            getattr(self._optimizer, "main_fan_medium_threshold", 1.0)
+            if self._optimizer is not None else 1.0
+        )
 
         # Calculate fan speed using same logic as optimizer
         avg_temp = sum(temps) / len(temps)
@@ -622,25 +630,21 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         # Check if at target (maintaining)
         if temp_variance <= 1.0 and avg_deviation <= 0.5:
             return "low"
-        # Mode-aware fan speed logic
+        # Mode-aware fan speed logic (mirrors _determine_and_set_main_fan_speed)
         elif hvac_mode == "cool":
-            # In cool mode: high fan only if temps are ABOVE target
             if avg_temp_diff >= high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
                 return "high"
-            elif avg_temp_diff <= -1.0:
-                # Temps below target in cool mode - reduce cooling
-                return "low"
-            else:
+            elif avg_temp_diff >= medium_threshold or temp_variance >= 2.0:
                 return "medium"
+            else:
+                return "low"
         elif hvac_mode == "heat":
-            # In heat mode: high fan only if temps are BELOW target
             if avg_temp_diff <= -high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
                 return "high"
-            elif avg_temp_diff >= 1.0:
-                # Temps above target in heat mode - reduce heating
-                return "low"
-            else:
+            elif avg_temp_diff <= -medium_threshold or temp_variance >= 2.0:
                 return "medium"
+            else:
+                return "low"
         else:
             # Auto mode or unknown - use deviation magnitude
             max_deviation = max(abs(max_temp_diff), abs(min_temp_diff))
@@ -2443,4 +2447,70 @@ class CriticalRoomMarginSensor(CoordinatorEntity, SensorEntity):
             else:
                 attrs["status_text"] = f"Normal - {margin:.1f}°C margin"
 
+        return attrs
+
+
+class CompressorRuntimeTodaySensor(AirconManagerSensorBase):
+    """Compressor runtime (cool/heat/dry) accumulated today."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_native_unit_of_measurement = "min"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_compressor_runtime_today"
+        self._attr_name = "Compressor Runtime Today"
+        self._attr_icon = "mdi:timer-play-outline"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return today's compressor runtime in minutes."""
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("compressor_runtime_today_minutes")
+
+
+class FilterRuntimeSensor(AirconManagerSensorBase):
+    """Blower runtime since the filter timer was last reset."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_native_unit_of_measurement = "h"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator, config_entry: ConfigEntry, optimizer=None) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry, optimizer)
+        self._attr_unique_id = f"{config_entry.entry_id}_filter_runtime"
+        self._attr_name = "Filter Runtime"
+        self._attr_icon = "mdi:air-filter"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return blower hours since the last filter reset."""
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("filter_runtime_hours")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return filter maintenance status."""
+        from .const import (
+            CONF_FILTER_RUNTIME_THRESHOLD_HOURS,
+            DEFAULT_FILTER_RUNTIME_THRESHOLD_HOURS,
+        )
+        threshold = self._config_entry.data.get(
+            CONF_FILTER_RUNTIME_THRESHOLD_HOURS, DEFAULT_FILTER_RUNTIME_THRESHOLD_HOURS
+        )
+        hours = None
+        if self.coordinator.data:
+            hours = self.coordinator.data.get("filter_runtime_hours")
+        attrs = {
+            "threshold_hours": threshold,
+            "filter_due": bool(hours is not None and hours >= threshold),
+            "reset_service": "smart_aircon_manager.reset_filter_timer",
+        }
+        if hours is not None and threshold:
+            attrs["percent_used"] = round(min(100.0, (hours / threshold) * 100), 1)
         return attrs

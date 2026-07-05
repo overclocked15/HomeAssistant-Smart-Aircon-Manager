@@ -42,6 +42,7 @@ CONF_SCHEDULE_START_TIME = "schedule_start_time"
 CONF_SCHEDULE_END_TIME = "schedule_end_time"
 CONF_SCHEDULE_TARGET_TEMP = "schedule_target_temp"
 CONF_SCHEDULE_ENABLED = "schedule_enabled"
+CONF_SCHEDULE_ROOM_TARGETS = "schedule_room_targets"  # Optional dict: room_name -> target °C
 
 # Advanced settings - magic numbers
 CONF_MAIN_FAN_HIGH_THRESHOLD = "main_fan_high_threshold"
@@ -200,6 +201,8 @@ DEFAULT_ADAPTIVE_DEADBAND_RATE_THRESHOLD = 0.5  # °C/min — rate at which dead
 CONF_CRITICAL_ROOMS = "critical_rooms"  # Dict mapping room_name -> critical config
 CONF_CRITICAL_TEMP_MAX = "critical_temp_max"
 CONF_CRITICAL_TEMP_SAFE = "critical_temp_safe"
+CONF_CRITICAL_TEMP_MIN = "critical_temp_min"  # Optional freeze/under-temp protection
+CONF_CRITICAL_TEMP_MIN_SAFE = "critical_temp_min_safe"
 CONF_CRITICAL_WARNING_OFFSET = "critical_warning_offset"
 CONF_CRITICAL_NOTIFY_SERVICES = "critical_notify_services"
 DEFAULT_CRITICAL_WARNING_OFFSET = 2.0  # degrees C before critical to warn
@@ -210,10 +213,32 @@ CRITICAL_STATUS_WARNING = "warning"
 CRITICAL_STATUS_CRITICAL = "critical"
 CRITICAL_STATUS_RECOVERING = "recovering"
 
-# Days of week for scheduling
 # Configurable notification services for optimizer alerts
 CONF_NOTIFY_SERVICES = "notify_services"  # List of notification service targets
 DEFAULT_NOTIFY_SERVICES = ()  # Empty = persistent_notification only (default behavior)
+
+# Fan-only idle shutdown (turn AC fully off after idling in fan_only)
+CONF_FAN_ONLY_IDLE_MINUTES = "fan_only_idle_minutes"
+DEFAULT_FAN_ONLY_IDLE_MINUTES = 0  # 0 = never turn off (circulate indefinitely)
+
+# Open window/door detection
+CONF_ENABLE_OPEN_WINDOW_DETECTION = "enable_open_window_detection"
+CONF_OPEN_WINDOW_RATE_THRESHOLD = "open_window_rate_threshold"
+CONF_OPEN_WINDOW_PAUSE_MINUTES = "open_window_pause_minutes"
+DEFAULT_ENABLE_OPEN_WINDOW_DETECTION = False  # Opt-in
+DEFAULT_OPEN_WINDOW_RATE_THRESHOLD = 0.3  # °C/min against conditioning direction
+DEFAULT_OPEN_WINDOW_PAUSE_MINUTES = 15  # minutes to pause a runaway room
+
+# Presence-linked away mode (auto vacation)
+CONF_ENABLE_AWAY_MODE = "enable_away_mode"
+CONF_AWAY_MODE_ENTITIES = "away_mode_entities"  # person/device_tracker entities
+CONF_AWAY_MODE_DELAY_MINUTES = "away_mode_delay_minutes"
+DEFAULT_ENABLE_AWAY_MODE = False  # Opt-in
+DEFAULT_AWAY_MODE_DELAY_MINUTES = 30  # everyone away this long -> vacation mode
+
+# Filter maintenance reminder (blower runtime hours before "filter due")
+CONF_FILTER_RUNTIME_THRESHOLD_HOURS = "filter_runtime_threshold_hours"
+DEFAULT_FILTER_RUNTIME_THRESHOLD_HOURS = 300
 
 SCHEDULE_DAYS_OPTIONS = [
     "monday",

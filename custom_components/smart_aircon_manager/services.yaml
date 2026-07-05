@@ -219,3 +219,15 @@ party_mode:
           max: 360
           step: 30
           unit_of_measurement: "min"
+
+reset_filter_timer:
+  name: Reset Filter Timer
+  description: Reset the accumulated blower runtime after changing the air filter
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID (omit to reset all entries)
+      required: false
+      example: "abc123def456"
+      selector:
+        text:

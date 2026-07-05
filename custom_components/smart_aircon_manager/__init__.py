@@ -62,6 +62,15 @@ from .const import (
     DEFAULT_ENABLE_ADAPTIVE_DEADBAND,
     DEFAULT_ADAPTIVE_DEADBAND_MAX_SCALE,
     DEFAULT_ADAPTIVE_DEADBAND_RATE_THRESHOLD,
+    DEFAULT_ENABLE_FAN_SMOOTHING,
+    DEFAULT_SMOOTHING_FACTOR,
+    DEFAULT_SMOOTHING_THRESHOLD,
+    DEFAULT_FAN_ONLY_IDLE_MINUTES,
+    DEFAULT_ENABLE_OPEN_WINDOW_DETECTION,
+    DEFAULT_OPEN_WINDOW_RATE_THRESHOLD,
+    DEFAULT_OPEN_WINDOW_PAUSE_MINUTES,
+    DEFAULT_ENABLE_AWAY_MODE,
+    DEFAULT_AWAY_MODE_DELAY_MINUTES,
 )
 from .optimizer import AirconOptimizer
 from .critical_monitor import CriticalRoomMonitor
@@ -223,6 +232,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         enable_adaptive_deadband=entry.data.get("enable_adaptive_deadband", DEFAULT_ENABLE_ADAPTIVE_DEADBAND),
         adaptive_deadband_max_scale=entry.data.get("adaptive_deadband_max_scale", DEFAULT_ADAPTIVE_DEADBAND_MAX_SCALE),
         adaptive_deadband_rate_threshold=entry.data.get("adaptive_deadband_rate_threshold", DEFAULT_ADAPTIVE_DEADBAND_RATE_THRESHOLD),
+        enable_fan_smoothing=entry.data.get("enable_fan_smoothing", DEFAULT_ENABLE_FAN_SMOOTHING),
+        smoothing_factor=entry.data.get("smoothing_factor", DEFAULT_SMOOTHING_FACTOR),
+        smoothing_threshold=entry.data.get("smoothing_threshold", DEFAULT_SMOOTHING_THRESHOLD),
+        fan_only_idle_minutes=entry.data.get("fan_only_idle_minutes", DEFAULT_FAN_ONLY_IDLE_MINUTES),
+        enable_open_window_detection=entry.data.get("enable_open_window_detection", DEFAULT_ENABLE_OPEN_WINDOW_DETECTION),
+        open_window_rate_threshold=entry.data.get("open_window_rate_threshold", DEFAULT_OPEN_WINDOW_RATE_THRESHOLD),
+        open_window_pause_minutes=entry.data.get("open_window_pause_minutes", DEFAULT_OPEN_WINDOW_PAUSE_MINUTES),
+        enable_away_mode=entry.data.get("enable_away_mode", DEFAULT_ENABLE_AWAY_MODE),
+        away_mode_entities=entry.data.get("away_mode_entities", []),
+        away_mode_delay_minutes=entry.data.get("away_mode_delay_minutes", DEFAULT_AWAY_MODE_DELAY_MINUTES),
     )
 
     # Get update interval from config
@@ -539,6 +558,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(DOMAIN, "party_mode", async_party_mode_service, SERVICE_SCHEMA_TIMED_MODE)
         _LOGGER.debug("Registered party_mode service")
 
+        # Register reset_filter_timer service
+        async def async_reset_filter_timer_service(call):
+            """Handle reset_filter_timer service call (after a filter change)."""
+            config_entry_id = call.data.get("config_entry_id")
+
+            if config_entry_id:
+                if config_entry_id in hass.data[DOMAIN]:
+                    hass.data[DOMAIN][config_entry_id]["optimizer"].reset_filter_timer()
+                else:
+                    _LOGGER.error("Config entry %s not found", config_entry_id)
+            else:
+                for entry_id in list(hass.data[DOMAIN]):
+                    hass.data[DOMAIN][entry_id]["optimizer"].reset_filter_timer()
+
+        hass.services.async_register(DOMAIN, "reset_filter_timer", async_reset_filter_timer_service, SERVICE_SCHEMA_ENTRY_ID)
+        _LOGGER.debug("Registered reset_filter_timer service")
+
     return True
 
 
@@ -577,6 +613,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.services.async_remove(DOMAIN, "boost_mode")
             hass.services.async_remove(DOMAIN, "sleep_mode")
             hass.services.async_remove(DOMAIN, "party_mode")
+            hass.services.async_remove(DOMAIN, "reset_filter_timer")
             _LOGGER.debug("Unregistered all services")
 
     return unload_ok

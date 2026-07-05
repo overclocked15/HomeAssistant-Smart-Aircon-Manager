@@ -79,8 +79,11 @@ Each schedule contains:
 | `schedule_end_time` | time | End time (HH:MM, supports cross-midnight) |
 | `schedule_target_temp` | float | Target temperature during this schedule |
 | `schedule_enabled` | bool | Enable/disable this schedule |
+| `schedule_room_targets` | dict | Optional per-room targets during this schedule (entered as `Bedroom=18, Office=21.5`) |
 
 **Priority**: If multiple schedules overlap, specific day-of-week schedules take priority over "weekdays"/"weekends"/"all".
+
+**Per-room target precedence**: schedule per-room target > per-room override > schedule/global target. Weather adjustment applies on top of all of them.
 
 ## Room Balancing
 
@@ -135,6 +138,18 @@ Prevents rapid switching between cool/heat/dry/fan_only modes.
 
 **Behavior**: Vacant rooms get a setback (higher target in cool mode, lower in heat mode), reducing energy usage while maintaining occupied room comfort.
 
+Configured under **Options > Occupancy & Presence**.
+
+## Away Mode (Presence-Linked Vacation)
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_away_mode` | bool | `false` | Auto-enter vacation mode when everyone is away |
+| `away_mode_entities` | list | `[]` | person/device_tracker entities to watch |
+| `away_mode_delay_minutes` | float | `30` | How long everyone must be away before vacation mode |
+
+Vacation mode is entered automatically once all presence entities have been away for the delay, and exits as soon as anyone returns. A manually-entered quick action mode is never overridden.
+
 ## Predictive Control
 
 | Option | Type | Default | Description |
@@ -144,6 +159,30 @@ Prevents rapid switching between cool/heat/dry/fan_only modes.
 | `predictive_boost_factor` | float | `0.3` | Boost/reduction factor (0.0-1.0) |
 
 **How it works**: Monitors the rate of temperature change and proactively adjusts fan speeds before the room actually reaches the threshold. Uses exponential decay dampening for accuracy.
+
+## Open Window Detection
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_open_window_detection` | bool | `false` | Pause conditioning for rooms losing air to the outdoors |
+| `open_window_rate_threshold` | float | `0.3` | °C/min against the active mode that triggers detection |
+| `open_window_pause_minutes` | float | `15` | How long to park the room at minimum airflow |
+
+A room being actively conditioned (damper above baseline) that still moves rapidly against the mode (warming fast while cooling, or cooling fast while heating) is likely leaking outdoor air. It is parked at minimum airflow for the pause period with a notification, then control resumes (and re-triggers if still running away).
+
+## Fan-Only Idle Shutdown
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `fan_only_idle_minutes` | float | `0` | Turn the AC fully off after idling in fan_only this long (0 = keep circulating) |
+
+## Runtime & Filter Tracking
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `filter_runtime_threshold_hours` | float | `300` | Blower hours before the Filter Runtime sensor reports `filter_due: true` |
+
+The *Compressor Runtime Today* sensor resets daily; the *Filter Runtime* sensor accumulates blower hours until the `smart_aircon_manager.reset_filter_timer` service is called after a filter change.
 
 ## Compressor Protection
 
@@ -198,15 +237,19 @@ Prevents rapid switching between cool/heat/dry/fan_only modes.
 
 ## Critical Room Protection
 
-Configure rooms that must never exceed a temperature threshold (e.g., server rooms, wine cellars):
+Configure rooms that must never exceed a temperature threshold (e.g., server rooms, wine cellars), with optional freeze protection (e.g., pipes, plants, pets):
 
 | Option | Type | Description |
 |--------|------|-------------|
 | `critical_rooms` | dict | Map of room_name to critical config |
 | `critical_temp_max` | float | Maximum allowed temperature |
 | `critical_temp_safe` | float | Temperature to recover to |
-| `critical_warning_offset` | float | °C before critical to send warning (default: 2.0) |
+| `critical_temp_min` | float | Optional minimum temperature (freeze protection) — going below turns on HEAT |
+| `critical_temp_min_safe` | float | Temperature to recover to after an under-temp event |
+| `critical_warning_offset` | float | °C before critical to send warning (default: 2.0, applies to both bounds) |
 | `critical_notify_services` | list | Notification targets for critical alerts |
+
+Over-temperature events automatically turn the AC on in COOL; under-temperature events turn it on in HEAT.
 
 ## Room Overrides
 

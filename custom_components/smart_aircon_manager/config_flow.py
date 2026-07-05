@@ -81,9 +81,67 @@ from .const import (
     CONF_CRITICAL_ROOMS,
     CONF_CRITICAL_TEMP_MAX,
     CONF_CRITICAL_TEMP_SAFE,
+    CONF_CRITICAL_TEMP_MIN,
+    CONF_CRITICAL_TEMP_MIN_SAFE,
     CONF_CRITICAL_WARNING_OFFSET,
     CONF_CRITICAL_NOTIFY_SERVICES,
     DEFAULT_CRITICAL_WARNING_OFFSET,
+    CONF_ENABLE_OCCUPANCY_CONTROL,
+    CONF_OCCUPANCY_SENSORS,
+    CONF_VACANT_ROOM_SETBACK,
+    CONF_VACANCY_TIMEOUT,
+    DEFAULT_ENABLE_OCCUPANCY_CONTROL,
+    DEFAULT_VACANT_ROOM_SETBACK,
+    DEFAULT_VACANCY_TIMEOUT,
+    CONF_ENABLE_AWAY_MODE,
+    CONF_AWAY_MODE_ENTITIES,
+    CONF_AWAY_MODE_DELAY_MINUTES,
+    DEFAULT_ENABLE_AWAY_MODE,
+    DEFAULT_AWAY_MODE_DELAY_MINUTES,
+    CONF_ENABLE_PREDICTIVE_CONTROL,
+    CONF_PREDICTIVE_LOOKAHEAD_MINUTES,
+    CONF_PREDICTIVE_BOOST_FACTOR,
+    DEFAULT_ENABLE_PREDICTIVE_CONTROL,
+    DEFAULT_PREDICTIVE_LOOKAHEAD_MINUTES,
+    DEFAULT_PREDICTIVE_BOOST_FACTOR,
+    CONF_ENABLE_OPEN_WINDOW_DETECTION,
+    CONF_OPEN_WINDOW_RATE_THRESHOLD,
+    CONF_OPEN_WINDOW_PAUSE_MINUTES,
+    DEFAULT_ENABLE_OPEN_WINDOW_DETECTION,
+    DEFAULT_OPEN_WINDOW_RATE_THRESHOLD,
+    DEFAULT_OPEN_WINDOW_PAUSE_MINUTES,
+    CONF_ENABLE_COMPRESSOR_PROTECTION,
+    CONF_COMPRESSOR_MIN_ON_TIME,
+    CONF_COMPRESSOR_MIN_OFF_TIME,
+    DEFAULT_ENABLE_COMPRESSOR_PROTECTION,
+    DEFAULT_COMPRESSOR_MIN_ON_TIME,
+    DEFAULT_COMPRESSOR_MIN_OFF_TIME,
+    CONF_ENABLE_ENHANCED_COMPRESSOR_PROTECTION,
+    CONF_COMPRESSOR_UNDERCOOL_MARGIN,
+    CONF_COMPRESSOR_OVERHEAT_MARGIN,
+    CONF_MIN_MODE_DURATION,
+    CONF_MIN_COMPRESSOR_RUN_CYCLES,
+    DEFAULT_ENABLE_ENHANCED_COMPRESSOR_PROTECTION,
+    DEFAULT_COMPRESSOR_UNDERCOOL_MARGIN,
+    DEFAULT_COMPRESSOR_OVERHEAT_MARGIN,
+    DEFAULT_MIN_MODE_DURATION,
+    DEFAULT_MIN_COMPRESSOR_RUN_CYCLES,
+    CONF_AC_TURN_ON_THRESHOLD,
+    CONF_AC_TURN_OFF_THRESHOLD,
+    DEFAULT_AC_TURN_ON_THRESHOLD,
+    DEFAULT_AC_TURN_OFF_THRESHOLD,
+    CONF_MODE_CHANGE_HYSTERESIS_TIME,
+    CONF_MODE_CHANGE_HYSTERESIS_TEMP,
+    DEFAULT_MODE_CHANGE_HYSTERESIS_TIME,
+    DEFAULT_MODE_CHANGE_HYSTERESIS_TEMP,
+    CONF_FAN_ONLY_IDLE_MINUTES,
+    DEFAULT_FAN_ONLY_IDLE_MINUTES,
+    CONF_NOTIFY_SERVICES,
+    CONF_ENABLE_FAN_SMOOTHING,
+    CONF_SMOOTHING_THRESHOLD,
+    DEFAULT_ENABLE_FAN_SMOOTHING,
+    DEFAULT_SMOOTHING_THRESHOLD,
+    CONF_SCHEDULE_ROOM_TARGETS,
 )
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
@@ -297,7 +355,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options - show menu."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["settings", "manage_rooms", "room_overrides", "weather", "humidity", "schedules", "learning", "balancing", "critical_rooms", "advanced"],
+            menu_options=[
+                "settings", "manage_rooms", "room_overrides", "weather", "humidity",
+                "schedules", "occupancy", "predictive", "protection", "learning",
+                "balancing", "critical_rooms", "advanced",
+            ],
         )
 
     async def async_step_settings(
@@ -537,8 +599,33 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 if room[CONF_ROOM_NAME] != room_to_remove
             ]
 
-            # Update the config entry
+            # Update the config entry, cleaning up per-room config keyed by
+            # room name so a future room reusing the name doesn't silently
+            # inherit stale overrides / critical thresholds / sensors.
             new_data = {**self.config_entry.data, CONF_ROOM_CONFIGS: updated_rooms}
+
+            overrides = dict(new_data.get(CONF_ROOM_OVERRIDES, {}))
+            if overrides.pop(f"{room_to_remove}_enabled", None) is not None:
+                new_data[CONF_ROOM_OVERRIDES] = overrides
+
+            critical = dict(new_data.get(CONF_CRITICAL_ROOMS, {}))
+            if critical.pop(room_to_remove, None) is not None:
+                new_data[CONF_CRITICAL_ROOMS] = critical
+
+            occupancy = dict(new_data.get(CONF_OCCUPANCY_SENSORS, {}))
+            if occupancy.pop(room_to_remove, None) is not None:
+                new_data[CONF_OCCUPANCY_SENSORS] = occupancy
+
+            # Drop the room from any schedule's per-room targets
+            schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
+            for schedule in schedules:
+                targets = schedule.get(CONF_SCHEDULE_ROOM_TARGETS)
+                if targets and room_to_remove in targets:
+                    targets = dict(targets)
+                    targets.pop(room_to_remove)
+                    schedule[CONF_SCHEDULE_ROOM_TARGETS] = targets
+            new_data[CONF_SCHEDULES] = schedules
+
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
@@ -681,6 +768,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     if room_to_edit_name in critical:
                         critical[new_name] = critical.pop(room_to_edit_name)
                         new_data[CONF_CRITICAL_ROOMS] = critical
+
+                    # Migrate occupancy sensor mapping (keyed by room name)
+                    occupancy = dict(new_data.get(CONF_OCCUPANCY_SENSORS, {}))
+                    if room_to_edit_name in occupancy:
+                        occupancy[new_name] = occupancy.pop(room_to_edit_name)
+                        new_data[CONF_OCCUPANCY_SENSORS] = occupancy
+
+                    # Migrate per-room schedule targets (keyed by room name)
+                    schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
+                    for schedule in schedules:
+                        targets = schedule.get(CONF_SCHEDULE_ROOM_TARGETS)
+                        if targets and room_to_edit_name in targets:
+                            targets = dict(targets)
+                            targets[new_name] = targets.pop(room_to_edit_name)
+                            schedule[CONF_SCHEDULE_ROOM_TARGETS] = targets
+                    new_data[CONF_SCHEDULES] = schedules
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
@@ -961,6 +1064,36 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 if start_time == end_time:
                     errors["base"] = "schedule_start_equals_end"
 
+            # Validate optional per-room targets ("Bedroom=18, Office=21.5")
+            room_targets = {}
+            if not errors:
+                raw_targets = (user_input.get(CONF_SCHEDULE_ROOM_TARGETS) or "").strip()
+                if raw_targets:
+                    known_rooms = {
+                        r[CONF_ROOM_NAME] for r in self.config_entry.data.get(CONF_ROOM_CONFIGS, [])
+                    }
+                    for part in raw_targets.split(","):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        if "=" not in part:
+                            errors["base"] = "invalid_room_targets_format"
+                            break
+                        name, _, value = part.partition("=")
+                        name = name.strip()
+                        if name not in known_rooms:
+                            errors["base"] = "unknown_room_in_targets"
+                            break
+                        try:
+                            temp = float(value.strip())
+                        except ValueError:
+                            errors["base"] = "invalid_room_targets_format"
+                            break
+                        if not (10.0 <= temp <= 35.0):
+                            errors["base"] = "room_target_out_of_range"
+                            break
+                        room_targets[name] = temp
+
             if not errors:
                 # Add new schedule
                 new_schedule = {
@@ -971,6 +1104,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_SCHEDULE_TARGET_TEMP: user_input[CONF_SCHEDULE_TARGET_TEMP],
                     CONF_SCHEDULE_ENABLED: user_input.get(CONF_SCHEDULE_ENABLED, True),
                 }
+                if room_targets:
+                    new_schedule[CONF_SCHEDULE_ROOM_TARGETS] = room_targets
                 current_schedules.append(new_schedule)
 
                 # Update config
@@ -1001,6 +1136,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         )
                     ),
                     vol.Optional(CONF_SCHEDULE_ENABLED, default=True): cv.boolean,
+                    # Optional per-room targets, e.g. "Bedroom=18, Office=21.5"
+                    vol.Optional(CONF_SCHEDULE_ROOM_TARGETS): cv.string,
                 }
             ),
             errors=errors if errors else None,
@@ -1051,6 +1188,317 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 }
             ),
+        )
+
+    async def async_step_occupancy(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure occupancy control and presence-linked away mode."""
+        rooms = self.config_entry.data.get(CONF_ROOM_CONFIGS, [])
+        current_sensors = self.config_entry.data.get(CONF_OCCUPANCY_SENSORS, {})
+
+        if user_input is not None:
+            # Rebuild the room -> sensor map from the per-room fields. A field
+            # left empty means "no occupancy sensor for this room" (cleared).
+            occupancy_sensors = {}
+            for room in rooms:
+                room_name = room[CONF_ROOM_NAME]
+                sensor = user_input.get(f"occupancy_sensor::{room_name}")
+                if sensor:
+                    occupancy_sensors[room_name] = sensor
+
+            new_data = {
+                **self.config_entry.data,
+                CONF_ENABLE_OCCUPANCY_CONTROL: user_input.get(
+                    CONF_ENABLE_OCCUPANCY_CONTROL, DEFAULT_ENABLE_OCCUPANCY_CONTROL
+                ),
+                CONF_OCCUPANCY_SENSORS: occupancy_sensors,
+                CONF_VACANT_ROOM_SETBACK: user_input.get(
+                    CONF_VACANT_ROOM_SETBACK, DEFAULT_VACANT_ROOM_SETBACK
+                ),
+                CONF_VACANCY_TIMEOUT: user_input.get(
+                    CONF_VACANCY_TIMEOUT, DEFAULT_VACANCY_TIMEOUT
+                ),
+                CONF_ENABLE_AWAY_MODE: user_input.get(
+                    CONF_ENABLE_AWAY_MODE, DEFAULT_ENABLE_AWAY_MODE
+                ),
+                CONF_AWAY_MODE_ENTITIES: user_input.get(CONF_AWAY_MODE_ENTITIES, []),
+                CONF_AWAY_MODE_DELAY_MINUTES: user_input.get(
+                    CONF_AWAY_MODE_DELAY_MINUTES, DEFAULT_AWAY_MODE_DELAY_MINUTES
+                ),
+            }
+            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        schema_dict = {
+            vol.Optional(
+                CONF_ENABLE_OCCUPANCY_CONTROL,
+                default=self.config_entry.data.get(
+                    CONF_ENABLE_OCCUPANCY_CONTROL, DEFAULT_ENABLE_OCCUPANCY_CONTROL
+                ),
+            ): cv.boolean,
+            vol.Optional(
+                CONF_VACANT_ROOM_SETBACK,
+                default=self.config_entry.data.get(
+                    CONF_VACANT_ROOM_SETBACK, DEFAULT_VACANT_ROOM_SETBACK
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0.5, max=5.0, step=0.5, unit_of_measurement="°C",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_VACANCY_TIMEOUT,
+                default=self.config_entry.data.get(
+                    CONF_VACANCY_TIMEOUT, DEFAULT_VACANCY_TIMEOUT
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=60, max=3600, step=60, unit_of_measurement="seconds",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+        }
+
+        # One optional occupancy sensor per configured room
+        for room in rooms:
+            room_name = room[CONF_ROOM_NAME]
+            key = f"occupancy_sensor::{room_name}"
+            suggested = (
+                {"description": {"suggested_value": current_sensors[room_name]}}
+                if room_name in current_sensors else {}
+            )
+            schema_dict[vol.Optional(key, **suggested)] = selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain=["binary_sensor", "input_boolean", "device_tracker", "person"]
+                )
+            )
+
+        # Presence-linked away mode
+        schema_dict[vol.Optional(
+            CONF_ENABLE_AWAY_MODE,
+            default=self.config_entry.data.get(CONF_ENABLE_AWAY_MODE, DEFAULT_ENABLE_AWAY_MODE),
+        )] = cv.boolean
+        away_entities = self.config_entry.data.get(CONF_AWAY_MODE_ENTITIES, [])
+        schema_dict[vol.Optional(
+            CONF_AWAY_MODE_ENTITIES,
+            **({"description": {"suggested_value": away_entities}} if away_entities else {}),
+        )] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain=["person", "device_tracker"], multiple=True)
+        )
+        schema_dict[vol.Optional(
+            CONF_AWAY_MODE_DELAY_MINUTES,
+            default=self.config_entry.data.get(
+                CONF_AWAY_MODE_DELAY_MINUTES, DEFAULT_AWAY_MODE_DELAY_MINUTES
+            ),
+        )] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=5, max=240, step=5, unit_of_measurement="minutes",
+                mode=selector.NumberSelectorMode.BOX,
+            )
+        )
+
+        return self.async_show_form(
+            step_id="occupancy",
+            data_schema=vol.Schema(schema_dict),
+        )
+
+    async def async_step_predictive(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure predictive control and open-window detection."""
+        if user_input is not None:
+            new_data = {**self.config_entry.data, **user_input}
+            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        data = self.config_entry.data
+        return self.async_show_form(
+            step_id="predictive",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_ENABLE_PREDICTIVE_CONTROL,
+                        default=data.get(CONF_ENABLE_PREDICTIVE_CONTROL, DEFAULT_ENABLE_PREDICTIVE_CONTROL),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_PREDICTIVE_LOOKAHEAD_MINUTES,
+                        default=data.get(CONF_PREDICTIVE_LOOKAHEAD_MINUTES, DEFAULT_PREDICTIVE_LOOKAHEAD_MINUTES),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1, max=30, step=1, unit_of_measurement="minutes",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_PREDICTIVE_BOOST_FACTOR,
+                        default=data.get(CONF_PREDICTIVE_BOOST_FACTOR, DEFAULT_PREDICTIVE_BOOST_FACTOR),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0, max=1.0, step=0.05, mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ENABLE_OPEN_WINDOW_DETECTION,
+                        default=data.get(CONF_ENABLE_OPEN_WINDOW_DETECTION, DEFAULT_ENABLE_OPEN_WINDOW_DETECTION),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_OPEN_WINDOW_RATE_THRESHOLD,
+                        default=data.get(CONF_OPEN_WINDOW_RATE_THRESHOLD, DEFAULT_OPEN_WINDOW_RATE_THRESHOLD),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.1, max=2.0, step=0.05, unit_of_measurement="°C/min",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_OPEN_WINDOW_PAUSE_MINUTES,
+                        default=data.get(CONF_OPEN_WINDOW_PAUSE_MINUTES, DEFAULT_OPEN_WINDOW_PAUSE_MINUTES),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=5, max=120, step=5, unit_of_measurement="minutes",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_protection(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure compressor protection, AC thresholds, and idle shutdown."""
+        errors = {}
+        if user_input is not None:
+            turn_on = user_input.get(CONF_AC_TURN_ON_THRESHOLD)
+            turn_off = user_input.get(CONF_AC_TURN_OFF_THRESHOLD)
+            if turn_on is not None and turn_off is not None and turn_off < turn_on:
+                # Turn-off overshoot smaller than turn-on demand causes rapid cycling
+                errors["base"] = "invalid_ac_threshold_ordering"
+
+            if not errors:
+                new_data = {**self.config_entry.data, **user_input}
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                return self.async_create_entry(title="", data={})
+
+        data = self.config_entry.data
+        return self.async_show_form(
+            step_id="protection",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_ENABLE_COMPRESSOR_PROTECTION,
+                        default=data.get(CONF_ENABLE_COMPRESSOR_PROTECTION, DEFAULT_ENABLE_COMPRESSOR_PROTECTION),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_COMPRESSOR_MIN_ON_TIME,
+                        default=data.get(CONF_COMPRESSOR_MIN_ON_TIME, DEFAULT_COMPRESSOR_MIN_ON_TIME),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=60, max=1800, step=30, unit_of_measurement="seconds",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_COMPRESSOR_MIN_OFF_TIME,
+                        default=data.get(CONF_COMPRESSOR_MIN_OFF_TIME, DEFAULT_COMPRESSOR_MIN_OFF_TIME),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=60, max=1800, step=30, unit_of_measurement="seconds",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_AC_TURN_ON_THRESHOLD,
+                        default=data.get(CONF_AC_TURN_ON_THRESHOLD, DEFAULT_AC_TURN_ON_THRESHOLD),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.5, max=5.0, step=0.5, unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_AC_TURN_OFF_THRESHOLD,
+                        default=data.get(CONF_AC_TURN_OFF_THRESHOLD, DEFAULT_AC_TURN_OFF_THRESHOLD),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.5, max=5.0, step=0.5, unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_MODE_CHANGE_HYSTERESIS_TIME,
+                        default=data.get(CONF_MODE_CHANGE_HYSTERESIS_TIME, DEFAULT_MODE_CHANGE_HYSTERESIS_TIME),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=1800, step=30, unit_of_measurement="seconds",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_MODE_CHANGE_HYSTERESIS_TEMP,
+                        default=data.get(CONF_MODE_CHANGE_HYSTERESIS_TEMP, DEFAULT_MODE_CHANGE_HYSTERESIS_TEMP),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0, max=2.0, step=0.1, unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_FAN_ONLY_IDLE_MINUTES,
+                        default=data.get(CONF_FAN_ONLY_IDLE_MINUTES, DEFAULT_FAN_ONLY_IDLE_MINUTES),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=240, step=5, unit_of_measurement="minutes",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ENABLE_ENHANCED_COMPRESSOR_PROTECTION,
+                        default=data.get(CONF_ENABLE_ENHANCED_COMPRESSOR_PROTECTION, DEFAULT_ENABLE_ENHANCED_COMPRESSOR_PROTECTION),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_COMPRESSOR_UNDERCOOL_MARGIN,
+                        default=data.get(CONF_COMPRESSOR_UNDERCOOL_MARGIN, DEFAULT_COMPRESSOR_UNDERCOOL_MARGIN),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0, max=3.0, step=0.1, unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_COMPRESSOR_OVERHEAT_MARGIN,
+                        default=data.get(CONF_COMPRESSOR_OVERHEAT_MARGIN, DEFAULT_COMPRESSOR_OVERHEAT_MARGIN),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0, max=3.0, step=0.1, unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_MIN_MODE_DURATION,
+                        default=data.get(CONF_MIN_MODE_DURATION, DEFAULT_MIN_MODE_DURATION),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=3600, step=60, unit_of_measurement="seconds",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_MIN_COMPRESSOR_RUN_CYCLES,
+                        default=data.get(CONF_MIN_COMPRESSOR_RUN_CYCLES, DEFAULT_MIN_COMPRESSOR_RUN_CYCLES),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=20, step=1, mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                }
+            ),
+            errors=errors if errors else None,
         )
 
     async def async_step_learning(
@@ -1295,10 +1743,18 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             else:
                 notify_services = []
 
-            # Validate temp_safe < temp_max
+            # Validate temp_safe < temp_max, and min-side thresholds when given
             temp_max = user_input[CONF_CRITICAL_TEMP_MAX]
             temp_safe = user_input[CONF_CRITICAL_TEMP_SAFE]
-            if temp_safe >= temp_max:
+            temp_min = user_input.get(CONF_CRITICAL_TEMP_MIN)
+            temp_min_safe = user_input.get(CONF_CRITICAL_TEMP_MIN_SAFE)
+            min_side_invalid = (
+                temp_min is not None and (
+                    temp_min >= temp_max
+                    or (temp_min_safe is not None and temp_min_safe <= temp_min)
+                )
+            )
+            if temp_safe >= temp_max or min_side_invalid:
                 return self.async_show_form(
                     step_id="configure_critical_room",
                     data_schema=vol.Schema(
@@ -1335,13 +1791,33 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                                 )
                             ),
                             vol.Optional(
+                                CONF_CRITICAL_TEMP_MIN,
+                                **({"description": {"suggested_value": temp_min}} if temp_min is not None else {}),
+                            ): selector.NumberSelector(
+                                selector.NumberSelectorConfig(
+                                    min=0, max=20, step=0.5,
+                                    unit_of_measurement="°C",
+                                    mode=selector.NumberSelectorMode.BOX,
+                                )
+                            ),
+                            vol.Optional(
+                                CONF_CRITICAL_TEMP_MIN_SAFE,
+                                **({"description": {"suggested_value": temp_min_safe}} if temp_min_safe is not None else {}),
+                            ): selector.NumberSelector(
+                                selector.NumberSelectorConfig(
+                                    min=2, max=25, step=0.5,
+                                    unit_of_measurement="°C",
+                                    mode=selector.NumberSelectorMode.BOX,
+                                )
+                            ),
+                            vol.Optional(
                                 CONF_CRITICAL_NOTIFY_SERVICES,
                                 default=user_input.get(CONF_CRITICAL_NOTIFY_SERVICES, ""),
                             ): cv.string,
                         }
                     ),
                     description_placeholders={"room_name": room_name},
-                    errors={"base": "critical_safe_above_max"},
+                    errors={"base": "critical_min_invalid" if min_side_invalid else "critical_safe_above_max"},
                 )
 
             # Save the critical room configuration
@@ -1351,6 +1827,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_CRITICAL_WARNING_OFFSET: user_input[CONF_CRITICAL_WARNING_OFFSET],
                 CONF_CRITICAL_NOTIFY_SERVICES: notify_services,
             }
+            # Optional freeze protection (under-temperature) bounds
+            if temp_min is not None:
+                critical_rooms[room_name][CONF_CRITICAL_TEMP_MIN] = temp_min
+                if temp_min_safe is not None:
+                    critical_rooms[room_name][CONF_CRITICAL_TEMP_MIN_SAFE] = temp_min_safe
 
             new_data = {**self.config_entry.data, CONF_CRITICAL_ROOMS: critical_rooms}
             self.hass.config_entries.async_update_entry(
@@ -1406,6 +1887,32 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         )
                     ),
                     vol.Optional(
+                        CONF_CRITICAL_TEMP_MIN,
+                        **({"description": {"suggested_value": existing_config[CONF_CRITICAL_TEMP_MIN]}}
+                           if CONF_CRITICAL_TEMP_MIN in existing_config else {}),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=20,
+                            step=0.5,
+                            unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_CRITICAL_TEMP_MIN_SAFE,
+                        **({"description": {"suggested_value": existing_config[CONF_CRITICAL_TEMP_MIN_SAFE]}}
+                           if CONF_CRITICAL_TEMP_MIN_SAFE in existing_config else {}),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=2,
+                            max=25,
+                            step=0.5,
+                            unit_of_measurement="°C",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
                         CONF_CRITICAL_NOTIFY_SERVICES,
                         default=", ".join(existing_config.get(CONF_CRITICAL_NOTIFY_SERVICES, [])),
                     ): cv.string,
@@ -1443,6 +1950,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     errors["base"] = "invalid_fan_threshold_ordering"
 
             if not errors:
+                # Convert the CSV notify-services field into the stored list
+                user_input = dict(user_input)
+                notify_csv = user_input.pop("notify_services_csv", None)
+                if notify_csv is not None:
+                    user_input[CONF_NOTIFY_SERVICES] = [
+                        s.strip() for s in notify_csv.split(",") if s.strip()
+                    ]
+
                 # Merge with existing data and update the config entry
                 new_data = {**self.config_entry.data, **user_input}
                 self.hass.config_entries.async_update_entry(
@@ -1594,6 +2109,43 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
+                    vol.Optional(
+                        CONF_ENABLE_FAN_SMOOTHING,
+                        default=self.config_entry.data.get(
+                            CONF_ENABLE_FAN_SMOOTHING, DEFAULT_ENABLE_FAN_SMOOTHING
+                        ),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_SMOOTHING_FACTOR,
+                        default=self.config_entry.data.get(
+                            CONF_SMOOTHING_FACTOR, DEFAULT_SMOOTHING_FACTOR
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.1,
+                            max=1.0,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_SMOOTHING_THRESHOLD,
+                        default=self.config_entry.data.get(
+                            CONF_SMOOTHING_THRESHOLD, DEFAULT_SMOOTHING_THRESHOLD
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1,
+                            max=30,
+                            step=1,
+                            unit_of_measurement="%",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        "notify_services_csv",
+                        default=", ".join(self.config_entry.data.get(CONF_NOTIFY_SERVICES, []) or []),
+                    ): cv.string,
                 }
             ),
         )

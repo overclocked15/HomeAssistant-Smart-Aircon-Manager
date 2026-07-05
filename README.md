@@ -16,8 +16,10 @@ Uses smart logic-based algorithms to achieve precise temperature control across 
 ### Comfort
 - **Manual Override**: Toggle switch to temporarily disable automation
 - **Quick Actions**: One-tap vacation, boost, sleep, and party modes
-- **Humidity Control**: Automatic mode switching (cool/heat/dry/fan_only) based on humidity (dry mode is suppressed in heat mode to avoid fighting the heat loop)
+- **Humidity Control**: Automatic mode switching (cool/heat/dry/fan_only) based on humidity (dry mode is suppressed in heat mode to avoid fighting the heat loop); dry mode weights airflow toward the dampest rooms
 - **Occupancy Control**: Temperature setbacks for vacant rooms
+- **Away Mode**: Auto vacation mode when everyone leaves (person/device tracker based)
+- **Per-Room Schedule Targets**: Schedules can set different targets per room (e.g. bedrooms cooler at night)
 - **Comfort Index**: Heat index combining temperature and humidity
 
 ### Smart
@@ -28,9 +30,11 @@ Uses smart logic-based algorithms to achieve precise temperature control across 
 - **Time-Based Scheduling**: Multiple schedules with day-of-week support
 
 ### Protection
-- **Compressor Protection**: Prevents rapid AC cycling (basic + enhanced)
-- **Critical Room Monitoring**: Emergency alerts and auto-response for rooms with temperature limits
+- **Compressor Protection**: Prevents rapid AC cycling (basic + enhanced, including cool↔heat reversal guards)
+- **Critical Room Monitoring**: Emergency alerts and auto-response for rooms with temperature limits — over-temperature (cooling response) and optional freeze protection (heating response)
+- **Open Window Detection**: Pauses conditioning in rooms losing air to the outdoors
 - **Fan Speed Smoothing**: Prevents oscillation with configurable smoothing
+- **Runtime & Filter Tracking**: Compressor runtime and filter-maintenance sensors
 
 ## How It Works
 
@@ -99,6 +103,7 @@ Uses smart logic-based algorithms to achieve precise temperature control across 
 | `disable_learning` | Stop adaptive learning |
 | `analyze_learning` | Force learning analysis |
 | `reset_learning` | Clear learned data |
+| `reset_filter_timer` | Reset blower runtime after a filter change |
 
 See [Services Reference](documentation/SERVICES.md) for full details and automation examples.
 
@@ -158,7 +163,8 @@ logger:
 
 See [Changelog](documentation/CHANGELOG.md) for full version history.
 
-- **v2.16.3** (Current): Pattern-sweep fixes for the same two bug families found in v2.16.2 — UI removal now works for weather entity, outdoor temp sensor, main climate, and main fan (all four were silently re-saving cleared fields); operating-mode fallback, pre-positioning, and main fan speed selection now use the global target reference instead of the weighted-average of per-room targets
+- **v3.0.0** (Current): Full logic audit (13 fixes — balancing now respects per-room targets, no conditioning in unservable directions, quick-action expiry with AC off, monotonic overshoot curve, normalization no longer amplifies mild demand, and more) + feature release: occupancy/predictive/protection UI, presence-linked away mode, open-window detection, dry-mode humidity weighting, freeze protection, per-room schedule targets, fan-only idle shutdown, runtime & filter tracking
+- **v2.16.3**: Pattern-sweep fixes for the same two bug families found in v2.16.2 — UI removal now works for weather entity, outdoor temp sensor, main climate, and main fan (all four were silently re-saving cleared fields); operating-mode fallback, pre-positioning, and main fan speed selection now use the global target reference instead of the weighted-average of per-room targets
 - **v2.16.2**: Per-room target fixes — AC unit-level decisions (setpoint, on/off) now anchor to the global target instead of the weighted average of per-room overrides (so a high-target room override no longer keeps the AC heating past the user's global setpoint and overheating the rest of the house); per-room target override can now actually be removed from the UI (`vol.Optional(..., default=)` was silently re-saving the cleared value)
 - **v2.16.1**: Production-stability audit — overnight schedules now allowed in the UI, atomic state-file writes (crash-safe persistence), HVAC mode tracker only accepts real conditioning modes at startup, climate entity rejects out-of-range setpoints, AC recommendation sensor uses per-room-aware target average, compressor state persisted on unload
 - **v2.16.0**: Adaptive deadband (opt-in: widens deadband during temperature swings to reduce mode thrashing), plus three latent bug fixes — dry mode never auto-engaged on humidity-only demand, overnight schedules with day-specific days didn't activate after midnight, and quick-action sleep setback was lost across HA restarts

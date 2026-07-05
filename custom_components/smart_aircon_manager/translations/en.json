@@ -65,7 +65,10 @@
           "learning": "Adaptive Learning (100% local statistical learning)",
           "balancing": "Room Balancing (equalize temperatures across all rooms)",
           "critical_rooms": "Critical Room Protection (automatic safety monitoring)",
-          "advanced": "Advanced Settings (fine-tune thresholds and behavior)"
+          "advanced": "Advanced Settings (fine-tune thresholds and behavior)",
+          "occupancy": "Occupancy & Presence",
+          "predictive": "Predictive & Open Window",
+          "protection": "Compressor Protection & Thresholds"
         }
       },
       "settings": {
@@ -167,7 +170,8 @@
           "schedule_start_time": "Start Time",
           "schedule_end_time": "End Time (can cross midnight)",
           "schedule_target_temp": "Target Temperature (°C)",
-          "schedule_enabled": "Schedule Enabled"
+          "schedule_enabled": "Schedule Enabled",
+          "schedule_room_targets": "Per-room targets (optional, e.g. Bedroom=18, Office=21.5)"
         }
       },
       "edit_schedule": {
@@ -231,7 +235,9 @@
           "critical_temp_max": "Critical Temperature Threshold (maximum safe temperature)",
           "critical_temp_safe": "Safe Target Temperature (where to cool down to)",
           "critical_warning_offset": "Warning Offset (degrees before critical to send warning)",
-          "critical_notify_services": "Notification Services (comma-separated list)"
+          "critical_notify_services": "Notification Services (comma-separated list)",
+          "critical_temp_min": "Critical minimum temperature (°C, optional freeze protection)",
+          "critical_temp_min_safe": "Safe temperature after under-temp recovery (°C)"
         },
         "data_description": {
           "enable_protection": "Enable automatic monitoring and AC control for this room. Uncheck to disable protection.",
@@ -250,7 +256,11 @@
           "weather_influence_factor": "Weather Influence Factor - How much outdoor temp affects target (0=none, 1=full)",
           "overshoot_tier1_threshold": "Overshoot Tier 1 - Small overshoot threshold (25-35% fan)",
           "overshoot_tier2_threshold": "Overshoot Tier 2 - Medium overshoot threshold (15-25% fan)",
-          "overshoot_tier3_threshold": "Overshoot Tier 3 - Severe overshoot threshold (0-5% fan)"
+          "overshoot_tier3_threshold": "Overshoot Tier 3 - Severe overshoot threshold (0-5% fan)",
+          "enable_fan_smoothing": "Enable fan speed smoothing",
+          "smoothing_factor": "Smoothing factor (weight of new speed, 0.1-1.0)",
+          "smoothing_threshold": "Smoothing threshold (%)",
+          "notify_services_csv": "Notification services (comma-separated, e.g. notify.mobile_app_phone)"
         },
         "data_description": {
           "main_fan_high_threshold": "When average temperature deviation exceeds this value, main fan switches to HIGH. Default: 2.5°C",
@@ -260,7 +270,57 @@
           "overshoot_tier2_threshold": "Rooms overshooting between tier1 and this get 15-25% fan (moderate reduction). Default: 2.0°C",
           "overshoot_tier3_threshold": "Rooms overshooting more than this get 0-5% fan (shutdown). Default: 3.0°C"
         }
+      },
+      "occupancy": {
+        "title": "Occupancy & Presence",
+        "description": "Reduce conditioning for vacant rooms and automatically enter vacation mode when everyone is away. Assign an occupancy sensor per room below; leave a field empty to disable occupancy tracking for that room.",
+        "data": {
+          "enable_occupancy_control": "Enable occupancy control",
+          "vacant_room_setback": "Vacant room setback (°C)",
+          "vacancy_timeout": "Vacancy timeout (seconds)",
+          "enable_away_mode": "Enable presence-linked away mode (auto vacation)",
+          "away_mode_entities": "Presence entities (persons/device trackers)",
+          "away_mode_delay_minutes": "Away delay before vacation mode (minutes)"
+        }
+      },
+      "predictive": {
+        "title": "Predictive Control & Open Window Detection",
+        "description": "Predictive control adjusts fan speeds based on temperature trends. Open window detection pauses conditioning in rooms moving rapidly against the active mode.",
+        "data": {
+          "enable_predictive_control": "Enable predictive control",
+          "predictive_lookahead_minutes": "Prediction lookahead (minutes)",
+          "predictive_boost_factor": "Predictive boost factor (0-1)",
+          "enable_open_window_detection": "Enable open window/door detection",
+          "open_window_rate_threshold": "Runaway rate threshold (°C/min)",
+          "open_window_pause_minutes": "Pause duration after detection (minutes)"
+        }
+      },
+      "protection": {
+        "title": "Compressor Protection & AC Thresholds",
+        "description": "Hardware protection and AC on/off behaviour. Fan-only idle timeout turns the AC fully off after idling in fan-only mode (0 = keep circulating).",
+        "data": {
+          "enable_compressor_protection": "Enable compressor protection",
+          "compressor_min_on_time": "Minimum AC on time (seconds)",
+          "compressor_min_off_time": "Minimum AC off time (seconds)",
+          "ac_turn_on_threshold": "AC turn-on threshold (°C from target)",
+          "ac_turn_off_threshold": "AC turn-off threshold (°C past target)",
+          "mode_change_hysteresis_time": "Mode change hysteresis (seconds)",
+          "mode_change_hysteresis_temp": "Hysteresis override deviation (°C)",
+          "fan_only_idle_minutes": "Fan-only idle timeout (minutes, 0 = never)",
+          "enable_enhanced_compressor_protection": "Enable enhanced compressor protection",
+          "compressor_undercool_margin": "Undercool margin (°C)",
+          "compressor_overheat_margin": "Overheat margin (°C)",
+          "min_mode_duration": "Minimum mode duration (seconds)",
+          "min_compressor_run_cycles": "Minimum compressor run cycles"
+        }
       }
+    },
+    "error": {
+      "invalid_room_targets_format": "Per-room targets must look like: Room=21, Other Room=18.5",
+      "unknown_room_in_targets": "One of the per-room target names doesn't match a configured room",
+      "room_target_out_of_range": "Per-room targets must be between 10 and 35 °C",
+      "invalid_ac_threshold_ordering": "The AC turn-off threshold should not be smaller than the turn-on threshold (causes rapid cycling)",
+      "critical_min_invalid": "The critical minimum must be below the maximum, and the safe minimum must be above the critical minimum"
     }
   }
 }

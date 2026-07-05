@@ -36,6 +36,7 @@ class PerformanceTracker:
         fan_speed: int,
         target_temp: float,
         cycle_duration: float,
+        operating_mode: str | None = None,
     ) -> None:
         """Track a single optimization cycle for a room.
 
@@ -46,6 +47,8 @@ class PerformanceTracker:
             fan_speed: Fan speed applied (0-100%)
             target_temp: Target temperature
             cycle_duration: Time since last cycle (seconds)
+            operating_mode: "cool" or "heat" — lets analysis separate seasons
+                so heating data doesn't pollute cooling metrics
         """
         if room_name not in self._data_points:
             self._data_points[room_name] = []
@@ -58,6 +61,7 @@ class PerformanceTracker:
             "target_temp": target_temp,
             "cycle_duration": cycle_duration,
             "temp_diff_from_target": temp_before - target_temp,
+            "operating_mode": operating_mode,
         }
 
         # Add to room's data
@@ -72,10 +76,14 @@ class PerformanceTracker:
             room_name, temp_before, fan_speed, target_temp
         )
 
-    def get_convergence_rate(self, room_name: str, time_window_hours: int = 24) -> float | None:
+    def get_convergence_rate(
+        self, room_name: str, time_window_hours: int = 24, mode: str | None = None
+    ) -> float | None:
         """Calculate average temperature convergence rate (°C/minute).
 
         Returns how fast temperature moves toward target on average.
+        ``mode`` optionally filters to cool/heat data points (legacy points
+        recorded before mode tagging are always included).
         """
         if room_name not in self._data_points:
             return None
@@ -84,6 +92,7 @@ class PerformanceTracker:
         recent_points = [
             p for p in self._data_points[room_name]
             if p["timestamp"] > cutoff_time and p["temp_after"] is not None
+            and (mode is None or p.get("operating_mode") in (None, mode))
         ]
 
         if len(recent_points) < 10:
@@ -185,12 +194,19 @@ class PerformanceTracker:
     def estimate_cooling_efficiency(self, room_name: str) -> float | None:
         """Estimate cooling efficiency (0.0-1.0, higher = more effective).
 
-        Measures how well fan speed changes affect temperature.
+        Measures how well fan speed changes affect temperature. Only uses
+        cool-mode data points — this metric feeds cool-mode adjustments, and
+        heating-season data would blend an unrelated (often inverted) signal
+        into it. Legacy points recorded before mode tagging are included to
+        preserve existing learning.
         """
         if room_name not in self._data_points:
             return None
 
-        points = self._data_points[room_name]
+        points = [
+            p for p in self._data_points[room_name]
+            if p.get("operating_mode") in (None, "cool")
+        ]
         if len(points) < 50:
             return None
 
@@ -225,8 +241,10 @@ class PerformanceTracker:
 
         return round(normalized, 2)
 
-    def get_relative_convergence_rate(self, room_name: str) -> float | None:
+    def get_relative_convergence_rate(self, room_name: str, mode: str | None = None) -> float | None:
         """Calculate room's convergence rate relative to house average.
+
+        ``mode`` optionally restricts the comparison to cool/heat season data.
 
         Returns:
             Value relative to 1.0 (house average):
@@ -238,14 +256,14 @@ class PerformanceTracker:
             return None
 
         # Get this room's convergence rate
-        room_rate = self.get_convergence_rate(room_name)
+        room_rate = self.get_convergence_rate(room_name, mode=mode)
         if not room_rate:
             return None
 
         # Get average convergence rate across all rooms
         all_rates = []
         for rname in self._data_points.keys():
-            rate = self.get_convergence_rate(rname)
+            rate = self.get_convergence_rate(rname, mode=mode)
             if rate:
                 all_rates.append(rate)
 
@@ -534,11 +552,17 @@ class LearningProfile:
                 self.optimal_smoothing_threshold = max(5, self.optimal_smoothing_threshold - 1)
             # If same: keep parameters unchanged (they're working)
 
-        # Update adaptive balancing characteristics
+        # Update adaptive balancing characteristics.
+        # Prefer season-specific rates (relative_heat_gain_rate feeds cool-mode
+        # adjustments, relative_cool_rate feeds heat-mode adjustments), falling
+        # back to the combined rate when a season has no data yet.
         relative_rate = tracker.get_relative_convergence_rate(self.room_name)
-        if relative_rate:
-            self.relative_heat_gain_rate = relative_rate
-            self.relative_cool_rate = relative_rate  # Simplification: use same for both
+        rel_cool_season = tracker.get_relative_convergence_rate(self.room_name, mode="cool")
+        rel_heat_season = tracker.get_relative_convergence_rate(self.room_name, mode="heat")
+        if rel_cool_season or relative_rate:
+            self.relative_heat_gain_rate = rel_cool_season or relative_rate
+        if rel_heat_season or relative_rate:
+            self.relative_cool_rate = rel_heat_season or relative_rate
 
         # Detect room coupling
         coupling = tracker.detect_room_coupling(self.room_name)

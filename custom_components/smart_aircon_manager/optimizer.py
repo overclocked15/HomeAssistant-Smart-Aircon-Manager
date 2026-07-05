@@ -87,6 +87,16 @@ class AirconOptimizer:
         enable_adaptive_deadband: bool = False,
         adaptive_deadband_max_scale: float = 2.0,
         adaptive_deadband_rate_threshold: float = 0.5,
+        enable_fan_smoothing: bool = True,
+        smoothing_factor: float = 0.7,
+        smoothing_threshold: int = 10,
+        fan_only_idle_minutes: float = 0.0,
+        enable_open_window_detection: bool = False,
+        open_window_rate_threshold: float = 0.3,
+        open_window_pause_minutes: float = 15.0,
+        enable_away_mode: bool = False,
+        away_mode_entities: list[str] | None = None,
+        away_mode_delay_minutes: float = 30.0,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -160,6 +170,9 @@ class AirconOptimizer:
         self.mode_change_hysteresis_temp = self._validate_positive_float(mode_change_hysteresis_temp, "mode_change_hysteresis_temp", 0.0, 2.0)
         self._last_hvac_mode = None
         self._last_mode_change_time = None
+        # Last cool/heat resolution — survives dry/fan_only interludes so damper
+        # and setback direction stays correct while circulating in auto mode.
+        self._last_active_operating_mode = None
 
         # Occupancy-based control configuration
         self.enable_occupancy_control = enable_occupancy_control
@@ -202,6 +215,41 @@ class AirconOptimizer:
         self.adaptive_deadband_rate_threshold = self._validate_positive_float(
             adaptive_deadband_rate_threshold, "adaptive_deadband_rate_threshold", 0.05, 5.0
         )
+
+        # Fan speed smoothing (configurable; learned values take precedence
+        # when active learning has enough confidence)
+        self.enable_fan_smoothing = enable_fan_smoothing
+        self.smoothing_factor = self._validate_positive_float(smoothing_factor, "smoothing_factor", 0.1, 1.0)
+        self.smoothing_threshold = max(1, min(30, int(smoothing_threshold)))
+
+        # Fan-only idle shutdown: turn the AC fully off after it has idled in
+        # fan_only mode for this many minutes (0 = never, keep circulating).
+        self.fan_only_idle_minutes = max(0.0, float(fan_only_idle_minutes))
+        self._fan_only_since = None  # Timestamp when fan_only mode was entered
+
+        # Open window/door detection (rate-of-change based)
+        self.enable_open_window_detection = enable_open_window_detection
+        self.open_window_rate_threshold = self._validate_positive_float(
+            open_window_rate_threshold, "open_window_rate_threshold", 0.05, 2.0
+        )
+        self.open_window_pause_minutes = self._validate_positive_float(
+            open_window_pause_minutes, "open_window_pause_minutes", 1.0, 120.0
+        )
+        self._open_window_state = {}  # room_name -> {"detected_at": timestamp}
+
+        # Presence-linked away mode (auto vacation via person/device_tracker entities)
+        self.enable_away_mode = enable_away_mode
+        self.away_mode_entities = list(away_mode_entities or [])
+        self.away_mode_delay_minutes = max(1.0, float(away_mode_delay_minutes))
+        self._all_away_since = None
+        self._away_mode_auto = False  # True when vacation mode was auto-entered by presence
+
+        # Runtime tracking (compressor + blower, for energy insight and filter reminders)
+        self._runtime_date = None
+        self._compressor_runtime_today = 0.0  # seconds in cool/heat/dry today
+        self._filter_runtime_total = 0.0  # seconds of blower time since last filter reset
+        self._last_runtime_sample = None
+        self._last_runtime_save = None
 
         # Predictive control
         self.enable_predictive_control = enable_predictive_control
@@ -375,6 +423,8 @@ class AirconOptimizer:
                 current_hvac_mode = climate_state.state
                 if current_hvac_mode in ("cool", "heat", "dry", "fan_only"):
                     self._last_hvac_mode = current_hvac_mode
+                    if current_hvac_mode in ("cool", "heat"):
+                        self._last_active_operating_mode = current_hvac_mode
                     _LOGGER.info(
                         "Initialized HVAC mode tracking: %s (from climate entity %s)",
                         current_hvac_mode,
@@ -476,6 +526,7 @@ class AirconOptimizer:
                         # target setback would silently vanish across restarts.
                         if self._quick_action_mode == "vacation":
                             self.temperature_deadband = 2.0
+                            self._away_mode_auto = data.get('away_mode_auto', False)
                         elif self._quick_action_mode == "sleep":
                             entry_resolved = self._quick_action_original_settings.get("resolved_mode")
                             original_temp = self._quick_action_original_settings.get("target_temperature")
@@ -483,6 +534,11 @@ class AirconOptimizer:
                                 self.target_temperature = original_temp + 1.0
                             elif original_temp is not None and entry_resolved == "heat":
                                 self.target_temperature = original_temp - 1.0
+
+                # Restore runtime counters (compressor/blower tracking)
+                self._runtime_date = data.get('runtime_date')
+                self._compressor_runtime_today = float(data.get('compressor_runtime_today', 0.0))
+                self._filter_runtime_total = float(data.get('filter_runtime_total', 0.0))
 
                 _LOGGER.info("Compressor protection state loaded successfully")
             else:
@@ -505,6 +561,10 @@ class AirconOptimizer:
                 'quick_action_mode': self._quick_action_mode,
                 'quick_action_expiry': self._quick_action_expiry,
                 'quick_action_original_settings': self._quick_action_original_settings,
+                'away_mode_auto': self._away_mode_auto,
+                'runtime_date': self._runtime_date,
+                'compressor_runtime_today': self._compressor_runtime_today,
+                'filter_runtime_total': self._filter_runtime_total,
                 'saved_at': time.time(),
             }
 
@@ -719,8 +779,11 @@ class AirconOptimizer:
             elif self._last_hvac_mode is None:
                 self._last_hvac_mode = resolved_mode
                 self._last_mode_change_time = current_time
+            if resolved_mode in ("cool", "heat"):
+                self._last_active_operating_mode = resolved_mode
             self._dry_mode_active = False
             self._fan_only_mode_active = False
+            self._fan_only_since = None
 
             return resolved_mode
 
@@ -780,30 +843,34 @@ class AirconOptimizer:
                         temp_deviation, effective_deadband
                     )
 
-        # Priority 1: Temperature needs attention (outside effective deadband)
+        # Priority 1: Temperature needs attention (outside effective deadband).
+        # Direction matters even in fixed modes: a cool-only system cannot fix
+        # an overcooled house (and vice versa), so a deviation in the direction
+        # the mode cannot serve must NOT resolve to active conditioning — it
+        # falls through to humidity/fan_only handling instead of making the
+        # overshoot worse.
         if abs_deviation > effective_deadband:
-            if self.hvac_mode == "cool" or (self.hvac_mode == "auto" and temp_deviation > 0):
+            if temp_deviation > 0 and self.hvac_mode in ("cool", "auto"):
                 optimal_mode = "cool"
                 _LOGGER.debug(
                     "Temperature priority: %.1f°C deviation → COOL mode (candidate)",
                     temp_deviation
                 )
-            elif self.hvac_mode == "heat" or (self.hvac_mode == "auto" and temp_deviation < 0):
+            elif temp_deviation < 0 and self.hvac_mode in ("heat", "auto"):
                 optimal_mode = "heat"
                 _LOGGER.debug(
                     "Temperature priority: %.1f°C deviation → HEAT mode (candidate)",
                     temp_deviation
                 )
             else:
-                # Temperature deviation exists but mode unclear - use fallback
-                _LOGGER.warning(
-                    "Temperature deviation %.1f°C but unclear HVAC mode (%s), using fallback",
+                _LOGGER.debug(
+                    "Temperature deviation %.1f°C is in a direction %s mode cannot serve - "
+                    "no active conditioning (falling through to humidity/fan_only)",
                     temp_deviation, self.hvac_mode
                 )
-                optimal_mode = self.hvac_mode if self.hvac_mode != "auto" else "cool"
 
-        # Priority 2: Temperature OK, check humidity
-        elif avg_humidity is not None:
+        # Priority 2: No active conditioning selected, check humidity
+        if optimal_mode is None and avg_humidity is not None:
             humidity_excess = avg_humidity - self.target_humidity
 
             # Skip dry mode when heating: dry runs a low-flow refrigeration cycle
@@ -813,9 +880,12 @@ class AirconOptimizer:
                 self.hvac_mode == "heat"
                 or (self.hvac_mode == "auto" and self._last_hvac_mode == "heat")
             )
+            # Dry mode also cools — never engage it while the house is already
+            # overcooled past the deadband, or it deepens the overshoot.
+            overcooled = temp_deviation < -effective_deadband
 
             # High humidity - use dry mode (cooling/auto-cool only)
-            if not in_heating and (
+            if not in_heating and not overcooled and (
                 avg_humidity >= self.dry_mode_humidity_threshold
                 or humidity_excess > self.humidity_deadband
             ):
@@ -824,13 +894,13 @@ class AirconOptimizer:
                     "Humidity control: %.1f%% (target: %.1f%%, threshold: %.1f%%) → DRY mode (candidate)",
                     avg_humidity, self.target_humidity, self.dry_mode_humidity_threshold
                 )
-            elif in_heating and (
+            elif (in_heating or overcooled) and (
                 avg_humidity >= self.dry_mode_humidity_threshold
                 or humidity_excess > self.humidity_deadband
             ):
                 _LOGGER.debug(
-                    "Humidity high (%.1f%%) but heating active — suppressing DRY mode, using FAN_ONLY",
-                    avg_humidity
+                    "Humidity high (%.1f%%) but %s — suppressing DRY mode, using FAN_ONLY",
+                    avg_humidity, "heating active" if in_heating else "house overcooled"
                 )
 
         # Priority 3: Both temperature and humidity OK - use fan only for circulation
@@ -854,11 +924,11 @@ class AirconOptimizer:
                 else float('inf')
             )
 
-            # Enhanced compressor protection: Check minimum duration and run cycles
-            # Prevents frequent switching between compressor modes (cool/heat) and fan_only
+            # Enhanced compressor protection: Check minimum duration and run cycles.
+            # Guards exits from a compressor mode — both compressor→fan_only and
+            # direct cool↔heat reversals (the harshest transition for the compressor).
             if self.enable_enhanced_compressor_protection:
-                # Check if trying to exit compressor mode to fan_only
-                if self._last_hvac_mode in ["cool", "heat"] and optimal_mode == "fan_only":
+                if self._last_hvac_mode in ["cool", "heat"] and optimal_mode in ["fan_only", "cool", "heat"]:
                     # Check minimum mode duration
                     mode_duration = current_time - self._mode_start_time if self._mode_start_time else 0
 
@@ -955,6 +1025,14 @@ class AirconOptimizer:
         # Update mode state flags
         self._dry_mode_active = (optimal_mode == "dry")
         self._fan_only_mode_active = (optimal_mode == "fan_only")
+        if optimal_mode in ("cool", "heat"):
+            self._last_active_operating_mode = optimal_mode
+        # Track how long we've been idling in fan_only (for idle shutdown)
+        if self._fan_only_mode_active:
+            if self._fan_only_since is None:
+                self._fan_only_since = current_time
+        else:
+            self._fan_only_since = None
 
         return optimal_mode
 
@@ -1049,9 +1127,17 @@ class AirconOptimizer:
         # Convert from °C/second to °C/hour
         return (numerator / denominator) * 3600.0
 
-    def _calculate_weather_adjusted_target(self, base_target: float, outdoor_temp: float) -> float:
-        """Calculate weather-adjusted target temperature."""
-        operating_mode = self._get_effective_operating_mode()
+    def _calculate_weather_adjusted_target(
+        self, base_target: float, outdoor_temp: float,
+        room_states: dict[str, dict[str, Any]] | None = None,
+    ) -> float:
+        """Calculate weather-adjusted target temperature.
+
+        ``room_states`` lets the direction gating resolve the operating mode
+        from current temperatures on the first cycle, instead of defaulting
+        to "cool" and dropping a helpful cold-weather adjustment.
+        """
+        operating_mode = self._get_effective_operating_mode(room_states)
 
         if outdoor_temp > 30:
             raw_adj = -0.5
@@ -1415,6 +1501,13 @@ class AirconOptimizer:
         if self._last_hvac_mode in ("cool", "heat"):
             return self._last_hvac_mode
 
+        # If we're currently in dry/fan_only, fall back to the last cool/heat
+        # resolution so damper curves and setback directions stay consistent
+        # through circulation interludes (instead of defaulting to "cool" in a
+        # heating household).
+        if self._last_active_operating_mode in ("cool", "heat"):
+            return self._last_active_operating_mode
+
         # Fallback: infer from temperatures vs the GLOBAL target. Using the
         # weighted-average per-room target here lets a single high-target room
         # override flip the inferred direction (e.g. tip auto-mode into "heat"
@@ -1431,6 +1524,100 @@ class AirconOptimizer:
                 return "heat" if avg_temp < effective_target else "cool"
 
         return "cool"  # Default fallback
+
+    def _process_away_mode(self) -> None:
+        """Auto enter/exit vacation mode based on presence entities.
+
+        When every configured person/device_tracker has been away for the
+        configured delay, vacation mode is entered automatically; it exits as
+        soon as anyone returns home. A manually-entered quick action is never
+        overridden, and a manually-entered vacation is never auto-exited.
+        """
+        if not self.enable_away_mode or not self.away_mode_entities:
+            return
+
+        current_time = time.time()
+        states = [self.hass.states.get(e) for e in self.away_mode_entities]
+        known = [s for s in states if s is not None and s.state not in ("unknown", "unavailable")]
+        if not known:
+            return
+
+        all_away = all(s.state in ("not_home", "away") for s in known)
+
+        if all_away:
+            if self._all_away_since is None:
+                self._all_away_since = current_time
+            elif (
+                self._quick_action_mode is None
+                and (current_time - self._all_away_since) >= self.away_mode_delay_minutes * 60
+            ):
+                _LOGGER.info(
+                    "All %d presence entities away for %.0f+ min - entering vacation mode",
+                    len(known), self.away_mode_delay_minutes
+                )
+                self._enter_quick_action_mode("vacation")
+                self._away_mode_auto = True
+        else:
+            self._all_away_since = None
+            if self._away_mode_auto and self._quick_action_mode == "vacation":
+                _LOGGER.info("Presence detected - exiting auto-entered vacation mode")
+                self._exit_quick_action_mode()
+
+    def _track_runtime(self, main_climate_state: dict[str, Any] | None) -> None:
+        """Accumulate compressor and blower runtime from climate entity state.
+
+        Compressor runtime (cool/heat/dry) resets daily; blower runtime
+        (compressor modes + fan_only) accumulates until the filter timer is
+        reset via the reset_filter_timer service.
+        """
+        from homeassistant.util import dt as dt_util
+
+        now_ts = time.time()
+        today = dt_util.now().date().isoformat()
+        if self._runtime_date != today:
+            self._runtime_date = today
+            self._compressor_runtime_today = 0.0
+
+        if self._last_runtime_sample is not None and main_climate_state:
+            # Cap the credited gap so HA downtime isn't counted as runtime
+            elapsed = min(now_ts - self._last_runtime_sample, 600.0)
+            if elapsed > 0:
+                state = main_climate_state.get("state")
+                if state in ("cool", "heat", "dry"):
+                    self._compressor_runtime_today += elapsed
+                    self._filter_runtime_total += elapsed
+                elif state in ("fan_only", "fan"):
+                    self._filter_runtime_total += elapsed
+        self._last_runtime_sample = now_ts
+
+        # Persist counters periodically so restarts don't lose them
+        if self._last_runtime_save is None or (now_ts - self._last_runtime_save) >= 900:
+            self._last_runtime_save = now_ts
+            self.hass.async_create_task(self._save_compressor_state())
+
+    def reset_filter_timer(self) -> None:
+        """Reset the accumulated blower runtime (called after a filter change)."""
+        self._filter_runtime_total = 0.0
+        self.hass.async_create_task(self._save_compressor_state())
+        _LOGGER.info("Filter runtime timer reset")
+
+    async def async_turn_off_main_ac(self) -> None:
+        """Turn off the physical AC (used when the manager climate entity is turned off)."""
+        if not self.main_climate_entity:
+            return
+        state = self.hass.states.get(self.main_climate_entity)
+        if not state or state.state in ("off", "unavailable", "unknown"):
+            return
+        _LOGGER.info("Manager turned off - turning off main AC (%s)", self.main_climate_entity)
+        success = await self._retry_service_call(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": self.main_climate_entity, "hvac_mode": "off"},
+            entity_name=f"Main AC ({self.main_climate_entity})"
+        )
+        if success:
+            self._ac_last_turned_off = time.time()
+            await self._save_compressor_state()
 
     async def async_optimize(self) -> dict[str, Any]:
         """Run optimization cycle with error handling."""
@@ -1487,6 +1674,16 @@ class AirconOptimizer:
         import time
         cycle_start = time.time()
 
+        # Process quick-action expiry on every poll — not just when the AC is
+        # running — so e.g. sleep mode's target setback can't outlive its
+        # window whenever the AC stays off past the expiry time.
+        if self._quick_action_mode and self._quick_action_expiry and cycle_start > self._quick_action_expiry:
+            self._quick_action_expiry = None
+            self._exit_quick_action_mode()
+
+        # Presence-linked away mode (auto vacation entry/exit)
+        self._process_away_mode()
+
         active_schedule = None
         effective_target = self.target_temperature
 
@@ -1505,14 +1702,32 @@ class AirconOptimizer:
             else:
                 self._current_schedule = None
 
+        # Update occupancy state before collecting room states
+        await self._update_occupancy_state()
+
+        # Collect room states first so the weather adjustment can resolve the
+        # operating mode from actual temperatures (instead of last cycle's
+        # mode, which is stale/absent on the first cycle).
+        room_states = await self._collect_room_states(effective_target)
+
         outdoor_temp = None
         weather_adjustment = 0.0
         if self.enable_weather_adjustment:
             outdoor_temp = await self._get_outdoor_temperature()
             if outdoor_temp is not None:
-                adjusted_target = self._calculate_weather_adjusted_target(effective_target, outdoor_temp)
+                adjusted_target = self._calculate_weather_adjusted_target(
+                    effective_target, outdoor_temp, room_states
+                )
                 weather_adjustment = adjusted_target - effective_target
                 effective_target = adjusted_target
+                if weather_adjustment != 0.0:
+                    # The adjustment is a relative delta — apply it to every
+                    # room's target (per-room overrides included).
+                    for state in room_states.values():
+                        if state.get("target_temperature") is not None:
+                            state["target_temperature"] = round(
+                                state["target_temperature"] + weather_adjustment, 2
+                            )
                 _LOGGER.info(
                     "Weather adjustment: outdoor %.1f°C, adjustment %.1f°C, new target %.1f°C",
                     outdoor_temp,
@@ -1527,11 +1742,6 @@ class AirconOptimizer:
         # the helpers below read it without threading another parameter through
         # every call site.
         self._current_global_effective_target = effective_target
-
-        # Update occupancy state before collecting room states
-        await self._update_occupancy_state()
-
-        room_states = await self._collect_room_states(effective_target, weather_adjustment)
 
         # Always update temperature history (even if predictive control is disabled)
         # This ensures history is available if user enables predictive control later
@@ -1557,6 +1767,9 @@ class AirconOptimizer:
                     or (hvac_mode and hvac_mode not in ["off", "unavailable"])
                 )
 
+        # Accumulate compressor/blower runtime for energy insight and filter reminders
+        self._track_runtime(main_climate_state)
+
         # Determine optimal HVAC mode first so _check_if_ac_needed uses current mode
         optimal_hvac_mode = self._determine_optimal_hvac_mode(room_states, effective_target)
 
@@ -1570,6 +1783,24 @@ class AirconOptimizer:
         if not needs_ac and optimal_hvac_mode == "dry" and self.enable_humidity_control:
             _LOGGER.info("AC turn ON (humidity-only): optimal mode resolved to DRY")
             needs_ac = True
+
+        # Fan-only idle shutdown: after idling in fan_only (nothing to condition
+        # or dehumidify) for the configured time, turn the AC fully off instead
+        # of circulating indefinitely. It turns back on via the normal
+        # turn-on thresholds when demand returns.
+        if (
+            needs_ac
+            and main_ac_running
+            and self.fan_only_idle_minutes > 0
+            and optimal_hvac_mode == "fan_only"
+            and self._fan_only_since is not None
+            and (time.time() - self._fan_only_since) >= self.fan_only_idle_minutes * 60
+        ):
+            _LOGGER.info(
+                "Fan-only idle timeout reached (%.0f min) - turning AC off",
+                self.fan_only_idle_minutes
+            )
+            needs_ac = False
 
         if self.auto_control_main_ac and self.main_climate_entity:
             await self._control_main_ac(needs_ac, main_climate_state, optimal_hvac_mode)
@@ -1747,6 +1978,7 @@ class AirconOptimizer:
                     temp_after=current_temp,
                     fan_speed=fan_speed,
                     target_temp=state.get("target_temperature", self.target_temperature),
+                    operating_mode=self._get_effective_operating_mode(room_states),
                     cycle_duration=cycle_interval,
                 )
 
@@ -1794,12 +2026,28 @@ class AirconOptimizer:
             "error_rate_per_hour": round(error_rate, 2),
             # Compressor protection state
             "compressor_protection_active": self._is_compressor_protected(),
+            # Runtime tracking
+            "compressor_runtime_today_minutes": round(self._compressor_runtime_today / 60.0, 1),
+            "filter_runtime_hours": round(self._filter_runtime_total / 3600.0, 1),
+            # Open window detection state (room_name -> paused-until timestamp)
+            "open_window_rooms": sorted(self._open_window_state.keys()),
         }
 
-    async def _collect_room_states(self, target_temperature: float | None = None, weather_adjustment: float = 0.0) -> dict[str, dict[str, Any]]:
-        """Collect current temperature, humidity, and cover state for all rooms."""
+    async def _collect_room_states(self, target_temperature: float | None = None) -> dict[str, dict[str, Any]]:
+        """Collect current temperature, humidity, and cover state for all rooms.
+
+        Per-room target precedence: active schedule's per-room target >
+        per-room override > global effective target. The weather adjustment is
+        a relative delta applied by the caller AFTER collection (uniformly to
+        all rooms), so it composes with every branch here.
+        """
         room_states = {}
         effective_target = target_temperature if target_temperature is not None else self.target_temperature
+
+        # Per-room targets from the active schedule (e.g. bedrooms cooler at night)
+        schedule_room_targets = {}
+        if self.enable_scheduling and self._current_schedule:
+            schedule_room_targets = self._current_schedule.get("schedule_room_targets") or {}
 
         for room in self.room_configs:
             room_name = room["room_name"]
@@ -1855,10 +2103,11 @@ class AirconOptimizer:
                         _LOGGER.warning("Could not parse cover position for %s: %s, using default", room_name, e)
                         cover_position = 100
 
-            # Use per-room target if configured, otherwise fall back to global effective target
-            # Apply weather adjustment to per-room targets too (it's a relative delta)
-            if room_target_temp is not None:
-                room_effective_target = float(room_target_temp) + weather_adjustment
+            # Use schedule per-room target, then per-room override, then global
+            if room_name in schedule_room_targets:
+                room_effective_target = float(schedule_room_targets[room_name])
+            elif room_target_temp is not None:
+                room_effective_target = float(room_target_temp)
             else:
                 room_effective_target = effective_target
 
@@ -1923,6 +2172,13 @@ class AirconOptimizer:
         if self.enable_room_balancing and len(recommendations) > 1:
             recommendations = self._apply_room_balancing(recommendations, room_states, base_effective_target)
 
+        # In dry mode, weight airflow toward the rooms that are actually humid
+        if self._dry_mode_active and self.enable_humidity_control:
+            recommendations = self._apply_dry_mode_humidity_weighting(recommendations, room_states)
+
+        # Open window/door detection: park runaway rooms at minimum airflow
+        recommendations = self._apply_open_window_detection(recommendations, room_states)
+
         # Normalize fan speeds so the highest damper reaches 100%
         # This maximizes total system airflow while preserving proportional distribution
         recommendations = self._normalize_fan_speeds(recommendations)
@@ -1934,11 +2190,114 @@ class AirconOptimizer:
         self._last_optimization_response = self._build_optimization_summary(recommendations, room_states)
         return recommendations
 
+    def _apply_dry_mode_humidity_weighting(
+        self,
+        recommendations: dict[str, int | float],
+        room_states: dict[str, dict[str, Any]],
+    ) -> dict[str, int | float]:
+        """Boost airflow to rooms whose humidity is above target while in dry mode.
+
+        Dry mode's damper positions are otherwise temperature-driven, which
+        leaves the dampest rooms under-served when temperatures are uniform.
+        Boost-only (never reduces), so temperature control is preserved.
+        """
+        adjusted = dict(recommendations)
+        for room_name, state in room_states.items():
+            humidity = state.get("current_humidity")
+            if humidity is None or room_name not in adjusted or room_name == "ac_temperature":
+                continue
+            excess = humidity - self.target_humidity
+            if excess <= 0:
+                continue
+            # 3% extra airflow per %RH above target, capped at +30%
+            boost = min(30, int(excess * 3))
+            new_speed = max(self.min_airflow_percent, min(100, int(adjusted[room_name]) + boost))
+            if new_speed != adjusted[room_name]:
+                _LOGGER.debug(
+                    "Dry mode humidity weighting for %s: %.0f%%RH (+%.0f over target) → fan %d%% → %d%%",
+                    room_name, humidity, excess, adjusted[room_name], new_speed
+                )
+                adjusted[room_name] = new_speed
+        return adjusted
+
+    def _apply_open_window_detection(
+        self,
+        recommendations: dict[str, int | float],
+        room_states: dict[str, dict[str, Any]],
+    ) -> dict[str, int | float]:
+        """Detect rooms moving rapidly against active conditioning (likely an
+        open window/door) and park them at minimum airflow for a pause period.
+
+        A room being actively conditioned (fan above baseline) that still
+        warms fast in cool mode / cools fast in heat mode is leaking outdoor
+        air; conditioning it harder wastes energy fighting the outdoors.
+        Control resumes automatically after the pause and re-triggers if the
+        room is still running away.
+        """
+        if not self.enable_open_window_detection:
+            return recommendations
+
+        current_time = time.time()
+        pause_seconds = self.open_window_pause_minutes * 60
+        operating_mode = self._get_effective_operating_mode(room_states)
+        adjusted = dict(recommendations)
+
+        for room_name in list(adjusted.keys()):
+            if room_name == "ac_temperature":
+                continue
+
+            paused = self._open_window_state.get(room_name)
+            if paused:
+                if (current_time - paused["detected_at"]) >= pause_seconds:
+                    del self._open_window_state[room_name]
+                    _LOGGER.info(
+                        "Open-window pause expired for %s - resuming normal control", room_name
+                    )
+                else:
+                    adjusted[room_name] = self.min_airflow_percent
+                    continue
+
+            state = room_states.get(room_name)
+            if not state or state.get("current_temperature") is None:
+                continue
+
+            rate = self._get_temp_rate_of_change(room_name)
+            if rate is None:
+                continue
+
+            runaway = (
+                (operating_mode == "cool" and rate >= self.open_window_rate_threshold)
+                or (operating_mode == "heat" and rate <= -self.open_window_rate_threshold)
+            )
+            # Only trigger for rooms receiving active conditioning airflow —
+            # a warming room with the damper nearly shut is expected, not a leak.
+            if runaway and int(adjusted[room_name]) > 50:
+                self._open_window_state[room_name] = {"detected_at": current_time}
+                adjusted[room_name] = self.min_airflow_percent
+                _LOGGER.warning(
+                    "Possible open window/door in %s: temperature moving %.2f°C/min against "
+                    "%s mode despite active airflow - pausing conditioning for %.0f min",
+                    room_name, rate, operating_mode, self.open_window_pause_minutes
+                )
+                self.hass.async_create_task(self._send_notification(
+                    "Open Window Detected",
+                    f"{room_name} appears to have an open window/door "
+                    f"(temperature moving {rate:+.2f}°C/min against {operating_mode} mode). "
+                    f"Pausing conditioning there for {self.open_window_pause_minutes:.0f} minutes."
+                ))
+
+        return adjusted
+
     def _smooth_fan_speed(self, room_name: str, new_speed: int, smoothing_threshold: int = 10) -> int:
         """Smooth fan speed transitions to prevent rapid oscillation.
 
-        Uses learned smoothing parameters if adaptive learning is active.
+        Uses learned smoothing parameters if adaptive learning is active,
+        otherwise the configured smoothing settings.
         """
+        if not self.enable_fan_smoothing:
+            self._last_fan_speeds[room_name] = new_speed
+            return new_speed
+
         # Get learned smoothing parameters if available
         if self.learning_manager and self.learning_manager.should_apply_learning(room_name):
             profile = self.learning_manager.get_profile(room_name)
@@ -1949,9 +2308,9 @@ class AirconOptimizer:
                 room_name, smoothing_factor, smoothing_threshold
             )
         else:
-            # Use default values
-            smoothing_factor = 0.7  # 70% new, 30% old
-            smoothing_threshold = 10  # Default threshold for smoothing
+            # Use configured values (defaults: 0.7 = 70% new / 30% old, threshold 10)
+            smoothing_factor = self.smoothing_factor
+            smoothing_threshold = self.smoothing_threshold
 
         if room_name not in self._last_fan_speeds:
             self._last_fan_speeds[room_name] = new_speed
@@ -1986,10 +2345,15 @@ class AirconOptimizer:
         Rooms in overshoot (speed <= 50%, i.e. at/below deadband baseline)
         are left unchanged to preserve deliberate airflow reduction.
 
-        Only normalizes when meaningful conditioning demand exists (max speed
-        above baseline circulation level).
+        Only normalizes under STRONG demand (max speed >= 80%). Mild demand —
+        a room barely outside the deadband computing ~55% — must not be
+        amplified to 100%, or the proportional curve, predictive adjustments,
+        and smoothing are all defeated exactly where fine control matters.
+        Back-pressure on the blower is only a concern when the system is
+        pushing hard, which is the >= 80% regime.
         """
         BASELINE_SPEED = 50  # Deadband baseline circulation speed
+        NORMALIZE_MIN_SPEED = 80  # Only normalize under strong conditioning demand
 
         # Separate fan speeds from non-speed entries (like ac_temperature)
         fan_speeds = {k: v for k, v in recommendations.items() if k != "ac_temperature"}
@@ -1999,10 +2363,9 @@ class AirconOptimizer:
 
         max_speed = max(fan_speeds.values())
 
-        # Only normalize when there's active conditioning demand above baseline.
-        # Skip if already at 100% (no scaling needed) or if all rooms are at/below
-        # baseline (overshoot or at-target scenario where we want reduced airflow).
-        if max_speed <= BASELINE_SPEED or max_speed >= 100:
+        # Skip if demand is mild (proportional speeds stand as-is) or already
+        # at 100% (no scaling needed).
+        if max_speed < NORMALIZE_MIN_SPEED or max_speed >= 100:
             return recommendations
 
         scale_factor = 100.0 / max_speed
@@ -2029,10 +2392,37 @@ class AirconOptimizer:
 
         return normalized
 
+    def _overshoot_fan_speed(self, abs_temp_diff: float) -> int:
+        """Fan speed for a room that has overshot its target.
+
+        Monotonically DECREASING with overshoot depth — the further a room has
+        been pushed past its target, the less conditioned air it should get:
+
+          deadband edge → tier1:  35% tapering linearly down to 22%
+          tier1 → tier2:          22%  (reduced conditioning)
+          tier2 → tier3:          12%  (minimal airflow)
+          tier3+:                  5%  (near shutdown)
+
+        The taper below tier1 also removes the cliff at the deadband boundary
+        (50% baseline inside → 35% just outside, instead of dropping to 15%).
+        """
+        if abs_temp_diff >= self.overshoot_tier3_threshold:
+            return 5
+        if abs_temp_diff >= self.overshoot_tier2_threshold:
+            return 12
+        if abs_temp_diff >= self.overshoot_tier1_threshold:
+            return 22
+        span = self.overshoot_tier1_threshold - self.temperature_deadband
+        if span <= 0:
+            return 22
+        frac = min(1.0, max(0.0, (abs_temp_diff - self.temperature_deadband) / span))
+        return int(round(35 - 13 * frac))
+
     def _calculate_fan_speed(self, temp_diff: float, abs_temp_diff: float, room_name: str = None) -> int:
         """Calculate fan speed based on temperature difference and HVAC mode.
 
-        Uses granular bands for smooth, responsive temperature control.
+        Rooms needing conditioning follow a continuous proportional curve;
+        rooms in overshoot follow a monotonically decreasing reduction curve.
         Optionally uses adaptive bands based on learned thermal characteristics.
         """
         # Get adaptive temperature bands if room_name provided
@@ -2044,92 +2434,26 @@ class AirconOptimizer:
         # Within deadband - maintain with moderate circulation
         if abs_temp_diff <= self.temperature_deadband:
             base_speed = 50  # Baseline circulation when at target
-            # Apply efficiency adjustment if room provided
-            if room_name:
-                return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
-            return base_speed
-
-        # Resolve effective operating mode (handles auto → cool/heat and humidity mode switches)
-        effective_mode = self._get_effective_operating_mode()
-
-        if effective_mode == "cool":
-            if temp_diff > 0:
-                # Continuous proportional speed: smooth curve from baseline to max
-                # Uses power curve for natural response: gentle near target, aggressive far away
-                base_speed = min(100, int(50 + 50 * min(1.0, (abs_temp_diff / bands['extreme']) ** 0.8)))
-
-                # Apply efficiency adjustment if room provided
-                if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
-                return base_speed
-            else:
-                # Room is too cold - overshot target, reduce cooling progressively
-                if abs_temp_diff >= self.overshoot_tier3_threshold:  # 3°C+
-                    base_speed = 5    # Severe overshoot - near shutdown
-                elif abs_temp_diff >= self.overshoot_tier2_threshold:  # 2-3°C
-                    base_speed = 12   # High overshoot - minimal airflow
-                elif abs_temp_diff >= self.overshoot_tier1_threshold:  # 1-2°C
-                    base_speed = 22   # Medium overshoot - reduced cooling
-                elif abs_temp_diff >= 0.7:
-                    base_speed = 20   # Small overshoot - gentle reduction
-                else:
-                    base_speed = 15   # Very small overshoot - slight reduction
-
-                # Apply efficiency adjustment if room provided
-                if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
-                return base_speed
-
-        elif effective_mode == "heat":
-            if temp_diff < 0:
-                # Continuous proportional speed: smooth curve from baseline to max
-                base_speed = min(100, int(50 + 50 * min(1.0, (abs_temp_diff / bands['extreme']) ** 0.8)))
-
-                # Apply efficiency adjustment if room provided
-                if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
-                return base_speed
-            else:
-                # Room is too warm - overshot target, reduce heating progressively
-                if abs_temp_diff >= self.overshoot_tier3_threshold:  # 3°C+
-                    base_speed = 5    # Severe overshoot - near shutdown
-                elif abs_temp_diff >= self.overshoot_tier2_threshold:  # 2-3°C
-                    base_speed = 12   # High overshoot - minimal airflow
-                elif abs_temp_diff >= self.overshoot_tier1_threshold:  # 1-2°C
-                    base_speed = 22   # Medium overshoot - reduced heating
-                elif abs_temp_diff >= 0.7:
-                    base_speed = 20   # Small overshoot - gentle reduction
-                else:
-                    base_speed = 15   # Very small overshoot - slight reduction
-
-                # Apply efficiency adjustment if room provided
-                if room_name:
-                    return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
-                return base_speed
         else:
-            # Auto mode fallback - resolve to cool/heat and use proportional curve
+            # Resolve effective operating mode (handles auto → cool/heat and
+            # dry/fan_only interludes)
             effective_mode = self._get_effective_operating_mode()
-            needs_conditioning = (effective_mode == "cool" and temp_diff > 0) or \
-                                 (effective_mode == "heat" and temp_diff < 0)
+            needs_conditioning = (
+                (effective_mode == "cool" and temp_diff > 0)
+                or (effective_mode == "heat" and temp_diff < 0)
+            )
 
             if needs_conditioning:
+                # Continuous proportional speed: smooth power curve from
+                # baseline to max — gentle near target, aggressive far away
                 base_speed = min(100, int(50 + 50 * min(1.0, (abs_temp_diff / bands['extreme']) ** 0.8)))
             else:
-                # Overshoot - reduce fan progressively
-                if abs_temp_diff >= self.overshoot_tier3_threshold:
-                    base_speed = 5
-                elif abs_temp_diff >= self.overshoot_tier2_threshold:
-                    base_speed = 12
-                elif abs_temp_diff >= self.overshoot_tier1_threshold:
-                    base_speed = 22
-                elif abs_temp_diff >= 0.7:
-                    base_speed = 20
-                else:
-                    base_speed = 15
+                # Room overshot its target - progressively reduce airflow
+                base_speed = self._overshoot_fan_speed(abs_temp_diff)
 
-            if room_name:
-                return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
-            return base_speed
+        if room_name:
+            return self._apply_efficiency_adjustment(base_speed, room_name, abs_temp_diff)
+        return base_speed
 
     def _apply_room_balancing(
         self,
@@ -2139,37 +2463,54 @@ class AirconOptimizer:
     ) -> dict[str, int]:
         """Apply inter-room temperature balancing adjustments.
 
-        When rooms are unbalanced but house average is near target, this applies
-        adjustments to equalize temperatures across all rooms. Works for both
-        heating and cooling modes.
+        Balancing works on each room's deviation FROM ITS OWN effective target
+        (per-room override + occupancy setback), not on raw temperatures. A
+        room intentionally held at a different setpoint is only an outlier if
+        it is away from *its own* target — balancing raw temperatures toward
+        the house average would actively fight per-room overrides.
+
+        When deviations are unbalanced but their average is near zero, this
+        applies adjustments to equalize them. Works for both heating and
+        cooling modes.
 
         Args:
             recommendations: Initial fan speed recommendations per room
             room_states: Current state of all rooms
-            effective_target: Target temperature
+            effective_target: House-average target (kept for API compatibility;
+                the per-room targets in room_states drive the logic)
 
         Returns:
             Adjusted recommendations with balancing applied
         """
-        # Get all valid temperatures
-        temps = self._valid_temps(room_states)
-        if len(temps) < 2:
+        # Per-room deviation from each room's own effective target
+        deviations: dict[str, float] = {}
+        for room_name, s in room_states.items():
+            temp = s.get("current_temperature")
+            target = s.get("target_temperature")
+            if temp is None or target is None:
+                continue
+            room_effective_target = self._get_room_effective_target(room_name, target)
+            deviations[room_name] = temp - room_effective_target
+
+        if len(deviations) < 2:
             self._balancing_active = False
             return recommendations  # Need at least 2 rooms to balance
 
-        # Calculate house statistics
-        avg_temp = statistics.mean(temps)
-        temp_variance = statistics.stdev(temps)  # Safe now - len(temps) >= 2
+        dev_values = list(deviations.values())
+        avg_dev = statistics.mean(dev_values)
+        dev_variance = statistics.stdev(dev_values)  # Safe - len >= 2
 
-        # Store for diagnostics
-        self._house_avg_temp = avg_temp
-        self._house_temp_variance = temp_variance
+        # Store for diagnostics (house average temp stays raw for display;
+        # the variance is target-relative because that's what drives balancing)
+        temps = self._valid_temps(room_states)
+        self._house_avg_temp = statistics.mean(temps) if temps else None
+        self._house_temp_variance = dev_variance
 
-        # Check if balancing is needed
-        house_deviation_from_target = abs(avg_temp - effective_target)
+        # Check if balancing is needed: deviations spread apart, but their
+        # average near zero (house as a whole is roughly on target)
         needs_balancing = (
-            temp_variance > self.target_room_variance and  # Rooms are unbalanced
-            house_deviation_from_target < 1.0  # House average is reasonably close to target
+            dev_variance > self.target_room_variance and
+            abs(avg_dev) < 1.0
         )
 
         if not needs_balancing:
@@ -2178,20 +2519,18 @@ class AirconOptimizer:
 
         self._balancing_active = True
         _LOGGER.debug(
-            "Applying room balancing: avg=%.1f°C, variance=%.2f°C, target_variance=%.2f°C",
-            avg_temp, temp_variance, self.target_room_variance
+            "Applying room balancing: avg_deviation=%+.1f°C, variance=%.2f°C, target_variance=%.2f°C",
+            avg_dev, dev_variance, self.target_room_variance
         )
 
         # Apply balancing adjustments
         balanced_recommendations = {}
         for room_name, base_fan_speed in recommendations.items():
-            state = room_states.get(room_name)
-            if not state or state["current_temperature"] is None:
+            if room_name not in deviations:
                 balanced_recommendations[room_name] = base_fan_speed
                 continue
 
-            room_temp = state["current_temperature"]
-            deviation_from_avg = room_temp - avg_temp
+            deviation_from_avg = deviations[room_name] - avg_dev
 
             # Calculate balancing adjustment
             # Positive deviation = room is hotter than house average
@@ -2233,12 +2572,11 @@ class AirconOptimizer:
                         balancing_bias += convergence_adjustment
 
                         # 3. Apply room coupling adjustments if enabled
+                        # (target-relative, consistent with the base deviation)
                         if self.enable_room_coupling_detection and profile.coupling_factors:
                             for coupled_room, coupling_factor in profile.coupling_factors.items():
-                                coupled_state = room_states.get(coupled_room)
-                                if coupled_state and coupled_state["current_temperature"] is not None:
-                                    coupled_temp = coupled_state["current_temperature"]
-                                    coupled_deviation = coupled_temp - avg_temp
+                                if coupled_room in deviations:
+                                    coupled_deviation = deviations[coupled_room] - avg_dev
                                     # If coupled room is hot, this room likely needs adjustment too
                                     balancing_bias += coupled_deviation * coupling_factor * 5
 
@@ -2268,8 +2606,8 @@ class AirconOptimizer:
             balanced_recommendations[room_name] = final_speed
 
             _LOGGER.debug(
-                "  %s: %.1f°C (avg %+.1f°C) → base=%d%% + bias=%+.1f%% = %d%% (final=%d%%)",
-                room_name, room_temp, deviation_from_avg,
+                "  %s: dev-from-own-target %+.1f°C (vs house %+.1f°C) → base=%d%% + bias=%+.1f%% = %d%% (final=%d%%)",
+                room_name, deviations[room_name], deviation_from_avg,
                 base_fan_speed, balancing_bias, int(adjusted_speed), final_speed
             )
 
@@ -2538,14 +2876,18 @@ class AirconOptimizer:
             elif original_temp and mode == "sleep" and not mode_changed_temp:
                 _LOGGER.info("Target temperature was manually changed during %s mode, not restoring", mode)
 
-            if original_deadband and (mode != "vacation" or mode_changed_deadband):
-                self.temperature_deadband = original_deadband
-            elif original_deadband and mode == "vacation" and not mode_changed_deadband:
-                _LOGGER.info("Temperature deadband was manually changed during %s mode, not restoring", mode)
+            # Only vacation mode changes the deadband — restoring it for other
+            # modes would silently revert a manual change the user made mid-mode.
+            if original_deadband and mode == "vacation":
+                if mode_changed_deadband:
+                    self.temperature_deadband = original_deadband
+                else:
+                    _LOGGER.info("Temperature deadband was manually changed during %s mode, not restoring", mode)
 
         self._quick_action_mode = None
         self._quick_action_expiry = None
         self._quick_action_original_settings = {}
+        self._away_mode_auto = False
 
         _LOGGER.info("Exited quick action mode: %s", mode)
 
@@ -2853,24 +3195,24 @@ class AirconOptimizer:
                 if avg_temp_diff >= self.main_fan_high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
                     fan_speed = "high"
                     _LOGGER.debug("Main fan -> HIGH: Aggressive cooling (avg: +%.1f°C)", avg_temp_diff)
-                elif avg_temp_diff <= -0.5:
-                    # Only set LOW when well below target (overcooled)
-                    fan_speed = "low"
-                    _LOGGER.debug("Main fan -> LOW: Well below target in cool mode (avg: %.1f°C)", avg_temp_diff)
-                else:
-                    # Default to MEDIUM for moderate cooling needs
+                elif avg_temp_diff >= self.main_fan_medium_threshold or temp_variance >= 2.0:
+                    # Moderate demand, or unbalanced rooms needing airflow to equalize
                     fan_speed = "medium"
+                else:
+                    # Light demand or overcooled - quiet operation
+                    fan_speed = "low"
+                    _LOGGER.debug("Main fan -> LOW: Light cooling demand (avg: %+.1f°C)", avg_temp_diff)
             else:
                 if avg_temp_diff <= -self.main_fan_high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
                     fan_speed = "high"
                     _LOGGER.debug("Main fan -> HIGH: Aggressive heating (avg: %.1f°C)", avg_temp_diff)
-                elif avg_temp_diff >= 0.5:
-                    # Only set LOW when well above target (overheated)
-                    fan_speed = "low"
-                    _LOGGER.debug("Main fan -> LOW: Well above target in heat mode (avg: %.1f°C)", avg_temp_diff)
-                else:
-                    # Default to MEDIUM for moderate heating needs
+                elif avg_temp_diff <= -self.main_fan_medium_threshold or temp_variance >= 2.0:
+                    # Moderate demand, or unbalanced rooms needing airflow to equalize
                     fan_speed = "medium"
+                else:
+                    # Light demand or overheated - quiet operation
+                    fan_speed = "low"
+                    _LOGGER.debug("Main fan -> LOW: Light heating demand (avg: %+.1f°C)", avg_temp_diff)
 
         fan_state = self.hass.states.get(self.main_fan_entity)
         if not fan_state:
