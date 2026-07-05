@@ -1586,6 +1586,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle inter-room balancing configuration."""
+        errors = {}
         if user_input is not None:
             # Merge with existing data and update the config entry
             new_data = {**self.config_entry.data, **user_input}

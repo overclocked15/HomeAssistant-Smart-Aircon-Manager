@@ -320,7 +320,21 @@
       "unknown_room_in_targets": "One of the per-room target names doesn't match a configured room",
       "room_target_out_of_range": "Per-room targets must be between 10 and 35 °C",
       "invalid_ac_threshold_ordering": "The AC turn-off threshold should not be smaller than the turn-on threshold (causes rapid cycling)",
-      "critical_min_invalid": "The critical minimum must be below the maximum, and the safe minimum must be above the critical minimum"
+      "critical_min_invalid": "The critical minimum must be below the maximum, and the safe minimum must be above the critical minimum",
+      "duplicate_room_name": "A room with this name already exists",
+      "entity_not_found": "Entity does not exist in Home Assistant",
+      "entity_unavailable": "Entity is unavailable or has no valid state",
+      "non_numeric_temperature": "Temperature sensor is not reporting a numeric value",
+      "unrealistic_temperature": "Temperature sensor reading is outside the realistic range (-50°C to 70°C)",
+      "invalid_domain": "Entity must be from a supported domain (sensor for temperature, cover for zone control)",
+      "missing_position_attribute": "Cover entity is missing the current_position attribute required for fan speed control",
+      "invalid_position_range": "Cover entity position is outside the valid range (0-100)",
+      "non_numeric_position": "Cover entity position is not a numeric value",
+      "critical_safe_above_max": "Safe target temperature must be lower than critical threshold",
+      "duplicate_schedule_name": "A schedule with this name already exists",
+      "schedule_start_equals_end": "Start and end times cannot be identical (overnight schedules where start > end are supported)",
+      "invalid_tier_ordering": "Overshoot tiers must be in ascending order (tier 1 < tier 2 < tier 3)",
+      "invalid_fan_threshold_ordering": "Main fan medium threshold must be less than high threshold"
     }
   }
 }

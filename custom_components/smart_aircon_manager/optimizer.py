@@ -153,6 +153,8 @@ class AirconOptimizer:
         self._house_avg_temp = None
         self._house_temp_variance = None
         self._balancing_active = False
+        # Normalization hysteresis state (see _normalize_fan_speeds)
+        self._normalization_active = False
 
         # Humidity control configuration
         self.enable_humidity_control = enable_humidity_control
@@ -741,6 +743,24 @@ class AirconOptimizer:
 
         return best_schedule
 
+    def _outlier_conditioning_mode(self, temps: list[float], effective_target: float) -> str | None:
+        """Mode implied by a single extreme room, if any.
+
+        _check_if_ac_needed turns the AC on when one room deviates by 1.5x
+        the turn-on threshold even though the house average is fine. The
+        house-average mode resolution must agree with that, or the AC powers
+        on in fan_only (or the wrong direction in auto mode) and never
+        actually conditions the outlier room.
+        """
+        if not temps:
+            return None
+        threshold = self.ac_turn_on_threshold * 1.5
+        if self.hvac_mode in ("cool", "auto") and (max(temps) - effective_target) >= threshold:
+            return "cool"
+        if self.hvac_mode in ("heat", "auto") and (effective_target - min(temps)) >= threshold:
+            return "heat"
+        return None
+
     def _determine_optimal_hvac_mode(self, room_states: dict[str, dict[str, Any]], effective_target: float) -> str:
         """Determine optimal HVAC mode based on temperature and humidity conditions.
 
@@ -763,11 +783,17 @@ class AirconOptimizer:
             if self.hvac_mode != "auto":
                 resolved_mode = self.hvac_mode
             else:
-                # Resolve auto mode based on temperature deviation
+                # Resolve auto mode based on temperature deviation. An extreme
+                # outlier room wins over the house average — the average alone
+                # can point the wrong way (e.g. one room at +2°C while the
+                # rest sit just below target would otherwise resolve "heat").
                 temps = self._valid_temps(room_states)
                 if temps:
                     avg_temp = sum(temps) / len(temps)
-                    resolved_mode = "heat" if avg_temp < effective_target else "cool"
+                    resolved_mode = (
+                        self._outlier_conditioning_mode(temps, effective_target)
+                        or ("heat" if avg_temp < effective_target else "cool")
+                    )
                 else:
                     resolved_mode = "cool"  # Default fallback
 
@@ -867,6 +893,19 @@ class AirconOptimizer:
                     "Temperature deviation %.1f°C is in a direction %s mode cannot serve - "
                     "no active conditioning (falling through to humidity/fan_only)",
                     temp_deviation, self.hvac_mode
+                )
+
+        # Priority 1b: a single room extreme enough to trigger the AC turn-on
+        # outlier rule must also resolve to an active conditioning mode, even
+        # though the house average sits inside the deadband — otherwise the
+        # AC powers on and idles in fan_only while the outlier stays hot/cold.
+        if optimal_mode is None:
+            outlier_mode = self._outlier_conditioning_mode(temps, effective_target)
+            if outlier_mode is not None:
+                optimal_mode = outlier_mode
+                _LOGGER.debug(
+                    "Outlier room priority: extreme room beyond %.1f°C → %s mode (candidate)",
+                    self.ac_turn_on_threshold * 1.5, outlier_mode.upper()
                 )
 
         # Priority 2: No active conditioning selected, check humidity
@@ -1417,6 +1456,36 @@ class AirconOptimizer:
 
         return base_fan_speed
 
+    def _get_critical_monitor(self):
+        """Get the CriticalRoomMonitor for this config entry, if any."""
+        if not self.config_entry:
+            return None
+        from .const import DOMAIN
+        domain_data = getattr(self.hass, "data", None)
+        if not isinstance(domain_data, dict):
+            return None
+        entry_data = domain_data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+        if not isinstance(entry_data, dict):
+            return None
+        return entry_data.get("critical_monitor")
+
+    def _critical_emergency_direction(self) -> str | None:
+        """Return "hot"/"cold" while any critical room is critical/recovering.
+
+        Keeps the optimizer from fighting the critical monitor's emergency
+        response: without this, freeze protection turns the AC on in HEAT,
+        the cool-configured optimizer sees an "overcooled" house and turns
+        it off again, and the two toggle the compressor all night.
+        """
+        monitor = self._get_critical_monitor()
+        if not monitor:
+            return None
+        from .const import CRITICAL_STATUS_CRITICAL, CRITICAL_STATUS_RECOVERING
+        for room_state in monitor.get_all_statuses().values():
+            if room_state.get("status") in (CRITICAL_STATUS_CRITICAL, CRITICAL_STATUS_RECOVERING):
+                return room_state.get("direction", "hot")
+        return None
+
     def _is_compressor_protected(self) -> bool:
         """Check if compressor protection is currently blocking an AC state change."""
         if not self.enable_compressor_protection:
@@ -1583,11 +1652,25 @@ class AirconOptimizer:
             elapsed = min(now_ts - self._last_runtime_sample, 600.0)
             if elapsed > 0:
                 state = main_climate_state.get("state")
-                if state in ("cool", "heat", "dry"):
-                    self._compressor_runtime_today += elapsed
-                    self._filter_runtime_total += elapsed
-                elif state in ("fan_only", "fan"):
-                    self._filter_runtime_total += elapsed
+                action = main_climate_state.get("hvac_action")
+                compressor_mode = state in ("cool", "heat", "dry")
+                blower_mode = compressor_mode or state in ("fan_only", "fan")
+                if action is not None:
+                    # hvac_action distinguishes an actively running compressor
+                    # from a satisfied (idle) one — mode-based accounting
+                    # counts idle stretches and overstates runtime. The blower
+                    # still runs whenever a mode is active in ducted systems,
+                    # so filter time stays mode-based.
+                    if action in ("cooling", "heating", "drying"):
+                        self._compressor_runtime_today += elapsed
+                    if blower_mode or action == "fan":
+                        self._filter_runtime_total += elapsed
+                else:
+                    # Entity doesn't report hvac_action - fall back to modes
+                    if compressor_mode:
+                        self._compressor_runtime_today += elapsed
+                    if blower_mode:
+                        self._filter_runtime_total += elapsed
         self._last_runtime_sample = now_ts
 
         # Persist counters periodically so restarts don't lose them
@@ -1752,16 +1835,20 @@ class AirconOptimizer:
         if self.main_climate_entity:
             climate_state = self.hass.states.get(self.main_climate_entity)
             if climate_state:
+                # Standard HA climate entities expose the hvac mode as the
+                # entity STATE, not as an attribute — without the state
+                # fallback, "hvac_mode" is None on real entities and every
+                # downstream mode comparison (turn-off, compressor
+                # protection, redundant-mode-set suppression) silently fails.
+                hvac_mode = climate_state.attributes.get("hvac_mode") or climate_state.state
                 main_climate_state = {
                     "state": climate_state.state,
                     "temperature": climate_state.attributes.get("temperature"),
                     "current_temperature": climate_state.attributes.get("current_temperature"),
-                    "hvac_mode": climate_state.attributes.get("hvac_mode"),
+                    "hvac_mode": hvac_mode,
                     "hvac_action": climate_state.attributes.get("hvac_action"),
                 }
                 hvac_action = climate_state.attributes.get("hvac_action")
-                # Check both hvac_mode attribute and state (some entities use state as hvac_mode)
-                hvac_mode = climate_state.attributes.get("hvac_mode") or climate_state.state
                 main_ac_running = (
                     hvac_action in ["cooling", "heating", "drying", "fan"]  # Include more actions
                     or (hvac_mode and hvac_mode not in ["off", "unavailable"])
@@ -1940,6 +2027,9 @@ class AirconOptimizer:
             if pre_position != self._last_recommendations:
                 await self._apply_recommendations(pre_position)
                 self._last_recommendations = pre_position
+            # Report what was actually applied so sensors don't show the
+            # stale recommendations from before the AC turned off.
+            recommendations = pre_position
 
         # End performance tracking
         cycle_end = time.time()
@@ -1974,7 +2064,7 @@ class AirconOptimizer:
                 cycle_interval = actual_interval if actual_interval > 0 else self._optimization_interval
                 self.learning_manager.tracker.track_cycle(
                     room_name=room_name,
-                    temp_before=previous_temp if previous_temp else current_temp,
+                    temp_before=previous_temp if previous_temp is not None else current_temp,
                     temp_after=current_temp,
                     fan_speed=fan_speed,
                     target_temp=state.get("target_temperature", self.target_temperature),
@@ -2255,6 +2345,10 @@ class AirconOptimizer:
                     )
                 else:
                     adjusted[room_name] = self.min_airflow_percent
+                    # Keep the smoothing memory in sync with what is actually
+                    # applied, so control resumes from the parked speed rather
+                    # than a stale pre-pause value.
+                    self._last_fan_speeds[room_name] = self.min_airflow_percent
                     continue
 
             state = room_states.get(room_name)
@@ -2274,6 +2368,7 @@ class AirconOptimizer:
             if runaway and int(adjusted[room_name]) > 50:
                 self._open_window_state[room_name] = {"detected_at": current_time}
                 adjusted[room_name] = self.min_airflow_percent
+                self._last_fan_speeds[room_name] = self.min_airflow_percent
                 _LOGGER.warning(
                     "Possible open window/door in %s: temperature moving %.2f°C/min against "
                     "%s mode despite active airflow - pausing conditioning for %.0f min",
@@ -2288,7 +2383,7 @@ class AirconOptimizer:
 
         return adjusted
 
-    def _smooth_fan_speed(self, room_name: str, new_speed: int, smoothing_threshold: int = 10) -> int:
+    def _smooth_fan_speed(self, room_name: str, new_speed: int) -> int:
         """Smooth fan speed transitions to prevent rapid oscillation.
 
         Uses learned smoothing parameters if adaptive learning is active,
@@ -2353,7 +2448,8 @@ class AirconOptimizer:
         pushing hard, which is the >= 80% regime.
         """
         BASELINE_SPEED = 50  # Deadband baseline circulation speed
-        NORMALIZE_MIN_SPEED = 80  # Only normalize under strong conditioning demand
+        NORMALIZE_ENGAGE_SPEED = 80  # Only normalize under strong conditioning demand
+        NORMALIZE_RELEASE_SPEED = 70  # Hysteresis: stay engaged until demand clearly drops
 
         # Separate fan speeds from non-speed entries (like ac_temperature)
         fan_speeds = {k: v for k, v in recommendations.items() if k != "ac_temperature"}
@@ -2363,9 +2459,18 @@ class AirconOptimizer:
 
         max_speed = max(fan_speeds.values())
 
+        # Hysteresis: a max speed hovering right at a single threshold would
+        # flip every active room between scaled and unscaled (up to ~25
+        # points) each cycle — an oscillation smoothing can't see because it
+        # runs before this stage. Engage at 80%, release only below 70%.
+        if max_speed >= NORMALIZE_ENGAGE_SPEED:
+            self._normalization_active = True
+        elif max_speed < NORMALIZE_RELEASE_SPEED:
+            self._normalization_active = False
+
         # Skip if demand is mild (proportional speeds stand as-is) or already
         # at 100% (no scaling needed).
-        if max_speed < NORMALIZE_MIN_SPEED or max_speed >= 100:
+        if not self._normalization_active or max_speed >= 100:
             return recommendations
 
         scale_factor = 100.0 / max_speed
@@ -2785,6 +2890,18 @@ class AirconOptimizer:
             _LOGGER.error("Invalid quick action mode: %s", mode)
             return
 
+        # Re-entrancy guard: entering a mode while another (or the same) one
+        # is active would snapshot the modified settings as "original" (e.g.
+        # vacation's widened deadband) or stack sleep setbacks twice. Exit
+        # cleanly first so the previous mode's settings are restored before
+        # the new mode takes its snapshot.
+        if self._quick_action_mode is not None:
+            _LOGGER.info(
+                "Quick action '%s' already active - exiting it before entering '%s'",
+                self._quick_action_mode, mode,
+            )
+            self._exit_quick_action_mode()
+
         self._quick_action_mode = mode
 
         # Set default durations
@@ -2888,6 +3005,12 @@ class AirconOptimizer:
         self._quick_action_expiry = None
         self._quick_action_original_settings = {}
         self._away_mode_auto = False
+        if mode == "vacation":
+            # Exiting vacation must also reset the away timer. With everyone
+            # still away, a stale timer would satisfy the delay immediately
+            # and auto re-enter vacation on the next cycle, making a manual
+            # cancel impossible; re-entry now requires a fresh away period.
+            self._all_away_since = None
 
         _LOGGER.info("Exited quick action mode: %s", mode)
 
@@ -3232,12 +3355,25 @@ class AirconOptimizer:
                 entity_name=f"Main Fan ({self.main_fan_entity})"
             )
         else:
-            success = await self._retry_service_call(
-                "fan",
-                "set_preset_mode",
-                {"entity_id": self.main_fan_entity, "preset_mode": fan_speed},
-                entity_name=f"Main Fan ({self.main_fan_entity})"
-            )
+            preset_modes = fan_state.attributes.get("preset_modes")
+            if isinstance(preset_modes, (list, tuple)) and fan_speed in preset_modes:
+                success = await self._retry_service_call(
+                    "fan",
+                    "set_preset_mode",
+                    {"entity_id": self.main_fan_entity, "preset_mode": fan_speed},
+                    entity_name=f"Main Fan ({self.main_fan_entity})"
+                )
+            else:
+                # Fan doesn't expose low/medium/high presets — fall back to
+                # percentage (same mapping the climate entity's manual fan
+                # control uses) instead of failing 3 retries every cycle.
+                pct_map = {"low": 33, "medium": 66, "high": 100}
+                success = await self._retry_service_call(
+                    "fan",
+                    "set_percentage",
+                    {"entity_id": self.main_fan_entity, "percentage": pct_map.get(fan_speed, 66)},
+                    entity_name=f"Main Fan ({self.main_fan_entity})"
+                )
 
         if success:
             _LOGGER.debug("Set main fan (%s) to %s", self.main_fan_entity, fan_speed)
@@ -3405,6 +3541,23 @@ class AirconOptimizer:
         if current_mode == optimal_mode:
             return
 
+        # Don't fight an active critical-room emergency: freeze protection may
+        # have put the AC in HEAT while this optimizer is configured for cool
+        # (or vice versa). Only allow mode changes that serve the emergency.
+        emergency = self._critical_emergency_direction()
+        if emergency == "cold" and optimal_mode != "heat":
+            _LOGGER.info(
+                "Critical under-temperature emergency active - not switching HVAC mode to %s",
+                optimal_mode,
+            )
+            return
+        if emergency == "hot" and optimal_mode != "cool":
+            _LOGGER.info(
+                "Critical over-temperature emergency active - not switching HVAC mode to %s",
+                optimal_mode,
+            )
+            return
+
         # Get actual climate entity state to check available modes
         climate_entity = self.hass.states.get(self.main_climate_entity)
         if not climate_entity:
@@ -3473,6 +3626,19 @@ class AirconOptimizer:
             return
 
         current_mode = main_climate_state.get("hvac_mode")
+
+        # Critical-room emergency handling: while the critical monitor is
+        # driving a recovery, never turn the AC off, and make sure a turn-on
+        # uses the mode that actually serves the emergency.
+        emergency = self._critical_emergency_direction()
+        if emergency is not None:
+            if not needs_ac:
+                _LOGGER.info(
+                    "Critical room emergency (%s side) active - not turning off main AC",
+                    emergency,
+                )
+                return
+            optimal_mode = "heat" if emergency == "cold" else "cool"
 
         # Compressor protection: enforce minimum on/off times
         if self.enable_compressor_protection:
@@ -3586,25 +3752,17 @@ class AirconOptimizer:
         except Exception as e:
             _LOGGER.error("Error sending persistent notification: %s", e)
 
-        # Send to configured additional notification services
+        # Send to configured additional notification services. "title" is part
+        # of the base notify schema — services that can't render it simply
+        # ignore it, so no message-only fallback call is needed.
         for service in self.notify_services:
             try:
                 service_name = service.replace("notify.", "")
-                full_message = f"{full_title}\n\n{message}"
-
-                try:
-                    await self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        {"title": full_title, "message": message},
-                    )
-                except Exception:
-                    # Fallback: some services don't support title
-                    await self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        {"message": full_message},
-                    )
+                await self.hass.services.async_call(
+                    "notify",
+                    service_name,
+                    {"title": full_title, "message": message},
+                )
                 _LOGGER.debug("Sent notification via %s", service)
             except Exception as e:
                 _LOGGER.error("Failed to send notification via %s: %s", service, e)

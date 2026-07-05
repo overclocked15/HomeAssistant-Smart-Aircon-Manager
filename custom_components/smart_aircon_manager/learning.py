@@ -5,6 +5,7 @@ to optimize HVAC performance over time. No AI/LLMs involved - pure math.
 """
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import statistics
@@ -110,9 +111,10 @@ class PerformanceTracker:
                 dist_after = abs(point["temp_after"] - target)
                 temp_change = max(0, dist_before - dist_after)  # 0 if diverging
             time_minutes = point["cycle_duration"] / 60.0
-            if time_minutes > 0 and temp_change > 0:
-                rate = temp_change / time_minutes
-                convergence_rates.append(rate)
+            if time_minutes > 0:
+                # Diverging/stalled cycles count as zero — dropping them
+                # entirely would systematically overestimate convergence.
+                convergence_rates.append(temp_change / time_minutes)
 
         return statistics.mean(convergence_rates) if convergence_rates else None
 
@@ -277,6 +279,63 @@ class PerformanceTracker:
         relative_rate = room_rate / avg_rate
         return round(relative_rate, 2)
 
+    def _passive_drift_rate(self, room_name: str, mode: str) -> float | None:
+        """Average passive drift rate (°C/min) away from target at low airflow.
+
+        mode="cool": upward drift = heat gain (sun load, poor insulation).
+        mode="heat": downward drift = heat loss.
+
+        Only low-airflow cycles count, so the measurement reflects the room's
+        envelope rather than its duct supply quality. Legacy points recorded
+        before mode tagging are included.
+        """
+        LOW_AIRFLOW_PERCENT = 30
+        rates = []
+        for point in self._data_points.get(room_name, []):
+            if point.get("temp_after") is None:
+                continue
+            if point.get("fan_speed", 100) > LOW_AIRFLOW_PERCENT:
+                continue
+            if point.get("operating_mode") not in (None, mode):
+                continue
+            minutes = point.get("cycle_duration", 0) / 60.0
+            if minutes <= 0:
+                continue
+            delta = point["temp_after"] - point["temp_before"]
+            drift = delta if mode == "cool" else -delta
+            if drift > 0:
+                rates.append(drift / minutes)
+
+        if len(rates) < 10:
+            return None
+        return statistics.mean(rates)
+
+    def get_relative_drift_rate(self, room_name: str, mode: str) -> float | None:
+        """Room's passive drift rate relative to the house average.
+
+        Returns > 1.0 when this room gains heat (mode="cool") or loses heat
+        (mode="heat") faster than the average room, or None when there is not
+        enough low-airflow data for a meaningful comparison.
+        """
+        room_rate = self._passive_drift_rate(room_name, mode)
+        if not room_rate:
+            return None
+
+        all_rates = []
+        for rname in list(self._data_points.keys()):
+            rate = self._passive_drift_rate(rname, mode)
+            if rate:
+                all_rates.append(rate)
+
+        if len(all_rates) < 2:
+            return None
+
+        avg_rate = statistics.mean(all_rates)
+        if avg_rate == 0:
+            return None
+
+        return round(room_rate / avg_rate, 2)
+
     def detect_room_coupling(self, primary_room: str) -> dict[str, float]:
         """Detect which rooms are thermally coupled to this room.
 
@@ -295,28 +354,32 @@ class PerformanceTracker:
 
         coupled_rooms = {}
 
-        for other_room, other_points in self._data_points.items():
+        # Stride the windows instead of sliding by 1, and bisect the other
+        # room's (chronologically appended) timestamps instead of scanning
+        # every point per window. The naive version was O(rooms² × points²)
+        # and could stall the event loop for seconds on an 8-room house.
+        WINDOW = 10
+        STRIDE = 10
+
+        for other_room, other_points in list(self._data_points.items()):
             if other_room == primary_room or len(other_points) < 50:
                 continue
+
+            other_times = [p["timestamp"] for p in other_points]
 
             # Find overlapping time windows and calculate correlation
             correlations = []
 
-            for i in range(len(primary_points) - 10):
-                primary_window = primary_points[i:i+10]
-                primary_times = [p["timestamp"] for p in primary_window]
+            for i in range(0, len(primary_points) - WINDOW, STRIDE):
+                primary_window = primary_points[i:i + WINDOW]
 
-                if not primary_times:
-                    continue
-
-                min_time = min(primary_times)
-                max_time = max(primary_times)
+                min_time = primary_window[0]["timestamp"]
+                max_time = primary_window[-1]["timestamp"]
 
                 # Find matching time window in other room
-                matching_points = [
-                    p for p in other_points
-                    if min_time <= p["timestamp"] <= max_time
-                ]
+                lo = bisect.bisect_left(other_times, min_time)
+                hi = bisect.bisect_right(other_times, max_time)
+                matching_points = other_points[lo:hi]
 
                 if len(matching_points) < 5:
                     continue
@@ -552,17 +615,20 @@ class LearningProfile:
                 self.optimal_smoothing_threshold = max(5, self.optimal_smoothing_threshold - 1)
             # If same: keep parameters unchanged (they're working)
 
-        # Update adaptive balancing characteristics.
-        # Prefer season-specific rates (relative_heat_gain_rate feeds cool-mode
-        # adjustments, relative_cool_rate feeds heat-mode adjustments), falling
-        # back to the combined rate when a season has no data yet.
-        relative_rate = tracker.get_relative_convergence_rate(self.room_name)
-        rel_cool_season = tracker.get_relative_convergence_rate(self.room_name, mode="cool")
-        rel_heat_season = tracker.get_relative_convergence_rate(self.room_name, mode="heat")
-        if rel_cool_season or relative_rate:
-            self.relative_heat_gain_rate = rel_cool_season or relative_rate
-        if rel_heat_season or relative_rate:
-            self.relative_cool_rate = rel_heat_season or relative_rate
+        # Update adaptive balancing characteristics. These feed the balancing
+        # convergence adjustment, whose semantics are "rate > 1.0 = this room
+        # gains/loses heat faster than average, give it more air". The
+        # convergence rate previously used here measures how fast a room
+        # moves toward target WITH airflow (i.e. duct supply quality) —
+        # nearly the opposite population — so measure passive drift at low
+        # airflow instead, and stay neutral (1.0) until real drift data
+        # accumulates.
+        heat_gain = tracker.get_relative_drift_rate(self.room_name, mode="cool")
+        heat_loss = tracker.get_relative_drift_rate(self.room_name, mode="heat")
+        if heat_gain is not None:
+            self.relative_heat_gain_rate = max(0.5, min(2.0, heat_gain))
+        if heat_loss is not None:
+            self.relative_cool_rate = max(0.5, min(2.0, heat_loss))
 
         # Detect room coupling
         coupling = tracker.detect_room_coupling(self.room_name)
@@ -711,29 +777,42 @@ class LearningManager:
 
         Returns list of room names that were updated.
         """
+        # Profile analysis is CPU-heavy (coupling detection alone is
+        # O(rooms² × windows)); run it in the executor so the hourly update
+        # can never stall Home Assistant's event loop.
+        updated_rooms, any_profile_modified = await self.hass.async_add_executor_job(
+            self._update_profiles_sync
+        )
+
+        # Save profiles only when something meaningfully changed, to avoid
+        # rewriting identical JSON to flash storage every hour.
+        if any_profile_modified:
+            await self.async_save_profiles()
+
+        return updated_rooms
+
+    def _update_profiles_sync(self) -> tuple[list[str], bool]:
+        """Synchronous profile update pass (runs in the executor)."""
         updated_rooms = []
         any_profile_modified = False
 
-        for room_name in self.tracker._data_points.keys():
+        for room_name in list(self.tracker._data_points.keys()):
             if room_name not in self.profiles:
                 self.profiles[room_name] = LearningProfile(room_name)
                 any_profile_modified = True
 
             profile = self.profiles[room_name]
-            # update_from_tracker now always updates confidence, even if insufficient data
-            # Returns True only if thermal characteristics were successfully calculated
+            old_confidence = profile.confidence
+            # update_from_tracker always refreshes confidence; it returns True
+            # only if thermal characteristics were successfully calculated
             if profile.update_from_tracker(self.tracker):
                 updated_rooms.append(room_name)
                 any_profile_modified = True
-            else:
-                # Even if full update failed, confidence was updated - save it
+            elif abs(profile.confidence - old_confidence) > 0.005:
+                # Confidence moved meaningfully even without a full update
                 any_profile_modified = True
 
-        # Save profiles if any were created or modified (including confidence-only updates)
-        if any_profile_modified:
-            await self.async_save_profiles()
-
-        return updated_rooms
+        return updated_rooms, any_profile_modified
 
     def get_profile(self, room_name: str) -> LearningProfile | None:
         """Get learning profile for a room."""

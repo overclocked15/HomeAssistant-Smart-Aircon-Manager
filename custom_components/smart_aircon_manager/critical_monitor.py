@@ -300,39 +300,22 @@ class CriticalRoomMonitor:
         self, notify_services: list[str], title: str, message: str
     ) -> None:
         """Send notification to configured services."""
+        # "title" is part of the base notify schema — services that can't
+        # render it (SMS gateways etc.) simply ignore it, so a message-only
+        # fallback call is never needed.
         for service in notify_services:
             try:
                 # Extract service name (remove "notify." prefix if present)
                 service_name = service.replace("notify.", "")
-
-                # Combine title and message for better compatibility
-                # Some services (like ClickSend, Twilio) don't support separate title
-                full_message = f"{title}\n\n{message}"
-
-                # Try to send with both title and message first (for services that support it)
-                # If that fails, send with message only
-                try:
-                    await self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        {
-                            "title": title,
-                            "message": message,
-                        },
-                    )
-                    _LOGGER.debug("Sent notification via %s (with title)", service)
-                except Exception as title_error:
-                    # Fallback: send as single message without title parameter
-                    _LOGGER.debug("Title parameter not supported for %s, sending as single message", service)
-                    await self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        {
-                            "message": full_message,
-                        },
-                    )
-                    _LOGGER.debug("Sent notification via %s (message only)", service)
-
+                await self.hass.services.async_call(
+                    "notify",
+                    service_name,
+                    {
+                        "title": title,
+                        "message": message,
+                    },
+                )
+                _LOGGER.debug("Sent notification via %s", service)
             except Exception as e:
                 _LOGGER.error("Failed to send notification via %s: %s", service, e)
 

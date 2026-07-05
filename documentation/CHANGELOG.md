@@ -1,5 +1,43 @@
 # Changelog
 
+## v3.0.1 - Code Review Fixes (2 critical + 6 medium + 9 low)
+
+**Release Date**: 2026-07-05
+
+Full-codebase review of v3.0.0. Two of the findings were long-standing, user-visible breakage; the rest are correctness, performance, and robustness fixes.
+
+### Critical
+
+- **AC on/off control read a non-existent `hvac_mode` attribute** ([optimizer.py:1843](../custom_components/smart_aircon_manager/optimizer.py#L1843)): standard HA climate entities expose the hvac mode as the entity *state*, not as an attribute, so `main_climate_state["hvac_mode"]` was `None` on real hardware. Consequences: *Auto Control Main AC* could turn the AC on but **never off**; the compressor min-off-time check was bypassed on turn-on (and `_ac_last_turned_on` never recorded); and with humidity control enabled, `set_hvac_mode` was re-sent every 30-second poll (many split units beep on every command) along with a "Switched to DRY mode" notification each time. Now falls back to the entity state. The 153-test suite missed this because tests hand-built the state dict — new regression tests build it from a realistic mock entity and verify end-to-end that an overcooled house actually turns the AC off.
+- **Options → Balancing page crashed with `NameError`** ([config_flow.py:1590](../custom_components/smart_aircon_manager/config_flow.py#L1590)): `errors` was referenced in the form render but never assigned, so opening the Balancing options page always showed "Unknown error occurred".
+
+### Medium
+
+- **Learning analysis no longer blocks the event loop** ([learning.py:794](../custom_components/smart_aircon_manager/learning.py#L794)): the hourly profile update (coupling detection alone was O(rooms² × points²) — tens of millions of operations for an 8-room house) ran synchronously in the event loop and could freeze HA for seconds on a Raspberry Pi. It now runs in the executor, and coupling detection uses strided windows + bisected timestamp lookups (~100× less work).
+- **Quick-action modes are now re-entrancy safe** ([optimizer.py:2893](../custom_components/smart_aircon_manager/optimizer.py#L2893)): entering a mode while another (or the same) was active overwrote the "original settings" snapshot — sleep-while-vacation permanently kept vacation's 2.0 °C deadband after exit, and double-sleep stacked the setback to +2 °C and then failed to restore it. Entering a new mode now exits the active one (restoring its settings) first.
+- **Auto-away vacation can be manually cancelled while still away** ([optimizer.py:3009](../custom_components/smart_aircon_manager/optimizer.py#L3009)): the away timer wasn't reset on manual exit, so with everyone still away, vacation auto-re-entered within one cycle (impossible to disable remotely for e.g. a house sitter). Exiting vacation now resets the timer; re-entry requires a fresh full away period.
+- **Optimizer no longer fights critical-room emergencies** ([optimizer.py:1472](../custom_components/smart_aircon_manager/optimizer.py#L1472)): freeze protection turns the AC on in HEAT, but a cool-configured optimizer with *Auto Control Main AC* saw an "overcooled" house and turned it off again — an on/off tug-of-war every ~5 minutes all night. While any critical room is critical/recovering, the optimizer now refuses to turn the AC off or switch modes against the emergency, and a turn-on uses the emergency's response mode.
+- **Compressor runtime now measures compressor time, not mode time**: runtime (and filter hours) previously accumulated whenever the mode was cool/heat/dry, including long idle stretches where the compressor was satisfied. When the entity reports `hvac_action`, only `cooling`/`heating`/`drying` count as compressor time (blower/filter time stays mode-based); mode-based accounting remains as fallback.
+- **Options-flow validation errors now show real messages**: 14 error keys (duplicate room name, entity not found/unavailable, schedule and threshold ordering errors, etc.) existed only under `config.error`, so the options flow rendered "Unknown error". All copied to `options.error` in strings.json and en.json.
+
+### Low / design
+
+- **Outlier turn-on and mode resolution now agree** ([optimizer.py:746](../custom_components/smart_aircon_manager/optimizer.py#L746)): one room past 1.5× the turn-on threshold could power the AC on while the house-average mode resolver picked fan_only (or, in auto mode, the opposite direction — one hot outlier with a slightly-cool average resolved to *heat*). An extreme outlier now resolves the active mode in its own direction, in both the humidity path and auto-mode resolution.
+- **Fan-speed normalization got hysteresis** ([optimizer.py:2452](../custom_components/smart_aircon_manager/optimizer.py#L2452)): with a single 80% threshold, a hottest-room speed hovering at the boundary flipped every active room between scaled/unscaled (up to ~25 points) each cycle — an oscillation smoothing can't see because it runs earlier in the pipeline. Normalization now engages at ≥80% and releases only below 70%. Open-window-parked rooms also sync the smoothing memory to the applied (parked) speed.
+- **Adaptive-balancing rates now measure what their names claim** ([learning.py:313](../custom_components/smart_aircon_manager/learning.py#L313)): `relative_heat_gain_rate`/`relative_cool_rate` were fed by *with-airflow convergence* speed (duct supply quality) — nearly the opposite of the envelope heat gain/loss the balancing formula (and the v2.15.2 sign fix) was written for. They're now computed from passive drift at low airflow (≤30%), clamped to 0.5–2.0, and stay neutral (1.0) until real drift data accumulates.
+- **Main fan control falls back to percentage** ([optimizer.py:3373](../custom_components/smart_aircon_manager/optimizer.py#L3373)): `fan.set_preset_mode` with low/medium/high was assumed; fans without those presets failed 3 retries + an error notification every cycle. Presets are used when the fan exposes them, otherwise `fan.set_percentage` (33/66/100 — same mapping as the climate entity's manual fan path).
+- **Convergence rates no longer drop diverging cycles**: diverging/stalled cycles now count as zero instead of being excluded, so convergence estimates (and `avg_convergence_time_seconds`) are no longer systematically optimistic.
+- **`temp_before` of exactly 0.0 °C no longer treated as missing** in learning cycle tracking (`if previous_temp` → `is not None`).
+- **Learning profiles only saved when something meaningfully changed**, instead of rewriting identical JSON to flash storage every hour.
+- **Dead notify title-fallback removed** (optimizer + critical monitor): `title` is part of the base notify schema — services that can't render it ignore it — and the non-blocking call could never trigger the fallback anyway.
+- **Pre-positioning results are reported in coordinator data**, so fan-recommendation sensors no longer show stale values while the AC is off.
+- **Dead `smoothing_threshold` parameter removed** from `_smooth_fan_speed` (was always overwritten internally).
+
+### Tests
+
+- New `tests/test_code_review_fixes.py` with 24 regression tests covering every behavioral fix above, including end-to-end AC turn-off with a realistic climate-entity mock (mode as state, not attribute) — the exact gap that let the critical bug survive 153 passing tests.
+- Suite is now 177 tests, all passing.
+
 ## v3.0.0 - Full Logic Audit + Feature Release
 
 **Release Date**: 2026-07-05
