@@ -114,7 +114,11 @@ The AC is turned off when:
 
 This prevents premature turn-off when some rooms still need conditioning.
 
-With **efficient operation** (efficiency mode, or battery-aware mode while running on the battery), the AC also switches off once every room has been satisfied for 5 minutes, instead of idling the blower until the house is 2°C past target. It restarts through the normal turn-on thresholds.
+With **efficient operation** (efficiency mode, or battery-aware mode while running on the battery), the compressor rests once every room has been satisfied for 5 minutes:
+- **Cooling:** fan-only by default, so air keeps moving and the main fan drops to low.
+- **Heating:** switches off by default, because fan-only blows room-temperature air that feels like a draft.
+
+It resumes at the normal turn-on thresholds. With humidity control on, the existing cool → dry → fan-only flow is left unchanged.
 
 ### AC Temperature Setpoint
 
@@ -249,9 +253,11 @@ Optional, and vendor agnostic: it needs only a battery state-of-charge (%) senso
 | Level | When | What changes |
 |-------|------|--------------|
 | **normal** | Not running on the battery (charging, idle, full) | Nothing |
-| **efficient** | Running on the battery | Efficient operation: switch off when satisfied, gentler setpoint, short fan-only idle |
-| **saving** | Projected charge at solar recovery is below reserve + buffer (`balanced`), or always on battery (`max_saving`) | + no dry mode, main fan capped at medium. Comfort relaxed: non-priority rooms by the full limit and dropped from AC decisions (priority rooms keep their target); without priority rooms, every room by half the limit |
+| **efficient** | Running on the battery | Efficient operation: the compressor rests when every room is satisfied (fan-only while cooling), and a gentler setpoint |
+| **saving** | Projected charge at solar recovery is below reserve + buffer (`balanced`), or always on battery (`max_saving`) | + main fan capped at medium. Comfort relaxed: non-priority rooms by the full limit and dropped from AC decisions (priority rooms keep their target); without priority rooms, every room by half the limit |
 | **max saving** | Projected well short (>10% below), or the battery within 3% of its reserve | + main fan capped at low, comfort relaxed up to the limit (priority rooms by half) |
+
+Dehumidifying is never suppressed at any level. In humid weather a dry house at a slightly higher temperature feels better than a muggy one. Dry mode still engages below a relaxed target, because overcooling is judged against the user's real target.
 
 **Projection**: SOC now minus the expected drain until the expected solar recovery. The drain comes from the learned per-hour overnight profile (separate for cooling and heating seasons), scaled by how tonight compares with it. Without a profile yet, the observed trend is used.
 

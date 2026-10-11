@@ -100,6 +100,7 @@ class AirconOptimizer:
         away_mode_entities: list[str] | None = None,
         away_mode_delay_minutes: float = 30.0,
         enable_efficiency_mode: bool = False,
+        efficient_satisfied_action: str = "auto",
         enable_battery_mode: bool = False,
         battery_soc_entity: str | None = None,
         battery_power_entity: str | None = None,
@@ -343,13 +344,25 @@ class AirconOptimizer:
         self._last_seen_ac_active: bool | None = None
         # Serializes state-file writes (several background saves can overlap)
         self._state_save_lock: asyncio.Lock | None = None
-        # When every room became satisfied (efficient switch-off dwell)
+        # Efficient operation: when every room became satisfied, whether that
+        # has lasted the dwell this cycle, and whether the compressor is
+        # resting in fan_only (efficient idle, setups without humidity control)
         self._satisfied_since: float | None = None
+        self._satisfied_long_enough = False
+        self._efficient_fan_idle = False
+        self._efficient_fan_idle_direction: str | None = None
         self._fan_mode_mismatch_logged = False
 
         # Efficient operation and battery-aware mode
-        from .const import BATTERY_POWER_SIGN_OPTIONS, BATTERY_STRATEGY_OPTIONS
+        from .const import (
+            BATTERY_POWER_SIGN_OPTIONS,
+            BATTERY_STRATEGY_OPTIONS,
+            EFFICIENT_SATISFIED_ACTION_OPTIONS,
+        )
         self.enable_efficiency_mode = bool(enable_efficiency_mode)
+        self.efficient_satisfied_action = (
+            efficient_satisfied_action if efficient_satisfied_action in EFFICIENT_SATISFIED_ACTION_OPTIONS else "auto"
+        )
         self.enable_battery_mode = bool(enable_battery_mode)
         self.battery_soc_entity = battery_soc_entity or None
         self.battery_power_entity = battery_power_entity or None
@@ -1045,8 +1058,12 @@ class AirconOptimizer:
         if not self.enable_humidity_control:
             # No humidity control - the mode is the resolved direction (fixed
             # modes: hvac_mode; auto: direction with reversal guard and
-            # hysteresis; emergencies: the direction that serves them)
-            resolved_mode = serving
+            # hysteresis; emergencies: the direction that serves them), unless
+            # efficient operation is resting the compressor in fan-only
+            resolved_mode = (
+                self._efficient_idle_mode(room_states, effective_target, serving, current_ac_mode)
+                or serving
+            )
 
             # Update tracking state so _get_effective_operating_mode() stays current
             current_time = time.time()
@@ -1059,8 +1076,12 @@ class AirconOptimizer:
             if resolved_mode in ("cool", "heat"):
                 self._last_active_operating_mode = resolved_mode
             self._dry_mode_active = False
-            self._fan_only_mode_active = False
-            self._fan_only_since = None
+            self._fan_only_mode_active = resolved_mode == "fan_only"
+            if self._fan_only_mode_active:
+                if self._fan_only_since is None:
+                    self._fan_only_since = current_time
+            else:
+                self._fan_only_since = None
 
             return resolved_mode
 
@@ -1173,16 +1194,18 @@ class AirconOptimizer:
 
             # Skip dry mode when heating: dry runs a low-flow refrigeration cycle
             # that cools the air, fighting the heat loop. In heat mode, fall through
-            # to fan_only for circulation only. Battery-aware mode can also
-            # suppress dry (it runs the compressor) at its saving levels.
+            # to fan_only for circulation only.
             in_heating = serving == "heat"
-            dry_suppressed = self._dry_mode_suppressed()
             # Dry mode also cools — never engage it while the house is already
-            # overcooled past the deadband, or it deepens the overshoot.
-            overcooled = temp_deviation < -effective_deadband
+            # overcooled past the deadband, or it deepens the overshoot. Judge
+            # that against the UNRELAXED target: a house sitting below a target
+            # raised by sleep or battery-aware mode is at the user's real
+            # target, not overcooled, and must keep dehumidifying.
+            relax_offset = float(self._comfort_relaxation.get("global") or 0.0) if serving == "cool" else 0.0
+            overcooled = (temp_deviation + relax_offset) < -effective_deadband
 
             # High humidity - use dry mode (cooling/auto-cool only)
-            if not in_heating and not overcooled and not dry_suppressed and (
+            if not in_heating and not overcooled and (
                 avg_humidity >= self.dry_mode_humidity_threshold
                 or humidity_excess > self.humidity_deadband
             ):
@@ -1191,15 +1214,13 @@ class AirconOptimizer:
                     "Humidity control: %.1f%% (target: %.1f%%, threshold: %.1f%%) → DRY mode (candidate)",
                     avg_humidity, self.target_humidity, self.dry_mode_humidity_threshold
                 )
-            elif (in_heating or overcooled or dry_suppressed) and (
+            elif (in_heating or overcooled) and (
                 avg_humidity >= self.dry_mode_humidity_threshold
                 or humidity_excess > self.humidity_deadband
             ):
                 _LOGGER.debug(
                     "Humidity high (%.1f%%) but %s — suppressing DRY mode, using FAN_ONLY",
-                    avg_humidity,
-                    "heating active" if in_heating
-                    else ("house overcooled" if overcooled else "battery saving active"),
+                    avg_humidity, "heating active" if in_heating else "house overcooled"
                 )
 
         # Priority 3: Both temperature and humidity OK - use fan only for circulation
@@ -1968,25 +1989,132 @@ class AirconOptimizer:
 
     def _efficiency_active(self) -> bool:
         """Efficient operation: on when enabled, or whenever battery-aware
-        mode reports the house is running on its battery."""
+        mode reports the house is running on its battery. Stands down during
+        a critical-room emergency (the rescue gets full power)."""
+        if self._critical_emergency_direction() is not None:
+            return False
         if self.enable_efficiency_mode:
             return True
         decision = self._battery_decision
         return bool(self.enable_battery_mode and decision is not None and decision.level >= 1)
 
+    def _unit_supports_fan_only(self) -> bool:
+        """Whether the main AC offers a fan-only mode (unknown -> assume yes)."""
+        if not self.main_climate_entity:
+            return True
+        state = self.hass.states.get(self.main_climate_entity)
+        modes = state.attributes.get("hvac_modes") if state is not None else None
+        if not isinstance(modes, (list, tuple)):
+            return True
+        return "fan_only" in modes or "fan" in modes
+
+    def _efficient_satisfied_action(self, direction: str | None) -> str:
+        """What efficient operation does once every room is satisfied.
+
+        "fan_only": rest the compressor but keep air moving — moving air
+        feels cooler than still air and keeps rooms mixed. "off": switch the
+        AC off. The default ("auto") rests in fan-only while cooling and
+        switches off while heating, where blowing room-temperature air (cooled
+        further in roof-space ducts) feels like a draft. Units without a
+        fan-only mode always switch off.
+        """
+        action = self.efficient_satisfied_action
+        if action == "auto":
+            action = "fan_only" if direction == "cool" else "off"
+        if action == "fan_only" and not self._unit_supports_fan_only():
+            return "off"
+        return action
+
+    def _update_satisfied_state(
+        self,
+        room_states: dict[str, dict[str, Any]],
+        effective_target: float,
+        direction: str,
+        ac_running: bool,
+    ) -> None:
+        """Track how long every room has been satisfied (efficient operation).
+
+        Runs before the mode resolver so both efficient actions — resting in
+        fan-only (resolver) and switching off (_check_if_ac_needed) — share
+        one dwell.
+        """
+        from .const import EFFICIENT_OFF_DWELL_SECONDS
+
+        if not (self._efficiency_active() and ac_running):
+            self._satisfied_since = None
+            self._satisfied_long_enough = False
+            return
+        demand = self._average_demand(room_states, effective_target, direction)
+        excesses = self._room_excesses(room_states, effective_target, direction, include_excluded=False)
+        satisfied = demand is not None and demand <= 0 and (not excesses or max(excesses) <= 0)
+        now = time.time()
+        if not satisfied:
+            self._satisfied_since = None
+        elif self._satisfied_since is None:
+            self._satisfied_since = now
+        self._satisfied_long_enough = (
+            self._satisfied_since is not None and now - self._satisfied_since >= EFFICIENT_OFF_DWELL_SECONDS
+        )
+
+    def _efficient_idle_mode(
+        self,
+        room_states: dict[str, dict[str, Any]],
+        effective_target: float,
+        serving: str,
+        current_ac_mode: str | None,
+    ) -> str | None:
+        """Efficient operation's fan-only rest, for setups without humidity control.
+
+        Once every room has been satisfied for the dwell, the compressor rests
+        in fan_only (air keeps moving) until the house needs conditioning
+        again by the normal turn-on rule (average demand >= turn-on threshold
+        or one room 1.5x past it). Setups with humidity control already rest
+        in fan_only inside the deadband and switch to dry when it gets humid,
+        so their flow is left exactly as it is.
+        """
+        if (
+            not self._efficiency_active()
+            or self._efficient_satisfied_action(serving) != "fan_only"
+            or current_ac_mode == "off"
+        ):
+            self._efficient_fan_idle = False
+            return None
+        if self._efficient_fan_idle and self._efficient_fan_idle_direction != serving:
+            self._efficient_fan_idle = False  # direction changed (auto mode)
+        if self._efficient_fan_idle:
+            demand = self._average_demand(room_states, effective_target, serving)
+            excesses = self._room_excesses(room_states, effective_target, serving)
+            resume = (demand is not None and demand >= self.ac_turn_on_threshold) or (
+                bool(excesses) and max(excesses) >= self.ac_turn_on_threshold * 1.5
+            )
+            if not resume:
+                return "fan_only"
+            self._efficient_fan_idle = False
+            _LOGGER.info("Efficient operation: house needs %s again - resuming", serving)
+            return None
+        if self._satisfied_long_enough:
+            self._efficient_fan_idle = True
+            self._efficient_fan_idle_direction = serving
+            _LOGGER.info(
+                "Efficient operation: every room satisfied - resting the compressor in fan-only"
+            )
+            return "fan_only"
+        return None
+
     def _effective_fan_only_idle_minutes(self) -> float:
-        """Fan-only idle shutdown time, capped while efficient operation is on."""
+        """Fan-only idle shutdown time.
+
+        Efficient operation only caps it when its satisfied action is to
+        switch off; when it rests in fan-only (the default while cooling) the
+        user's own setting stands, so a circulating house keeps circulating.
+        """
         from .const import EFFICIENT_FAN_ONLY_IDLE_MINUTES
 
         minutes = self.fan_only_idle_minutes
-        if self._efficiency_active():
+        direction = self._cycle_direction or self._get_effective_operating_mode()
+        if self._efficiency_active() and self._efficient_satisfied_action(direction) == "off":
             minutes = EFFICIENT_FAN_ONLY_IDLE_MINUTES if minutes <= 0 else min(minutes, EFFICIENT_FAN_ONLY_IDLE_MINUTES)
         return minutes
-
-    def _dry_mode_suppressed(self) -> bool:
-        """Battery-aware saving levels skip dry mode (it runs the compressor)."""
-        decision = self._battery_decision
-        return bool(self.enable_battery_mode and decision is not None and decision.suppress_dry)
 
     async def _refresh_ac_setpoint(self, room_states: dict[str, dict[str, Any]]) -> None:
         """Re-send the AC setpoint when the full optimization is skipped.
@@ -2465,6 +2593,9 @@ class AirconOptimizer:
                 "error_count": self._error_count if not in_startup_delay else 0,
             }
 
+        # Efficient operation: how long has every room been satisfied?
+        self._update_satisfied_state(room_states, effective_target, direction, main_ac_running)
+
         # Determine optimal HVAC mode first so _check_if_ac_needed uses current mode
         optimal_hvac_mode = self._determine_optimal_hvac_mode(
             room_states, effective_target, current_ac_mode=current_ac_mode, direction=direction
@@ -2709,6 +2840,7 @@ class AirconOptimizer:
             "comfort_relaxation_sources": list(relaxation.get("sources") or []),
             "conditioning_direction": direction,
             "efficiency_active": self._efficiency_active(),
+            "efficient_fan_idle": self._efficient_fan_idle,
             "battery": self.battery_summary(),
             # Performance metrics
             "optimization_cycle_time_ms": cycle_time_ms,
@@ -4031,12 +4163,20 @@ class AirconOptimizer:
         return None
 
     def _cap_main_fan_speed(self, fan_speed: str) -> str:
-        """Apply battery-aware mode's main fan cap (low < medium < high)."""
-        decision = self._battery_decision
-        cap = decision.main_fan_cap if (self.enable_battery_mode and decision is not None) else None
+        """Apply the main fan caps (low < medium < high): battery-aware mode's
+        saving levels, and low while efficient operation rests in fan-only."""
         order = ["low", "medium", "high"]
-        if cap in order and fan_speed in order and order.index(fan_speed) > order.index(cap):
-            _LOGGER.debug("Battery-aware mode caps main fan %s -> %s", fan_speed, cap)
+        caps = []
+        decision = self._battery_decision
+        if self.enable_battery_mode and decision is not None and decision.main_fan_cap in order:
+            caps.append(decision.main_fan_cap)
+        if self._efficient_fan_idle:
+            caps.append("low")
+        if not caps or fan_speed not in order:
+            return fan_speed
+        cap = min(caps, key=order.index)
+        if order.index(fan_speed) > order.index(cap):
+            _LOGGER.debug("Main fan capped %s -> %s", fan_speed, cap)
             return cap
         return fan_speed
 
@@ -4087,10 +4227,11 @@ class AirconOptimizer:
         off through the normal thresholds first.
 
         Efficient operation (battery-aware mode on battery, or efficiency mode)
-        also switches the AC off once every room has been satisfied for
-        EFFICIENT_OFF_DWELL_SECONDS, instead of idling the blower until the
-        house is ac_turn_off_threshold past target. It restarts through the
-        normal turn-on thresholds.
+        whose satisfied action is "off" (default: while heating) also switches
+        the AC off once every room has been satisfied for
+        EFFICIENT_OFF_DWELL_SECONDS. It restarts through the normal turn-on
+        thresholds. The "fan_only" action (default while cooling) instead rests
+        the compressor in fan-only via the mode resolver.
         """
         from .const import EFFICIENT_OFF_DWELL_SECONDS
 
@@ -4128,24 +4269,19 @@ class AirconOptimizer:
                     "AC turn OFF (%s): avg=%.1f°C (%.1f°C past target %.1f°C), all rooms satisfied",
                     label, avg_temp, abs(temp_diff), effective_target,
                 )
-            elif self._efficiency_active() and demand <= 0 and all_satisfied:
-                now = time.time()
-                if self._satisfied_since is None:
-                    self._satisfied_since = now
-                elif now - self._satisfied_since >= EFFICIENT_OFF_DWELL_SECONDS:
-                    turn_off = True
-                    _LOGGER.info(
-                        "AC turn OFF (efficient): every room satisfied for %.0f min "
-                        "(avg=%.1f°C, target %.1f°C) - no need to idle the blower",
-                        (now - self._satisfied_since) / 60, avg_temp, effective_target,
-                    )
-            else:
-                self._satisfied_since = None
-            if turn_off:
-                self._satisfied_since = None
+            elif (
+                self._efficiency_active()
+                and self._satisfied_long_enough
+                and self._efficient_satisfied_action(mode) == "off"
+            ):
+                turn_off = True
+                _LOGGER.info(
+                    "AC turn OFF (efficient): every room satisfied for %.0f min "
+                    "(avg=%.1f°C, target %.1f°C)",
+                    EFFICIENT_OFF_DWELL_SECONDS / 60, avg_temp, effective_target,
+                )
             return not turn_off
 
-        self._satisfied_since = None
         # To turn ON: the house average exceeds the turn-on threshold in this
         # direction, OR any room is an outlier (1.5x threshold) beyond its own
         # satisfaction threshold (rooms excluded by night zoning included, as

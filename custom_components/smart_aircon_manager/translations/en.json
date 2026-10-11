@@ -317,9 +317,10 @@
       },
       "battery": {
         "title": "Battery & Efficiency",
-        "description": "Efficient operation saves energy at no comfort cost: the AC switches off once every room is satisfied instead of idling its fan, the setpoint is driven more gently, and fan-only idling is cut short.\n\nBattery-aware mode works with any home battery: pick its state-of-charge (%) sensor. While the house runs on the battery it turns efficient operation on, learns your battery's habits (when it starts draining, when solar takes over in the morning, how fast it drains), projects the charge left at solar recovery and - depending on the strategy - relaxes comfort step by step (priority rooms last) so the battery lasts longer. Critical-room protection, boost and party always take precedence.",
+        "description": "Efficient operation saves energy at no comfort cost: once every room is satisfied the compressor rests (fan-only while cooling so air keeps moving, off while heating), the setpoint is driven more gently, and with humidity control your cool / dry / fan-only flow is left as it is.\n\nBattery-aware mode works with any home battery: pick its state-of-charge (%) sensor. While the house runs on the battery it turns efficient operation on, learns your battery's habits (when it starts draining, when solar takes over in the morning, how fast it drains), projects the charge left at solar recovery and - depending on the strategy - relaxes the temperature step by step (priority rooms last) so the battery lasts longer. It never stops dehumidifying. Critical-room protection, boost and party always take precedence.",
         "data": {
           "enable_efficiency_mode": "Efficient operation (always)",
+          "efficient_satisfied_action": "When every room is satisfied",
           "enable_battery_mode": "Battery-aware mode",
           "battery_soc_entity": "Battery state of charge sensor (%)",
           "battery_power_entity": "Battery power sensor (optional, W or kW)",
@@ -332,6 +333,7 @@
         },
         "data_description": {
           "enable_efficiency_mode": "Apply the no-comfort-cost savings all the time, not only while running on the battery.",
+          "efficient_satisfied_action": "Fan only keeps air moving (it feels cooler than still air and keeps rooms mixed) while the compressor rests; cooling resumes at your turn-on threshold. Off saves the fan's power too. In winter fan-only feels like a draft, so the default switches off while heating.",
           "battery_soc_entity": "Any sensor reporting the battery's charge in percent, from any battery integration. Learning starts as soon as it is set, even with the mode off.",
           "battery_power_entity": "Gives a faster read of charging/discharging. Leave empty to use the state of charge alone.",
           "battery_power_sign": "Automatic detection learns the sign by comparing the power with the charge trend.",

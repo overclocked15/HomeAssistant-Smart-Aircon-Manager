@@ -159,11 +159,13 @@ Configured under **Options > Battery & Efficiency**.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enable_efficiency_mode` | bool | `false` | Apply the no-comfort-cost savings all the time (battery-aware mode applies them automatically while on battery) |
+| `efficient_satisfied_action` | select | `auto` | What happens once every room is satisfied: `auto` (fan only while cooling, off while heating), `fan_only`, or `off` |
 
 Efficient operation:
-- Switches the AC **off** once every room has been satisfied for 5 minutes, instead of idling the blower until the house is `ac_turn_off_threshold` past target. It restarts through the normal turn-on thresholds, so rooms drift up to about `ac_turn_on_threshold` before the next run.
-- Caps the setpoint overdrive at 2°C (instead of 4°C), so an inverter compressor runs at part load where it is most efficient.
-- Caps fan-only idling at 10 minutes.
+- **Rests the compressor once every room has been satisfied for 5 minutes.** While cooling it moves to **fan-only** by default. Air keeps moving, which feels cooler than still air and keeps rooms mixed, and the main fan drops to low. Cooling resumes at the normal turn-on threshold. While heating it switches **off** by default, because fan-only in winter blows room-temperature air (cooled further in roof-space ducts) and feels like a draft. Units without a fan-only mode switch off.
+- **Caps the setpoint overdrive at 2°C** (instead of 4°C), so an inverter compressor runs at part load where it is most efficient.
+- **Caps fan-only idling at 10 minutes, but only when the satisfied action is "off".** Otherwise your own `fan_only_idle_minutes` setting stands.
+- **Leaves humidity control alone.** With humidity control on, your cool → dry → fan-only flow is unchanged: the house still rests in fan-only inside the deadband and switches to dry when it gets humid.
 
 ### Battery-aware mode (any home battery)
 

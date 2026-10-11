@@ -20,6 +20,7 @@ from test_v302_fixes import (  # noqa: E402
     hvac_commands,
     make_cycle_optimizer,
     run_cycle,
+    set_ac_mode,
     set_room_temps,
 )
 
@@ -200,7 +201,7 @@ class TestLevels:
             learner.add_sample(local.timestamp(), 34.0 - 0.1 * i, None, "auto")
             d = decide(learner, local, 34.0 - 0.1 * i)
         assert d.level == 3, d.reason
-        assert d.suppress_dry and d.main_fan_cap == "low" and d.relax_other == 2.0
+        assert d.main_fan_cap == "low" and d.relax_other == 2.0
 
     def test_efficient_strategy_never_relaxes(self):
         start = DAY.replace(hour=20)
@@ -316,7 +317,7 @@ class TestOptimizerIntegration:
         assert result["room_states"]["Living"].get("zone_excluded") is True
         assert result["effective_target_temperature"] == pytest.approx(23.0)
 
-    def test_max_saving_caps_main_fan_and_suppresses_dry(self):
+    def test_max_saving_caps_main_fan(self):
         opt, calls, states = make_cycle_optimizer(
             rooms=(("Bed", 27.0, None), ("Living", 27.0, None)),
             climate_attrs={"fan_mode": "high", "fan_modes": ["low", "medium", "high"]},
@@ -325,7 +326,13 @@ class TestOptimizerIntegration:
         with_decision(opt, 3)
         run_cycle(opt)
         assert [c[2]["fan_mode"] for c in calls if c[1] == "set_fan_mode"] == ["low"]
-        assert opt._dry_mode_suppressed() is True
+
+    def test_saving_levels_keep_dehumidifying(self):
+        """Humidity is comfort: battery saving never suppresses dry mode."""
+        opt, calls, states = make_humid_optimizer(rh=72, temps=(23.2, 23.1), enable_battery_mode=True)
+        with_decision(opt, 3)
+        run_cycle(opt)
+        assert hvac_commands(calls) == ["dry"]
 
     def test_relaxation_in_auto_never_selects_opposite_mode(self):
         opt, calls, states = make_cycle_optimizer(hvac_mode="auto", rooms=(("Bed", 23.6, None), ("Living", 23.6, None)))
@@ -372,19 +379,93 @@ class TestOptimizerIntegration:
         assert result["battery"]["status"] in ("normal", "efficient")
 
 
+def make_humid_optimizer(rh=55, temps=(23.2, 23.1), ac_state="fan_only", **kw):
+    """Fixed cool + humidity control (with room humidity sensors), AC idling in fan_only."""
+    opt, calls, states = make_cycle_optimizer(
+        hvac_mode="cool", ac_state=ac_state, rooms=(("Bed", temps[0], None), ("Living", temps[1], None)),
+        enable_humidity_control=True, target_humidity=60, **kw,
+    )
+    for cfg in opt.room_configs:
+        sensor = f"sensor.{cfg['room_name'].lower()}_humidity"
+        cfg["humidity_sensor"] = sensor
+        states[sensor] = FakeState(str(rh))
+    opt._last_hvac_mode = ac_state if ac_state in ("cool", "fan_only", "dry") else None
+    return opt, calls, states
+
+
+def run_minutes(opt, minutes, now):
+    with patch("time.time", side_effect=lambda: now[0]):
+        for _ in range(int(minutes * 2)):
+            run_cycle(opt)
+            now[0] += 30
+
+
 class TestEfficientOperation:
-    def test_switches_off_once_satisfied_for_dwell(self):
+    def test_cooling_rests_in_fan_only_once_satisfied(self):
         opt, calls, states = make_cycle_optimizer(
             rooms=(("Bed", 22.9, None), ("Living", 22.8, None)), enable_efficiency_mode=True,
         )
         now = [time.time()]
         with patch("time.time", side_effect=lambda: now[0]):
             run_cycle(opt)
-            assert hvac_commands(calls) == []
+            assert hvac_commands(calls) == []           # dwell starts
             now[0] += 400
             opt._last_optimization = None
             run_cycle(opt)
-        assert hvac_commands(calls) == ["off"]
+        assert hvac_commands(calls) == ["fan_only"]
+        assert opt._efficient_fan_idle is True
+
+    def test_fan_only_rest_resumes_at_turn_on_threshold(self):
+        opt, calls, states = make_cycle_optimizer(
+            rooms=(("Bed", 22.9, None), ("Living", 22.8, None)), enable_efficiency_mode=True,
+        )
+        now = [time.time()]
+        run_minutes(opt, 6, now)
+        # (the fake AC never changes state, so the command repeats)
+        assert set(hvac_commands(calls)) == {"fan_only"}
+        set_ac_mode(states, "fan_only")
+        calls.clear()
+        set_room_temps(states, Bed=23.6, Living=23.6)    # +0.6: still resting
+        run_minutes(opt, 2, now)
+        assert hvac_commands(calls) == []
+        set_room_temps(states, Bed=24.1, Living=24.1)    # +1.1: past the turn-on threshold
+        run_minutes(opt, 0.5, now)
+        assert hvac_commands(calls) == ["cool"]
+        assert opt._efficient_fan_idle is False
+
+    def test_off_action_switches_off(self):
+        opt, calls, states = make_cycle_optimizer(
+            rooms=(("Bed", 22.9, None), ("Living", 22.8, None)), enable_efficiency_mode=True,
+            efficient_satisfied_action="off",
+        )
+        run_minutes(opt, 6, [time.time()])
+        assert hvac_commands(calls)[:1] == ["off"]
+
+    def test_heating_switches_off_by_default(self):
+        opt, calls, states = make_cycle_optimizer(
+            hvac_mode="heat", ac_state="heat", target=21.0,
+            rooms=(("Bed", 21.1, None), ("Living", 21.2, None)), enable_efficiency_mode=True,
+        )
+        run_minutes(opt, 6, [time.time()])
+        assert hvac_commands(calls)[:1] == ["off"]
+
+    def test_unit_without_fan_only_switches_off(self):
+        opt, calls, states = make_cycle_optimizer(
+            rooms=(("Bed", 22.9, None), ("Living", 22.8, None)), enable_efficiency_mode=True,
+            climate_attrs={"hvac_modes": ["off", "cool", "heat"]},
+        )
+        run_minutes(opt, 6, [time.time()])
+        assert hvac_commands(calls)[:1] == ["off"]
+
+    def test_main_fan_low_while_resting(self):
+        opt, calls, states = make_cycle_optimizer(
+            rooms=(("Bed", 22.9, None), ("Living", 22.8, None)), enable_efficiency_mode=True,
+            climate_attrs={"fan_mode": "medium", "fan_modes": ["low", "medium", "high"]},
+        )
+        opt._efficient_fan_idle = True
+        assert opt._cap_main_fan_speed("medium") == "low"
+        opt._efficient_fan_idle = False
+        assert opt._cap_main_fan_speed("medium") == "medium"
 
     def test_dwell_resets_when_a_room_needs_conditioning(self):
         opt, calls, states = make_cycle_optimizer(
@@ -409,8 +490,46 @@ class TestEfficientOperation:
         run_cycle(opt)
         assert [c[2]["temperature"] for c in calls if c[1] == "set_temperature"] == [21.0]  # 23 - 2, not 23 - 4
 
-    def test_fan_only_idle_capped(self):
+    def test_fan_only_idle_cap_only_when_switching_off(self):
         opt, _, _ = make_cycle_optimizer(enable_efficiency_mode=True)
+        assert opt._effective_fan_only_idle_minutes() == 0      # cooling rests in fan-only: no cap
+        opt.efficient_satisfied_action = "off"
         assert opt._effective_fan_only_idle_minutes() == 10
         opt.fan_only_idle_minutes = 5
         assert opt._effective_fan_only_idle_minutes() == 5
+
+    def test_emergency_stands_down_efficiency(self):
+        opt, _, _ = make_cycle_optimizer(enable_efficiency_mode=True)
+        monitor = MagicMock()
+        monitor.get_all_statuses.return_value = {"Bed": {"status": "critical", "direction": "hot"}}
+        opt._get_critical_monitor = lambda: monitor
+        assert opt._efficiency_active() is False
+
+
+class TestHumidityControlFlowUnchanged:
+    """Cool + humidity control (cool -> dry -> fan-only) must keep working with
+    efficient operation and battery-aware mode switched on."""
+
+    @pytest.mark.parametrize("temps", [(23.2, 23.1), (22.9, 22.8)])
+    def test_keeps_circulating_in_fan_only(self, temps):
+        opt, calls, states = make_humid_optimizer(rh=55, temps=temps, enable_efficiency_mode=True)
+        run_minutes(opt, 12, [time.time()])
+        assert hvac_commands(calls) == []
+
+    def test_battery_efficient_level_keeps_circulating(self):
+        opt, calls, states = make_humid_optimizer(rh=55, enable_battery_mode=True)
+        with_decision(opt, 1)
+        run_minutes(opt, 12, [time.time()])
+        assert hvac_commands(calls) == []
+
+    def test_still_switches_to_dry_when_humid(self):
+        opt, calls, states = make_humid_optimizer(rh=72, enable_efficiency_mode=True)
+        run_cycle(opt)
+        assert hvac_commands(calls) == ["dry"]
+
+    def test_sleep_relaxation_keeps_dehumidifying(self):
+        """Below a sleep-raised target is the user's real target, not overcooled."""
+        opt, calls, states = make_humid_optimizer(rh=72, temps=(23.3, 23.3))
+        opt._quick_action_mode = "sleep"
+        run_cycle(opt)
+        assert hvac_commands(calls) == ["dry"]

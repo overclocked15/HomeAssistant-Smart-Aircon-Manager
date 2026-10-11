@@ -75,6 +75,8 @@ async def async_get_config_entry_diagnostics(
             "quick_action_mode": optimizer._quick_action_mode,
             "manual_override": getattr(optimizer, 'manual_override_enabled', False),
             "enable_efficiency_mode": optimizer.enable_efficiency_mode,
+            "efficient_satisfied_action": optimizer.efficient_satisfied_action,
+            "efficient_fan_idle": optimizer._efficient_fan_idle,
             "enable_battery_mode": optimizer.enable_battery_mode,
             "conditioning_direction": optimizer._cycle_direction,
             "comfort_relaxation": optimizer._comfort_relaxation,

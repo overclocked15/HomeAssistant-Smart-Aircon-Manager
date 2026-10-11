@@ -143,6 +143,7 @@ from .const import (
     DEFAULT_SMOOTHING_THRESHOLD,
     CONF_SCHEDULE_ROOM_TARGETS,
     CONF_ENABLE_EFFICIENCY_MODE,
+    CONF_EFFICIENT_SATISFIED_ACTION,
     CONF_ENABLE_BATTERY_MODE,
     CONF_BATTERY_SOC_ENTITY,
     CONF_BATTERY_POWER_ENTITY,
@@ -153,6 +154,7 @@ from .const import (
     CONF_BATTERY_PRIORITY_ROOMS,
     CONF_BATTERY_SOLAR_OFFSET_HOURS,
     DEFAULT_ENABLE_EFFICIENCY_MODE,
+    DEFAULT_EFFICIENT_SATISFIED_ACTION,
     DEFAULT_ENABLE_BATTERY_MODE,
     DEFAULT_BATTERY_POWER_SIGN,
     DEFAULT_BATTERY_RESERVE_PERCENT,
@@ -1389,6 +1391,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_ENABLE_EFFICIENCY_MODE: user_input.get(
                         CONF_ENABLE_EFFICIENCY_MODE, DEFAULT_ENABLE_EFFICIENCY_MODE
                     ),
+                    CONF_EFFICIENT_SATISFIED_ACTION: user_input.get(
+                        CONF_EFFICIENT_SATISFIED_ACTION, DEFAULT_EFFICIENT_SATISFIED_ACTION
+                    ),
                     CONF_ENABLE_BATTERY_MODE: enabled,
                     CONF_BATTERY_POWER_SIGN: user_input.get(CONF_BATTERY_POWER_SIGN, DEFAULT_BATTERY_POWER_SIGN),
                     CONF_BATTERY_RESERVE_PERCENT: user_input.get(
@@ -1425,6 +1430,19 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_ENABLE_EFFICIENCY_MODE,
                 default=data.get(CONF_ENABLE_EFFICIENCY_MODE, DEFAULT_ENABLE_EFFICIENCY_MODE),
             ): cv.boolean,
+            vol.Optional(
+                CONF_EFFICIENT_SATISFIED_ACTION,
+                default=data.get(CONF_EFFICIENT_SATISFIED_ACTION, DEFAULT_EFFICIENT_SATISFIED_ACTION),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        {"label": "Fan only while cooling, off while heating", "value": "auto"},
+                        {"label": "Always fan only (keep air moving)", "value": "fan_only"},
+                        {"label": "Always switch off", "value": "off"},
+                    ],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
             vol.Optional(
                 CONF_ENABLE_BATTERY_MODE,
                 default=data.get(CONF_ENABLE_BATTERY_MODE, DEFAULT_ENABLE_BATTERY_MODE),

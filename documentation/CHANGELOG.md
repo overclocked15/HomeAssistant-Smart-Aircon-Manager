@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.1.1 - Efficient Operation Keeps Air Moving; Battery Mode Keeps Dehumidifying
+
+**Release Date**: 2026-10-11
+
+Moving air feels cooler than still air, and humid air feels warmer than dry air. v3.1.0's efficient operation and battery-aware mode worked against both. In a humid climate they would have cut a cool → dry → fan-only household's evening circulation and dehumidifying.
+
+- **Efficient operation rests the compressor in fan-only instead of switching the AC off** (`_efficient_satisfied_action`, `_efficient_idle_mode`). Once every room has been satisfied for 5 minutes while cooling, the AC moves to fan-only with the main fan on low, and cooling resumes at the normal turn-on threshold.
+  - **New option**, "When every room is satisfied": *fan only while cooling, off while heating* (default), *always fan only*, or *always off*. In winter fan-only feels like a draft.
+  - Units without a fan-only mode switch off.
+  - In a simulated 12-minute window, v3.1.0 switched a satisfied, circulating AC off after 5–10 minutes. Cooling then only restarted at +1 °C instead of the +0.5 °C fan-only → cool step.
+- **The 10-minute fan-only cap now only applies when the satisfied action is "off".** Otherwise your own fan-only idle setting stands, so a circulating house keeps circulating.
+- **Humidity control is left exactly as it is.** With humidity control on, efficient operation and battery-aware mode no longer change the cool → dry → fan-only flow.
+- **Battery-aware mode never suppresses dry mode.** The saving levels relax only temperature and the main fan. In humid weather, a dry house at +1 °C feels better than a muggy one at target.
+- **Dry mode is no longer skipped below a relaxed target.** The guard against "dry mode overcooling the house" judged overcooling against the *relaxed* target, so a house at the user's real target during sleep (+1 °C) or battery saving counted as overcooled and stopped dehumidifying. It now uses the unrelaxed target.
+- **Efficient operation stands down during critical-room emergencies**, so the rescue gets full power.
+
+### Tests
+
+- `tests/test_battery_mode.py` updated and extended (48 tests). New tests cover:
+  - the fan-only rest, and resuming at the turn-on threshold;
+  - the "off" action, heating switching off, and units without fan-only;
+  - the low main fan while resting and the emergency stand-down;
+  - a cool + humidity-control household with efficiency and battery mode on: it keeps circulating, still switches to dry, and dehumidifies below sleep and battery relaxation.
+- Suite: 202 tests, all passing.
+
 ## v3.1.0 - Efficient Operation & Battery-Aware Mode
 
 **Release Date**: 2026-10-11

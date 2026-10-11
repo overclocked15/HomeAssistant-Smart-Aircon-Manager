@@ -14,10 +14,11 @@ on it.
   level (with hysteresis and dwell times):
 
     0 normal      — not running on the battery (or the mode is off)
-    1 efficient   — on battery: no-comfort-cost levers only (switch off when
-                    satisfied instead of idling, gentler setpoint, short
-                    fan-only idle)
-    2 saving      — projected short: + no dry mode, main fan capped at medium,
+    1 efficient   — on battery: no-comfort-cost levers only (the compressor
+                    rests once every room is satisfied — fan-only while
+                    cooling, off while heating — and a gentler setpoint).
+                    Dehumidifying is never touched at any level.
+    2 saving      — projected short: + main fan capped at medium,
                     comfort relaxed (non-priority rooms first)
     3 max saving  — well short / near reserve: + main fan low, comfort relaxed
                     up to the configured limit
@@ -102,7 +103,6 @@ class BatteryDecision:
     hours_to_recovery: float | None = None
     recovery_source: str | None = None   # learned / sunrise
     # Levers for the optimizer
-    suppress_dry: bool = False
     main_fan_cap: str | None = None
     relax_priority: float = 0.0
     relax_other: float = 0.0
@@ -119,9 +119,8 @@ class BatteryDecision:
 def levers_for_level(level: int, comfort_limit: float, priority_configured: bool) -> dict[str, Any]:
     """Map a level to optimizer levers (level 1 levers live in the optimizer's
     efficient operation, enabled whenever level >= 1)."""
-    levers = {"suppress_dry": False, "main_fan_cap": None, "relax_priority": 0.0, "relax_other": 0.0, "zone_focus": False}
+    levers = {"main_fan_cap": None, "relax_priority": 0.0, "relax_other": 0.0, "zone_focus": False}
     if level >= 2:
-        levers["suppress_dry"] = True
         levers["main_fan_cap"] = "medium" if level == 2 else "low"
         if priority_configured:
             levers["zone_focus"] = True

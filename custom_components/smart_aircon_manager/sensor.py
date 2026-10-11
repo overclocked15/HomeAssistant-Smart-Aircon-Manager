@@ -2580,7 +2580,7 @@ class BatteryModeSensor(AirconManagerSensorBase):
         keys = (
             "level", "reason", "soc", "soc_age_minutes", "flow", "on_battery", "drain_rate_pct_per_hour",
             "projected_soc", "target_soc", "solar_recovery", "hours_to_recovery", "recovery_source",
-            "suppress_dry", "main_fan_cap", "relax_priority", "relax_other", "zone_focus",
+            "main_fan_cap", "relax_priority", "relax_other", "zone_focus",
             "enabled", "strategy", "reserve_pct", "comfort_limit_c", "priority_rooms",
             "nights_learned", "typical_evening_start", "typical_solar_recovery",
             "nights_reserve_hit_last_14", "last_night_min_soc", "safety_buffer_pct", "power_sign",

@@ -245,14 +245,23 @@ DEFAULT_FILTER_RUNTIME_THRESHOLD_HOURS = 300
 SLEEP_COMFORT_RELAXATION = 1.0
 
 # Efficient operation (efficiency mode, or battery-aware mode while the house
-# runs on its battery): switch the AC off once every room has been satisfied
-# this long instead of idling the blower, cap fan-only idling, and drive the
-# setpoint more gently.
+# runs on its battery): once every room has been satisfied this long, rest the
+# compressor (fan-only while cooling, off while heating - see
+# CONF_EFFICIENT_SATISFIED_ACTION), and drive the setpoint more gently. The
+# fan-only idle cap only applies when the satisfied action is to switch off.
 CONF_ENABLE_EFFICIENCY_MODE = "enable_efficiency_mode"
 DEFAULT_ENABLE_EFFICIENCY_MODE = False
 EFFICIENT_OFF_DWELL_SECONDS = 300
 EFFICIENT_FAN_ONLY_IDLE_MINUTES = 10
 EFFICIENT_MAX_SETPOINT_OFFSET = 2.0
+# What efficient operation does once every room is satisfied:
+#   auto     - rest in fan-only while cooling (moving air feels cooler and keeps
+#              rooms mixed), switch off while heating (fan-only feels like a draft)
+#   fan_only - always rest in fan-only
+#   off      - always switch off
+CONF_EFFICIENT_SATISFIED_ACTION = "efficient_satisfied_action"
+DEFAULT_EFFICIENT_SATISFIED_ACTION = "auto"
+EFFICIENT_SATISFIED_ACTION_OPTIONS = ["auto", "fan_only", "off"]
 
 # Battery-aware mode (vendor agnostic: any home battery state-of-charge sensor)
 CONF_ENABLE_BATTERY_MODE = "enable_battery_mode"
