@@ -111,6 +111,14 @@ async def async_setup_entry(
     entities.append(CompressorRuntimeTodaySensor(coordinator, config_entry))
     entities.append(FilterRuntimeSensor(coordinator, config_entry, optimizer))
 
+    # Comfort relaxation currently applied (sleep mode / battery-aware mode)
+    entities.append(ComfortRelaxationSensor(coordinator, config_entry))
+
+    # Battery-aware mode sensors (when a battery sensor is configured)
+    if optimizer.battery_soc_entity:
+        entities.append(BatteryModeSensor(coordinator, config_entry))
+        entities.append(BatteryProjectedChargeSensor(coordinator, config_entry))
+
     # Add adaptive learning sensors (if learning is enabled)
     _LOGGER.debug(
         "Checking learning sensors: learning_manager=%s, enabled=%s",
@@ -2514,3 +2522,96 @@ class FilterRuntimeSensor(AirconManagerSensorBase):
         if hours is not None and threshold:
             attrs["percent_used"] = round(min(100.0, (hours / threshold) * 100), 1)
         return attrs
+
+
+class ComfortRelaxationSensor(AirconManagerSensorBase):
+    """How far comfort is currently relaxed (°C) by sleep or battery-aware mode."""
+
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_comfort_relaxation"
+        self._attr_name = "Comfort Relaxation"
+        self._attr_icon = "mdi:thermometer-minus"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the relaxation applied to the house target (°C)."""
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("comfort_relaxation")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return where the relaxation comes from and which rooms it affects."""
+        if not self.coordinator.data:
+            return {}
+        return {
+            "sources": self.coordinator.data.get("comfort_relaxation_sources", []),
+            "rooms": self.coordinator.data.get("comfort_relaxation_rooms", {}),
+            "direction": self.coordinator.data.get("conditioning_direction"),
+            "efficient_operation": self.coordinator.data.get("efficiency_active", False),
+        }
+
+
+class BatteryModeSensor(AirconManagerSensorBase):
+    """Battery-aware mode level, its reasoning and the learned battery habits."""
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_battery_mode"
+        self._attr_name = "Battery Mode"
+        self._attr_icon = "mdi:home-battery-outline"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return off / unavailable / normal / efficient / saving / max_saving."""
+        battery = (self.coordinator.data or {}).get("battery")
+        return battery.get("status") if battery else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the decision details and what has been learned."""
+        battery = (self.coordinator.data or {}).get("battery") or {}
+        keys = (
+            "level", "reason", "soc", "soc_age_minutes", "flow", "on_battery", "drain_rate_pct_per_hour",
+            "projected_soc", "target_soc", "solar_recovery", "hours_to_recovery", "recovery_source",
+            "suppress_dry", "main_fan_cap", "relax_priority", "relax_other", "zone_focus",
+            "enabled", "strategy", "reserve_pct", "comfort_limit_c", "priority_rooms",
+            "nights_learned", "typical_evening_start", "typical_solar_recovery",
+            "nights_reserve_hit_last_14", "last_night_min_soc", "safety_buffer_pct", "power_sign",
+        )
+        return {key: battery.get(key) for key in keys if key in battery}
+
+
+class BatteryProjectedChargeSensor(AirconManagerSensorBase):
+    """Projected battery charge when solar takes over again (%)."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, config_entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator, config_entry)
+        self._attr_unique_id = f"{config_entry.entry_id}_battery_projected_charge"
+        self._attr_name = "Battery Projected Charge At Solar"
+        self._attr_icon = "mdi:battery-clock-outline"
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the projected charge, or None outside the evening/night window."""
+        battery = (self.coordinator.data or {}).get("battery")
+        return battery.get("projected_soc") if battery else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the projection inputs."""
+        battery = (self.coordinator.data or {}).get("battery") or {}
+        return {
+            key: battery.get(key)
+            for key in ("solar_recovery", "hours_to_recovery", "recovery_source", "drain_rate_pct_per_hour", "target_soc")
+        }

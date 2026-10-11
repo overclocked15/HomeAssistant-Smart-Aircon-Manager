@@ -242,6 +242,36 @@ Quick actions temporarily override normal behavior:
 
 Quick actions are checked each cycle and auto-expire when their duration elapses. Vacation's deadband is restored on exit, unless the user changed it during the mode. Sleep never edits the target temperature. Its 1°C relaxation is applied each cycle on top of schedules and per-room targets, so it can't flip auto mode to the opposite direction or outlive the mode. Quick actions never override a safety response: rooms paused by open-window detection and rooms in a critical-room emergency keep their airflow.
 
+## Battery-Aware Mode
+
+Optional, and vendor agnostic: it needs only a battery state-of-charge (%) sensor, from any integration. Each cycle it reads the charge (and battery power, if configured), learns, and picks a level:
+
+| Level | When | What changes |
+|-------|------|--------------|
+| **normal** | Not running on the battery (charging, idle, full) | Nothing |
+| **efficient** | Running on the battery | Efficient operation: switch off when satisfied, gentler setpoint, short fan-only idle |
+| **saving** | Projected charge at solar recovery is below reserve + buffer (`balanced`), or always on battery (`max_saving`) | + no dry mode, main fan capped at medium. Comfort relaxed: non-priority rooms by the full limit and dropped from AC decisions (priority rooms keep their target); without priority rooms, every room by half the limit |
+| **max saving** | Projected well short (>10% below), or the battery within 3% of its reserve | + main fan capped at low, comfort relaxed up to the limit (priority rooms by half) |
+
+**Projection**: SOC now minus the expected drain until the expected solar recovery. The drain comes from the learned per-hour overnight profile (separate for cooling and heating seasons), scaled by how tonight compares with it. Without a profile yet, the observed trend is used.
+
+**What is learned** (from the SOC history, persisted in `.storage`):
+- **Evening drain start:** when the battery starts draining.
+- **Solar recovery:** when solar takes over in the morning (median of recent mornings; until 3 are known, sunrise from `sun.sun` plus the configured offset). A rise in charge before sunrise is treated as grid charging, not solar.
+- **Drain profile:** the hourly overnight drain rate.
+- **Safety buffer:** after a night that reached the reserve it grows, but only when saving earlier could have helped. After a night that ended comfortably it shrinks.
+
+**Stability**:
+- **Dwells:** levels rise after a 10-minute dwell and fall after a 45-minute dwell, and only once the projection clears its threshold by 10%.
+- **Overdue recovery:** a cloudy morning is treated as solar about to arrive, not as another full night.
+- **Stale data:** a charge reading more than 2 hours old makes the mode stand down to normal operation.
+
+**Precedence**:
+- **Safety and explicit comfort win:** a critical-room emergency, boost and party all suspend it.
+- **Sleep:** sleep's relaxation and the battery relaxation combine by maximum, not sum.
+- **Weather:** the weather adjustment, which only makes conditioning more aggressive, is skipped while saving.
+- **Direction:** relaxation always widens the comfort band outward, so it can never cause the opposite mode, even in auto mode.
+
 ## Critical Room Protection
 
 For rooms with critical temperature requirements (server rooms, wine cellars):

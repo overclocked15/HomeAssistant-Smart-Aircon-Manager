@@ -7,6 +7,7 @@ import logging
 import statistics
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -511,6 +512,13 @@ class AirconOptimizer:
                     "Climate entity %s not found, HVAC mode tracking will initialize on first optimization",
                     self.main_climate_entity
                 )
+
+        # Battery-aware mode: learn whenever a battery sensor is configured
+        # (so habits are known by the time the mode is switched on)
+        if self.battery_soc_entity:
+            from .battery import BatteryManager
+            self.battery_manager = BatteryManager(self.hass, config_entry_id, storage_path)
+            await self.battery_manager.async_load()
 
         # Load persisted compressor protection state
         await self._load_compressor_state()
@@ -1860,6 +1868,104 @@ class AirconOptimizer:
             return effective_target
         return round(effective_target + sign * global_r, 2)
 
+    def _next_sunrise_local(self, local_now: datetime) -> datetime | None:
+        """Next sunrise from sun.sun, in the same tz-awareness as local_now."""
+        from homeassistant.util import dt as dt_util
+
+        sun = self.hass.states.get("sun.sun")
+        if sun is None:
+            return None
+        rising = sun.attributes.get("next_rising") if isinstance(sun.attributes, dict) else None
+        try:
+            parsed = rising if isinstance(rising, datetime) else dt_util.parse_datetime(str(rising))
+            if parsed is None:
+                return None
+            parsed = dt_util.as_local(parsed)
+            if local_now.tzinfo is None and parsed.tzinfo is not None:
+                parsed = parsed.replace(tzinfo=None)
+            elif local_now.tzinfo is not None and parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=local_now.tzinfo)
+            return parsed
+        except (TypeError, ValueError):
+            return None
+
+    async def _update_battery_state(self) -> None:
+        """Read the battery sensors, learn, and decide this cycle's level.
+
+        Vendor agnostic: any state-of-charge (%) sensor works; a battery
+        power sensor (W or kW, either sign convention) is optional. Learning
+        continues while the mode itself is switched off.
+        """
+        if not self.battery_manager or not self.battery_soc_entity:
+            self._battery_decision = None
+            return
+        from homeassistant.util import dt as dt_util
+        from .battery import BatteryReading, decide, read_power_w, read_soc
+
+        local_now = dt_util.now()
+        soc, soc_age = read_soc(self.hass.states.get(self.battery_soc_entity), dt_util.utcnow())
+        power = (
+            read_power_w(self.hass.states.get(self.battery_power_entity))
+            if self.battery_power_entity else None
+        )
+
+        safety_override = None
+        emergency = self._critical_emergency_direction()
+        if emergency is not None:
+            safety_override = f"critical-room emergency ({emergency}) - comfort first"
+        elif self._quick_action_mode in ("boost", "party"):
+            safety_override = f"{self._quick_action_mode} mode active - comfort first"
+
+        try:
+            self._battery_decision = decide(
+                self.battery_manager.learner,
+                now_ts=time.time(),
+                local_now=local_now,
+                reading=BatteryReading(soc=soc, soc_age_s=soc_age, power_w=power),
+                enabled=self.enable_battery_mode,
+                strategy=self.battery_strategy,
+                reserve_pct=self.battery_reserve_percent,
+                comfort_limit=self.battery_comfort_limit,
+                priority_configured=bool(self.battery_priority_rooms),
+                mode=self._get_effective_operating_mode(),
+                power_sign=self.battery_power_sign,
+                sunrise_local=self._next_sunrise_local(local_now),
+                recovery_offset_hours=self.battery_solar_offset_hours,
+                safety_override=safety_override,
+            )
+        except Exception as err:  # never let battery logic break climate control
+            _LOGGER.warning("Battery-aware mode skipped this cycle: %s", err, exc_info=True)
+            self._battery_decision = None
+            return
+        await self.battery_manager.async_save_if_due(time.time())
+
+    def battery_summary(self) -> dict[str, Any] | None:
+        """Decision + learned habits, for sensors and diagnostics."""
+        if not self.battery_manager:
+            return None
+        from homeassistant.util import dt as dt_util
+
+        summary = self.battery_manager.learner.summary(dt_util.now())
+        decision = self._battery_decision
+        summary.update(decision.as_dict() if decision is not None else {"status": "starting", "level": 0})
+        summary.update({
+            "enabled": self.enable_battery_mode,
+            "strategy": self.battery_strategy,
+            "reserve_pct": self.battery_reserve_percent,
+            "comfort_limit_c": self.battery_comfort_limit,
+            "priority_rooms": list(self.battery_priority_rooms),
+            "soc_entity": self.battery_soc_entity,
+            "power_entity": self.battery_power_entity,
+        })
+        return summary
+
+    async def async_reset_battery_learning(self) -> None:
+        """Forget learned battery habits (service: reset_battery_learning)."""
+        if self.battery_manager:
+            await self.battery_manager.async_reset()
+            self._battery_decision = None
+            _LOGGER.info("Battery learning data reset")
+
     def _efficiency_active(self) -> bool:
         """Efficient operation: on when enabled, or whenever battery-aware
         mode reports the house is running on its battery."""
@@ -2201,6 +2307,9 @@ class AirconOptimizer:
         # Presence-linked away mode (auto vacation entry/exit)
         self._process_away_mode()
 
+        # Battery-aware mode: read the battery and decide this cycle's level
+        await self._update_battery_state()
+
         active_schedule = None
         effective_target = self.target_temperature
 
@@ -2229,7 +2338,13 @@ class AirconOptimizer:
 
         outdoor_temp = None
         weather_adjustment = 0.0
-        if self.enable_weather_adjustment:
+        # The weather adjustment only ever makes conditioning MORE aggressive;
+        # skip it while battery-aware mode is relaxing comfort to save energy.
+        battery_saving = bool(
+            self.enable_battery_mode and self._battery_decision is not None
+            and self._battery_decision.level >= 2
+        )
+        if self.enable_weather_adjustment and not battery_saving:
             outdoor_temp = await self._get_outdoor_temperature()
             if outdoor_temp is not None:
                 adjusted_target = self._calculate_weather_adjusted_target(
@@ -2594,6 +2709,7 @@ class AirconOptimizer:
             "comfort_relaxation_sources": list(relaxation.get("sources") or []),
             "conditioning_direction": direction,
             "efficiency_active": self._efficiency_active(),
+            "battery": self.battery_summary(),
             # Performance metrics
             "optimization_cycle_time_ms": cycle_time_ms,
             "total_optimizations_run": self._total_optimizations_run,
@@ -4346,6 +4462,10 @@ class AirconOptimizer:
             _LOGGER.debug("Saved compressor state")
         except Exception as e:
             _LOGGER.warning("Failed to save compressor state during cleanup: %s", e)
+
+        # Save battery learning before shutdown
+        if self.battery_manager:
+            await self.battery_manager.async_save()
 
         # Save learning profiles before shutdown
         if self.learning_manager:

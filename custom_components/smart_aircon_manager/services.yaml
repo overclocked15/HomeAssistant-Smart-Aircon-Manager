@@ -231,3 +231,15 @@ reset_filter_timer:
       example: "abc123def456"
       selector:
         text:
+
+reset_battery_learning:
+  name: Reset Battery Learning
+  description: Forget the learned battery habits (evening drain start, morning solar recovery, overnight drain profile, safety buffer) — e.g. after changing the battery, the solar array or the household's routine
+  fields:
+    config_entry_id:
+      name: Config Entry ID
+      description: The configuration entry ID (omit to reset all entries)
+      required: false
+      example: "abc123def456"
+      selector:
+        text:

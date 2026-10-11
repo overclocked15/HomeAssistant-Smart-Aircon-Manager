@@ -48,10 +48,18 @@ Toggle to temporarily disable all automatic optimization.
 | `off` | Automatic optimization active |
 
 When manual override is on:
-- Optimization cycles are skipped
-- Sensors continue to update
-- Learning data collection continues
+- Optimization cycles are skipped (room sensors and learning pause too)
+- Quick actions can be started but their expiry isn't processed until override ends
+- The critical-room monitor keeps running
 - You have full manual control of all AC and fan entities
+
+### `switch.smart_aircon_manager_efficient_operation`
+
+Turns efficient operation on or off at runtime (same as the option on **Battery & Efficiency**).
+
+### `switch.smart_aircon_manager_battery_aware_mode` (if a battery sensor is configured)
+
+Turns battery-aware mode on or off at runtime. Learning continues while it is off.
 
 ## Binary Sensor
 
@@ -182,6 +190,16 @@ Current humidity reading for the room.
 | `sensor.smart_aircon_manager_hvac_mode_recommendation` | Recommended HVAC mode (cool/heat/dry/fan_only) |
 | `sensor.smart_aircon_manager_house_average_humidity` | Average humidity across all rooms |
 | `sensor.smart_aircon_manager_comfort_index` | Heat index combining temperature and humidity |
+
+### Battery & Efficiency
+
+| Sensor | Description |
+|--------|-------------|
+| `sensor.smart_aircon_manager_comfort_relaxation` | °C of comfort relaxation applied now (attributes: `sources` sleep/battery, per-room values, `direction`, `efficient_operation`) |
+| `sensor.smart_aircon_manager_battery_mode` | `off` / `unavailable` / `normal` / `efficient` / `saving` / `max_saving`. Attributes: the reason, charge and flow, drain rate, projected charge and target, expected solar recovery and its source (learned/sunrise/overdue), active levers, and learned habits (typical evening start and solar recovery, nights learned, nights the reserve was hit, safety buffer, detected power sign) |
+| `sensor.smart_aircon_manager_battery_projected_charge_at_solar` | Projected battery charge (%) at the expected solar recovery (evening/night only) |
+
+The battery sensors exist only when a battery state-of-charge sensor is configured.
 
 ### Quick Actions
 

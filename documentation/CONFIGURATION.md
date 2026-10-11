@@ -150,6 +150,39 @@ Configured under **Options > Occupancy & Presence**.
 
 Vacation mode is entered automatically once all presence entities have been away for the delay, and exits as soon as anyone returns. A manually-entered quick action mode is never overridden.
 
+## Battery & Efficiency
+
+Configured under **Options > Battery & Efficiency**.
+
+### Efficient operation
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_efficiency_mode` | bool | `false` | Apply the no-comfort-cost savings all the time (battery-aware mode applies them automatically while on battery) |
+
+Efficient operation:
+- Switches the AC **off** once every room has been satisfied for 5 minutes, instead of idling the blower until the house is `ac_turn_off_threshold` past target. It restarts through the normal turn-on thresholds, so rooms drift up to about `ac_turn_on_threshold` before the next run.
+- Caps the setpoint overdrive at 2°C (instead of 4°C), so an inverter compressor runs at part load where it is most efficient.
+- Caps fan-only idling at 10 minutes.
+
+### Battery-aware mode (any home battery)
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_battery_mode` | bool | `false` | Adapt aircon operation to the home battery |
+| `battery_soc_entity` | entity | — | **Required to enable.** Any sensor reporting the battery's state of charge in % (from any battery integration) |
+| `battery_power_entity` | entity | — | Optional battery power sensor (W or kW), for a faster charging/discharging read |
+| `battery_power_sign` | select | `auto` | `auto` (learned by comparing power with the charge trend), `positive_discharging`, `positive_charging` |
+| `battery_strategy` | select | `balanced` | `efficient`: free savings only. `balanced`: also relax comfort when the projected charge at solar recovery is short. `max_saving`: relax comfort whenever on battery, more when short |
+| `battery_reserve_percent` | float | `10` | The battery's backup reserve; projections aim to reach solar recovery above this plus a learned safety buffer |
+| `battery_comfort_limit` | float | `2.0` | Maximum relaxation (°C) for any room: warmer while cooling, cooler while heating |
+| `battery_priority_rooms` | list | `[]` | Rooms kept comfortable longest (e.g. bedrooms). Others are relaxed first and stop driving the AC while saving |
+| `battery_solar_offset_hours` | float | `2.0` | Until the morning recovery time is learned (about 3 nights), solar is assumed to take over this many hours after sunrise |
+
+Learning starts as soon as a battery sensor is set, even with the mode switched off. Nothing controls the battery itself. See [Algorithm: Battery-aware mode](ALGORITHM.md#battery-aware-mode) for how levels are chosen.
+
+The **Battery-Aware Mode** and **Efficient Operation** switches toggle the features at runtime (for dashboards and automations).
+
 ## Predictive Control
 
 | Option | Type | Default | Description |

@@ -71,6 +71,23 @@ from .const import (
     DEFAULT_OPEN_WINDOW_PAUSE_MINUTES,
     DEFAULT_ENABLE_AWAY_MODE,
     DEFAULT_AWAY_MODE_DELAY_MINUTES,
+    CONF_ENABLE_EFFICIENCY_MODE,
+    CONF_ENABLE_BATTERY_MODE,
+    CONF_BATTERY_SOC_ENTITY,
+    CONF_BATTERY_POWER_ENTITY,
+    CONF_BATTERY_POWER_SIGN,
+    CONF_BATTERY_RESERVE_PERCENT,
+    CONF_BATTERY_STRATEGY,
+    CONF_BATTERY_COMFORT_LIMIT,
+    CONF_BATTERY_PRIORITY_ROOMS,
+    CONF_BATTERY_SOLAR_OFFSET_HOURS,
+    DEFAULT_ENABLE_EFFICIENCY_MODE,
+    DEFAULT_ENABLE_BATTERY_MODE,
+    DEFAULT_BATTERY_POWER_SIGN,
+    DEFAULT_BATTERY_RESERVE_PERCENT,
+    DEFAULT_BATTERY_STRATEGY,
+    DEFAULT_BATTERY_COMFORT_LIMIT,
+    DEFAULT_BATTERY_SOLAR_OFFSET_HOURS,
 )
 from .optimizer import AirconOptimizer
 from .critical_monitor import CriticalRoomMonitor
@@ -242,6 +259,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         enable_away_mode=entry.data.get("enable_away_mode", DEFAULT_ENABLE_AWAY_MODE),
         away_mode_entities=entry.data.get("away_mode_entities", []),
         away_mode_delay_minutes=entry.data.get("away_mode_delay_minutes", DEFAULT_AWAY_MODE_DELAY_MINUTES),
+        enable_efficiency_mode=entry.data.get(CONF_ENABLE_EFFICIENCY_MODE, DEFAULT_ENABLE_EFFICIENCY_MODE),
+        enable_battery_mode=entry.data.get(CONF_ENABLE_BATTERY_MODE, DEFAULT_ENABLE_BATTERY_MODE),
+        battery_soc_entity=entry.data.get(CONF_BATTERY_SOC_ENTITY),
+        battery_power_entity=entry.data.get(CONF_BATTERY_POWER_ENTITY),
+        battery_power_sign=entry.data.get(CONF_BATTERY_POWER_SIGN, DEFAULT_BATTERY_POWER_SIGN),
+        battery_reserve_percent=entry.data.get(CONF_BATTERY_RESERVE_PERCENT, DEFAULT_BATTERY_RESERVE_PERCENT),
+        battery_strategy=entry.data.get(CONF_BATTERY_STRATEGY, DEFAULT_BATTERY_STRATEGY),
+        battery_comfort_limit=entry.data.get(CONF_BATTERY_COMFORT_LIMIT, DEFAULT_BATTERY_COMFORT_LIMIT),
+        battery_priority_rooms=entry.data.get(CONF_BATTERY_PRIORITY_ROOMS, []),
+        battery_solar_offset_hours=entry.data.get(CONF_BATTERY_SOLAR_OFFSET_HOURS, DEFAULT_BATTERY_SOLAR_OFFSET_HOURS),
     )
 
     # Get update interval from config
@@ -584,6 +611,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_register(DOMAIN, "reset_filter_timer", async_reset_filter_timer_service, SERVICE_SCHEMA_ENTRY_ID)
         _LOGGER.debug("Registered reset_filter_timer service")
 
+        # Register reset_battery_learning service
+        async def async_reset_battery_learning_service(call):
+            """Forget learned battery habits (e.g. after changing the battery or panels)."""
+            config_entry_id = call.data.get("config_entry_id")
+            entry_ids = [config_entry_id] if config_entry_id else list(hass.data[DOMAIN])
+            for entry_id in entry_ids:
+                if entry_id in hass.data[DOMAIN]:
+                    await hass.data[DOMAIN][entry_id]["optimizer"].async_reset_battery_learning()
+                else:
+                    _LOGGER.error("Config entry %s not found", entry_id)
+
+        hass.services.async_register(
+            DOMAIN, "reset_battery_learning", async_reset_battery_learning_service, SERVICE_SCHEMA_ENTRY_ID
+        )
+        _LOGGER.debug("Registered reset_battery_learning service")
+
     return True
 
 
@@ -623,6 +666,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.services.async_remove(DOMAIN, "sleep_mode")
             hass.services.async_remove(DOMAIN, "party_mode")
             hass.services.async_remove(DOMAIN, "reset_filter_timer")
+            hass.services.async_remove(DOMAIN, "reset_battery_learning")
             _LOGGER.debug("Unregistered all services")
 
     return unload_ok

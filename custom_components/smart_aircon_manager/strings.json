@@ -68,7 +68,8 @@
           "advanced": "Advanced Settings (fine-tune thresholds and behavior)",
           "occupancy": "Occupancy & Presence",
           "predictive": "Predictive & Open Window",
-          "protection": "Compressor Protection & Thresholds"
+          "protection": "Compressor Protection & Thresholds",
+          "battery": "Battery & Efficiency"
         }
       },
       "settings": {
@@ -313,6 +314,33 @@
           "min_mode_duration": "Minimum mode duration (seconds)",
           "min_compressor_run_cycles": "Minimum compressor run cycles"
         }
+      },
+      "battery": {
+        "title": "Battery & Efficiency",
+        "description": "Efficient operation saves energy at no comfort cost: the AC switches off once every room is satisfied instead of idling its fan, the setpoint is driven more gently, and fan-only idling is cut short.\n\nBattery-aware mode works with any home battery: pick its state-of-charge (%) sensor. While the house runs on the battery it turns efficient operation on, learns your battery's habits (when it starts draining, when solar takes over in the morning, how fast it drains), projects the charge left at solar recovery and - depending on the strategy - relaxes comfort step by step (priority rooms last) so the battery lasts longer. Critical-room protection, boost and party always take precedence.",
+        "data": {
+          "enable_efficiency_mode": "Efficient operation (always)",
+          "enable_battery_mode": "Battery-aware mode",
+          "battery_soc_entity": "Battery state of charge sensor (%)",
+          "battery_power_entity": "Battery power sensor (optional, W or kW)",
+          "battery_power_sign": "Battery power sign convention",
+          "battery_strategy": "Strategy",
+          "battery_reserve_percent": "Battery reserve (%)",
+          "battery_comfort_limit": "Maximum comfort relaxation (°C)",
+          "battery_priority_rooms": "Priority rooms (kept comfortable longest)",
+          "battery_solar_offset_hours": "Solar takes over (hours after sunrise, until learned)"
+        },
+        "data_description": {
+          "enable_efficiency_mode": "Apply the no-comfort-cost savings all the time, not only while running on the battery.",
+          "battery_soc_entity": "Any sensor reporting the battery's charge in percent, from any battery integration. Learning starts as soon as it is set, even with the mode off.",
+          "battery_power_entity": "Gives a faster read of charging/discharging. Leave empty to use the state of charge alone.",
+          "battery_power_sign": "Automatic detection learns the sign by comparing the power with the charge trend.",
+          "battery_strategy": "Balanced is recommended: free savings whenever on battery, comfort relaxed only when the projected charge at solar recovery is short.",
+          "battery_reserve_percent": "The charge your battery keeps back (its backup reserve). Projections aim to reach solar recovery above this plus a learned safety buffer.",
+          "battery_comfort_limit": "The furthest any room is allowed to drift: warmer while cooling, cooler while heating.",
+          "battery_priority_rooms": "For example bedrooms at night. Other rooms are relaxed first and stop driving the AC while saving.",
+          "battery_solar_offset_hours": "Used until the morning solar recovery time has been learned (about 3 nights)."
+        }
       }
     },
     "error": {
@@ -334,7 +362,10 @@
       "duplicate_schedule_name": "A schedule with this name already exists",
       "schedule_start_equals_end": "Start and end times cannot be identical (overnight schedules where start > end are supported)",
       "invalid_tier_ordering": "Overshoot tiers must be in ascending order (tier 1 < tier 2 < tier 3)",
-      "invalid_fan_threshold_ordering": "Main fan medium threshold must be less than high threshold"
+      "invalid_fan_threshold_ordering": "Main fan medium threshold must be less than high threshold",
+      "battery_soc_required": "Choose the battery's state-of-charge sensor to enable battery-aware mode.",
+      "battery_soc_invalid": "This sensor doesn't report a percentage between 0 and 100.",
+      "battery_power_invalid_unit": "The battery power sensor must report W or kW."
     }
   }
 }

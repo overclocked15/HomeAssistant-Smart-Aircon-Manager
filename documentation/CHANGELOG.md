@@ -1,5 +1,33 @@
 # Changelog
 
+## v3.1.0 - Efficient Operation & Battery-Aware Mode
+
+**Release Date**: 2026-10-11
+
+### Efficient operation (new, opt-in)
+
+No-comfort-cost energy savings, on all the time when enabled and automatically while battery-aware mode reports the house is on its battery:
+- **Switch off when satisfied:** the AC switches off once every room has been satisfied for 5 minutes. In cool mode it previously practically never switched off, because the setpoint holds the house at target while the off rule waits for 2°C of overshoot, so the blower ran all night.
+- **Gentler setpoint:** the overdrive is capped at 2°C instead of 4°C.
+- **Short fan-only idle:** fan-only idling is capped at 10 minutes.
+
+### Battery-aware mode (new, opt-in, vendor agnostic)
+
+- **Configuration:** a new **Battery & Efficiency** options page. Pick any battery state-of-charge (%) sensor; a battery power sensor (W or kW, either sign convention, auto-detected) is optional.
+- **Learning:** it learns the household's battery habits and persists them: evening drain start, morning solar recovery (instead of sunrise + offset once 3 mornings are known), the hourly overnight drain profile per season, and a safety buffer adapted from how nights end.
+- **Projection and levels:** it projects the charge at solar recovery and picks a level: normal / efficient / saving / max saving. Saving levels drop dry mode, cap the main fan and relax comfort up to a limit, non-priority rooms first. With priority rooms, those rooms stay at target and the others stop driving the AC (night zoning).
+- **Strategies:** `efficient` (free savings only), `balanced` (relax comfort only when the battery looks short) and `max_saving`.
+- **Safety:** critical-room emergencies, boost and party always take precedence; stale data falls back to normal operation; relaxation can never cause the opposite mode.
+- **Entities:** new sensors (Battery Mode, Battery Projected Charge At Solar, Comfort Relaxation), switches (Battery-Aware Mode, Efficient Operation), diagnostics data, and the `reset_battery_learning` service.
+
+In a toy overnight simulation it worked well; the simulation is illustrative only, not a prediction for any real house:
+- **13.5 kWh battery, 14 mixed summer nights:** grid import before solar recovery fell from 29 kWh (11 nights) to 0, AC energy by about 30%, with rooms drifting up to about 1°C.
+- **30 kWh battery starting evenings at 55%:** 4.5 kWh to 0.
+
+### Tests
+
+- New `tests/test_battery_mode.py` (36 tests): learner (flow and sign detection, night/recovery/profile learning, grid charging before sunrise, overdue recovery, projections, levels and dwell, buffer adaptation, persistence, sensor parsing) and optimizer integration (relaxation per level and direction, night zoning, fan cap, dry suppression, weather suppression, emergency precedence, efficient switch-off dwell, gentle setpoint). Suite: 190 tests, all passing.
+
 ## v3.0.2 - Bug Fixes (auto mode, per-room targets, restarts, safety)
 
 **Release Date**: 2026-10-11

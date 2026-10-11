@@ -78,7 +78,7 @@ Temporarily enable or disable automatic control for a specific room.
 |-------|----------|---------|-------------|
 | `config_entry_id` | Yes | - | Your config entry ID |
 | `room_name` | Yes | - | Room name (e.g., "Living Room") |
-| `enabled` | Yes | `true` | `true` to enable control, `false` to disable |
+| `enabled` | Yes | `true` | `true` to enable control, `false` to end vacation (other quick actions are left alone) |
 
 ```yaml
 service: smart_aircon_manager.set_room_override
@@ -157,7 +157,7 @@ data:
 
 ### `smart_aircon_manager.sleep_mode`
 
-Quieter operation for sleeping. Caps all fan speeds at 40% and adjusts the target temperature by ±1°C.
+Quieter operation for sleeping. Caps all fan speeds at 40% and relaxes comfort by 1°C (warmer while cooling, cooler while heating) on top of schedules and per-room targets. Your target temperature itself is not changed.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -194,6 +194,14 @@ data:
 **Behavior**: Auto-expires after duration. All rooms get equal airflow for consistent comfort across the house.
 
 ---
+
+### `smart_aircon_manager.reset_battery_learning`
+
+Forget the learned battery habits: evening drain start, morning solar recovery, overnight drain profile and safety buffer. Use it after changing the battery, the solar array or the household's routine.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `config_entry_id` | No | Entry to reset (omit for all) |
 
 ## Learning Services
 

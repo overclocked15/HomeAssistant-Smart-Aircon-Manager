@@ -142,6 +142,23 @@ from .const import (
     DEFAULT_ENABLE_FAN_SMOOTHING,
     DEFAULT_SMOOTHING_THRESHOLD,
     CONF_SCHEDULE_ROOM_TARGETS,
+    CONF_ENABLE_EFFICIENCY_MODE,
+    CONF_ENABLE_BATTERY_MODE,
+    CONF_BATTERY_SOC_ENTITY,
+    CONF_BATTERY_POWER_ENTITY,
+    CONF_BATTERY_POWER_SIGN,
+    CONF_BATTERY_RESERVE_PERCENT,
+    CONF_BATTERY_STRATEGY,
+    CONF_BATTERY_COMFORT_LIMIT,
+    CONF_BATTERY_PRIORITY_ROOMS,
+    CONF_BATTERY_SOLAR_OFFSET_HOURS,
+    DEFAULT_ENABLE_EFFICIENCY_MODE,
+    DEFAULT_ENABLE_BATTERY_MODE,
+    DEFAULT_BATTERY_POWER_SIGN,
+    DEFAULT_BATTERY_RESERVE_PERCENT,
+    DEFAULT_BATTERY_STRATEGY,
+    DEFAULT_BATTERY_COMFORT_LIMIT,
+    DEFAULT_BATTERY_SOLAR_OFFSET_HOURS,
 )
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
@@ -371,7 +388,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             step_id="init",
             menu_options=[
                 "settings", "manage_rooms", "room_overrides", "weather", "humidity",
-                "schedules", "occupancy", "predictive", "protection", "learning",
+                "schedules", "occupancy", "battery", "predictive", "protection", "learning",
                 "balancing", "critical_rooms", "advanced",
             ],
         )
@@ -631,6 +648,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if occupancy.pop(room_to_remove, None) is not None:
                 new_data[CONF_OCCUPANCY_SENSORS] = occupancy
 
+            priority = list(new_data.get(CONF_BATTERY_PRIORITY_ROOMS, []))
+            if room_to_remove in priority:
+                priority.remove(room_to_remove)
+                new_data[CONF_BATTERY_PRIORITY_ROOMS] = priority
+
             # Drop the room from any schedule's per-room targets
             schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
             for schedule in schedules:
@@ -789,6 +811,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     if room_to_edit_name in occupancy:
                         occupancy[new_name] = occupancy.pop(room_to_edit_name)
                         new_data[CONF_OCCUPANCY_SENSORS] = occupancy
+
+                    # Migrate battery-aware priority rooms (room names)
+                    priority = list(new_data.get(CONF_BATTERY_PRIORITY_ROOMS, []))
+                    if room_to_edit_name in priority:
+                        new_data[CONF_BATTERY_PRIORITY_ROOMS] = [
+                            new_name if name == room_to_edit_name else name for name in priority
+                        ]
 
                     # Migrate per-room schedule targets (keyed by room name)
                     schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
@@ -1318,6 +1347,158 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="occupancy",
             data_schema=vol.Schema(schema_dict),
+        )
+
+    async def async_step_battery(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure efficient operation and battery-aware mode.
+
+        Vendor agnostic: pick any state-of-charge (%) sensor your battery
+        integration provides; a battery power sensor is optional.
+        """
+        errors: dict[str, str] = {}
+        rooms = [room[CONF_ROOM_NAME] for room in self.config_entry.data.get(CONF_ROOM_CONFIGS, [])]
+
+        if user_input is not None:
+            soc_entity = user_input.get(CONF_BATTERY_SOC_ENTITY) or None
+            power_entity = user_input.get(CONF_BATTERY_POWER_ENTITY) or None
+            enabled = user_input.get(CONF_ENABLE_BATTERY_MODE, DEFAULT_ENABLE_BATTERY_MODE)
+
+            if enabled and not soc_entity:
+                errors[CONF_BATTERY_SOC_ENTITY] = "battery_soc_required"
+            if soc_entity:
+                state = self.hass.states.get(soc_entity)
+                if state is not None and state.state not in ("unknown", "unavailable"):
+                    try:
+                        if not 0 <= float(state.state) <= 100:
+                            errors[CONF_BATTERY_SOC_ENTITY] = "battery_soc_invalid"
+                    except (TypeError, ValueError):
+                        errors[CONF_BATTERY_SOC_ENTITY] = "battery_soc_invalid"
+            if power_entity:
+                state = self.hass.states.get(power_entity)
+                unit = state.attributes.get("unit_of_measurement") if state is not None else None
+                if unit is not None and str(unit).strip().lower() not in ("w", "kw"):
+                    errors[CONF_BATTERY_POWER_ENTITY] = "battery_power_invalid_unit"
+
+            if not errors:
+                # Explicit rebuild: every field is stored as submitted, and a
+                # cleared entity / room list is removed rather than kept.
+                new_data = {
+                    **self.config_entry.data,
+                    CONF_ENABLE_EFFICIENCY_MODE: user_input.get(
+                        CONF_ENABLE_EFFICIENCY_MODE, DEFAULT_ENABLE_EFFICIENCY_MODE
+                    ),
+                    CONF_ENABLE_BATTERY_MODE: enabled,
+                    CONF_BATTERY_POWER_SIGN: user_input.get(CONF_BATTERY_POWER_SIGN, DEFAULT_BATTERY_POWER_SIGN),
+                    CONF_BATTERY_RESERVE_PERCENT: user_input.get(
+                        CONF_BATTERY_RESERVE_PERCENT, DEFAULT_BATTERY_RESERVE_PERCENT
+                    ),
+                    CONF_BATTERY_STRATEGY: user_input.get(CONF_BATTERY_STRATEGY, DEFAULT_BATTERY_STRATEGY),
+                    CONF_BATTERY_COMFORT_LIMIT: user_input.get(
+                        CONF_BATTERY_COMFORT_LIMIT, DEFAULT_BATTERY_COMFORT_LIMIT
+                    ),
+                    CONF_BATTERY_PRIORITY_ROOMS: [
+                        room for room in user_input.get(CONF_BATTERY_PRIORITY_ROOMS, []) if room in rooms
+                    ],
+                    CONF_BATTERY_SOLAR_OFFSET_HOURS: user_input.get(
+                        CONF_BATTERY_SOLAR_OFFSET_HOURS, DEFAULT_BATTERY_SOLAR_OFFSET_HOURS
+                    ),
+                }
+                for key, value in ((CONF_BATTERY_SOC_ENTITY, soc_entity), (CONF_BATTERY_POWER_ENTITY, power_entity)):
+                    if value:
+                        new_data[key] = value
+                    else:
+                        new_data.pop(key, None)
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                return self.async_create_entry(title="", data={})
+
+        data = {**self.config_entry.data, **(user_input or {})}
+
+        def suggested(key: str) -> dict[str, Any]:
+            value = data.get(key)
+            return {"description": {"suggested_value": value}} if value else {}
+
+        schema = {
+            vol.Optional(
+                CONF_ENABLE_EFFICIENCY_MODE,
+                default=data.get(CONF_ENABLE_EFFICIENCY_MODE, DEFAULT_ENABLE_EFFICIENCY_MODE),
+            ): cv.boolean,
+            vol.Optional(
+                CONF_ENABLE_BATTERY_MODE,
+                default=data.get(CONF_ENABLE_BATTERY_MODE, DEFAULT_ENABLE_BATTERY_MODE),
+            ): cv.boolean,
+            vol.Optional(CONF_BATTERY_SOC_ENTITY, **suggested(CONF_BATTERY_SOC_ENTITY)): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Optional(CONF_BATTERY_POWER_ENTITY, **suggested(CONF_BATTERY_POWER_ENTITY)): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
+            vol.Optional(
+                CONF_BATTERY_POWER_SIGN,
+                default=data.get(CONF_BATTERY_POWER_SIGN, DEFAULT_BATTERY_POWER_SIGN),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        {"label": "Detect automatically", "value": "auto"},
+                        {"label": "Positive = discharging", "value": "positive_discharging"},
+                        {"label": "Positive = charging", "value": "positive_charging"},
+                    ],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional(
+                CONF_BATTERY_STRATEGY,
+                default=data.get(CONF_BATTERY_STRATEGY, DEFAULT_BATTERY_STRATEGY),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        {"label": "Efficient - free savings only, never less comfort", "value": "efficient"},
+                        {"label": "Balanced - relax comfort only if the battery looks short", "value": "balanced"},
+                        {"label": "Maximum saving - relax comfort whenever on battery", "value": "max_saving"},
+                    ],
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+            vol.Optional(
+                CONF_BATTERY_RESERVE_PERCENT,
+                default=data.get(CONF_BATTERY_RESERVE_PERCENT, DEFAULT_BATTERY_RESERVE_PERCENT),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=90, step=1, unit_of_measurement="%", mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_BATTERY_COMFORT_LIMIT,
+                default=data.get(CONF_BATTERY_COMFORT_LIMIT, DEFAULT_BATTERY_COMFORT_LIMIT),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0.5, max=4.0, step=0.5, unit_of_measurement="°C", mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_BATTERY_PRIORITY_ROOMS, **suggested(CONF_BATTERY_PRIORITY_ROOMS)
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[{"label": room, "value": room} for room in rooms],
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+            vol.Optional(
+                CONF_BATTERY_SOLAR_OFFSET_HOURS,
+                default=data.get(CONF_BATTERY_SOLAR_OFFSET_HOURS, DEFAULT_BATTERY_SOLAR_OFFSET_HOURS),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=6, step=0.5, unit_of_measurement="hours", mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+        }
+        return self.async_show_form(
+            step_id="battery",
+            data_schema=vol.Schema(schema),
+            errors=errors,
         )
 
     async def async_step_predictive(

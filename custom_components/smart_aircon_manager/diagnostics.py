@@ -74,6 +74,10 @@ async def async_get_config_entry_diagnostics(
             "last_error": optimizer._last_error,
             "quick_action_mode": optimizer._quick_action_mode,
             "manual_override": getattr(optimizer, 'manual_override_enabled', False),
+            "enable_efficiency_mode": optimizer.enable_efficiency_mode,
+            "enable_battery_mode": optimizer.enable_battery_mode,
+            "conditioning_direction": optimizer._cycle_direction,
+            "comfort_relaxation": optimizer._comfort_relaxation,
         }
 
     if coordinator and coordinator.data:
@@ -111,5 +115,10 @@ async def async_get_config_entry_diagnostics(
                     "data_points": lm.tracker.get_data_point_count(room_name),
                 }
         diag["learning_profiles"] = profiles
+
+    if optimizer and optimizer.battery_manager:
+        battery = optimizer.battery_summary() or {}
+        battery["nights"] = optimizer.battery_manager.learner.nights[-14:]
+        diag["battery"] = battery
 
     return diag
