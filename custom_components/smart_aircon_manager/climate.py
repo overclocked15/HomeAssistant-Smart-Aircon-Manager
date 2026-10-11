@@ -65,8 +65,10 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         self._attr_unique_id = f"{config_entry.entry_id}_climate"
 
         # Restore persisted state from config entry (survives HA restarts)
-        from .const import CONF_HVAC_MODE
-        persisted_mode = config_entry.data.get(CONF_HVAC_MODE, "auto")
+        from .const import CONF_HVAC_MODE, DEFAULT_HVAC_MODE
+        # Same default as the optimizer, so a fresh install doesn't display
+        # AUTO while actually running COOL.
+        persisted_mode = config_entry.data.get(CONF_HVAC_MODE, DEFAULT_HVAC_MODE)
         self._is_on = config_entry.data.get("is_system_on", True)
 
         mode_map = {"cool": HVACMode.COOL, "heat": HVACMode.HEAT, "auto": HVACMode.AUTO}
@@ -111,7 +113,9 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def fan_mode(self) -> str | None:
-        """Return the current fan mode."""
+        """Return the current fan mode (a manual choice wins until "auto")."""
+        if self._optimizer.manual_main_fan_mode:
+            return self._optimizer.manual_main_fan_mode
         if not self.coordinator.data:
             return FAN_AUTO
         main_fan_speed = self.coordinator.data.get("main_fan_speed")
@@ -124,23 +128,42 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         return FAN_AUTO
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
-        """Set new fan mode (overrides automatic main fan control)."""
+        """Set the main fan mode.
+
+        low/medium/high override the automatic main fan control until the
+        user picks "auto", which hands control back to the optimizer.
+        """
         if not self._optimizer.main_fan_entity:
             _LOGGER.warning("Cannot set fan mode - no main fan entity configured")
+            return
+
+        if fan_mode == FAN_AUTO:
+            self._optimizer.manual_main_fan_mode = None
+            self.async_write_ha_state()
+            await self.coordinator.async_request_refresh()
             return
 
         fan_state = self.hass.states.get(self._optimizer.main_fan_entity)
         if not fan_state or fan_state.state in ["unavailable", "unknown"]:
             return
 
+        self._optimizer.manual_main_fan_mode = fan_mode
         if self._optimizer.main_fan_entity.startswith("climate."):
-            await self.hass.services.async_call(
-                "climate", "set_fan_mode",
-                {"entity_id": self._optimizer.main_fan_entity, "fan_mode": fan_mode},
-            )
+            # Translate to the unit's own spelling (e.g. "mid", numbered speeds)
+            unit_mode = self._optimizer._match_fan_mode(fan_mode, fan_state.attributes.get("fan_modes"))
+            if unit_mode is None:
+                _LOGGER.warning(
+                    "Main fan %s has no fan mode matching '%s' (available: %s)",
+                    self._optimizer.main_fan_entity, fan_mode, fan_state.attributes.get("fan_modes"),
+                )
+            else:
+                await self.hass.services.async_call(
+                    "climate", "set_fan_mode",
+                    {"entity_id": self._optimizer.main_fan_entity, "fan_mode": unit_mode},
+                )
         elif self._optimizer.main_fan_entity.startswith("fan."):
             # Map to percentage for fan entities
-            pct_map = {FAN_LOW: 33, FAN_MEDIUM: 66, FAN_HIGH: 100, FAN_AUTO: 66}
+            pct_map = {FAN_LOW: 33, FAN_MEDIUM: 66, FAN_HIGH: 100}
             await self.hass.services.async_call(
                 "fan", "set_percentage",
                 {"entity_id": self._optimizer.main_fan_entity, "percentage": pct_map.get(fan_mode, 66)},

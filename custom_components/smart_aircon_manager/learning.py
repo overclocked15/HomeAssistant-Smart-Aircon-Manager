@@ -16,6 +16,19 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
+# Targets that differ by more than this between consecutive data points mark
+# a target change rather than a room overshooting.
+_TARGET_CHANGE_EPSILON = 0.25
+
+
+def _target_changed(prev: dict[str, Any], curr: dict[str, Any]) -> bool:
+    """True when the target moved between two consecutive data points."""
+    prev_target = prev.get("target_temp")
+    curr_target = curr.get("target_temp")
+    if prev_target is None or curr_target is None:
+        return False
+    return abs(curr_target - prev_target) > _TARGET_CHANGE_EPSILON
+
 
 class PerformanceTracker:
     """Tracks performance metrics for adaptive learning."""
@@ -136,6 +149,11 @@ class PerformanceTracker:
         for i in range(1, len(recent_points)):
             prev = recent_points[i - 1]
             curr = recent_points[i]
+
+            # A target change (schedule switch, user change, comfort
+            # relaxation) moves the reference, not the room — not an overshoot
+            if _target_changed(prev, curr):
+                continue
 
             # Check if we crossed from above target to below target (or vice versa)
             prev_diff = prev["temp_diff_from_target"]
@@ -594,6 +612,8 @@ class LearningProfile:
             def half_overshoot_count(points):
                 count = 0
                 for i in range(1, len(points)):
+                    if _target_changed(points[i-1], points[i]):
+                        continue
                     prev_diff = points[i-1].get("temp_diff_from_target", 0)
                     curr_diff = points[i].get("temp_diff_from_target", 0)
                     if (prev_diff > 0 and curr_diff < -0.3) or (prev_diff < 0 and curr_diff > 0.3):

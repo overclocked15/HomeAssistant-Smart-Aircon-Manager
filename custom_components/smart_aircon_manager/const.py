@@ -240,6 +240,39 @@ DEFAULT_AWAY_MODE_DELAY_MINUTES = 30  # everyone away this long -> vacation mode
 CONF_FILTER_RUNTIME_THRESHOLD_HOURS = "filter_runtime_threshold_hours"
 DEFAULT_FILTER_RUNTIME_THRESHOLD_HOURS = 300
 
+# Comfort relaxation applied by the sleep quick action (°C, in the
+# energy-saving direction: warmer while cooling, cooler while heating)
+SLEEP_COMFORT_RELAXATION = 1.0
+
+# Efficient operation (efficiency mode, or battery-aware mode while the house
+# runs on its battery): switch the AC off once every room has been satisfied
+# this long instead of idling the blower, cap fan-only idling, and drive the
+# setpoint more gently.
+CONF_ENABLE_EFFICIENCY_MODE = "enable_efficiency_mode"
+DEFAULT_ENABLE_EFFICIENCY_MODE = False
+EFFICIENT_OFF_DWELL_SECONDS = 300
+EFFICIENT_FAN_ONLY_IDLE_MINUTES = 10
+EFFICIENT_MAX_SETPOINT_OFFSET = 2.0
+
+# Battery-aware mode (vendor agnostic: any home battery state-of-charge sensor)
+CONF_ENABLE_BATTERY_MODE = "enable_battery_mode"
+CONF_BATTERY_SOC_ENTITY = "battery_soc_entity"
+CONF_BATTERY_POWER_ENTITY = "battery_power_entity"
+CONF_BATTERY_POWER_SIGN = "battery_power_sign"
+CONF_BATTERY_RESERVE_PERCENT = "battery_reserve_percent"
+CONF_BATTERY_STRATEGY = "battery_strategy"
+CONF_BATTERY_COMFORT_LIMIT = "battery_comfort_limit"
+CONF_BATTERY_PRIORITY_ROOMS = "battery_priority_rooms"
+CONF_BATTERY_SOLAR_OFFSET_HOURS = "battery_solar_offset_hours"
+DEFAULT_ENABLE_BATTERY_MODE = False
+DEFAULT_BATTERY_POWER_SIGN = "auto"
+DEFAULT_BATTERY_RESERVE_PERCENT = 10
+DEFAULT_BATTERY_STRATEGY = "balanced"
+DEFAULT_BATTERY_COMFORT_LIMIT = 2.0
+DEFAULT_BATTERY_SOLAR_OFFSET_HOURS = 2.0
+BATTERY_POWER_SIGN_OPTIONS = ["auto", "positive_discharging", "positive_charging"]
+BATTERY_STRATEGY_OPTIONS = ["efficient", "balanced", "max_saving"]
+
 SCHEDULE_DAYS_OPTIONS = [
     "monday",
     "tuesday",

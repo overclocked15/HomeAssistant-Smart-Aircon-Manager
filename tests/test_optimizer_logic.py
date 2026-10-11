@@ -23,7 +23,11 @@ def _make_optimizer(**kwargs):
     hass.config = MagicMock()
     hass.config.path = MagicMock(return_value="/tmp/test_storage")
     hass.async_add_executor_job = AsyncMock()
-    hass.async_create_task = MagicMock()
+    # Close scheduled coroutines (e.g. state saves) so they aren't reported
+    # as "never awaited"
+    hass.async_create_task = MagicMock(
+        side_effect=lambda coro: coro.close() if hasattr(coro, "close") else None
+    )
 
     defaults = {
         "hass": hass,
@@ -967,8 +971,9 @@ class TestQuickActionRestartRestoration:
     """Quick-action setbacks survive HA restart (target_temp in particular)."""
 
     @pytest.mark.asyncio
-    async def test_sleep_setback_reapplied_on_restart(self):
-        """If HA restarts mid-sleep, target_temp must reflect the sleep setback."""
+    async def test_sleep_restored_on_restart_without_touching_target(self):
+        """If HA restarts mid-sleep, sleep resumes; its setback comes from the
+        comfort-relaxation layer, so the user's base target is never edited."""
         import json
         import tempfile
 
@@ -1003,8 +1008,13 @@ class TestQuickActionRestartRestoration:
             await opt._load_compressor_state()
 
         assert opt._quick_action_mode == "sleep"
-        # Cool sleep mode adds +1°C — target must reflect this after restart.
-        assert opt.target_temperature == pytest.approx(25.0)
+        # The base target is untouched; the +1°C setback is a relaxation.
+        assert opt.target_temperature == pytest.approx(24.0)
+        relaxation = opt._compute_comfort_relaxation(
+            {"Living Room": {"current_temperature": 24.5, "target_temperature": 24.0}}
+        )
+        assert relaxation["global"] == pytest.approx(1.0)
+        assert relaxation["rooms"]["Living Room"] == pytest.approx(1.0)
 
 
 class TestPerRoomTargetMath:
@@ -1212,17 +1222,16 @@ class TestQuickActionExit:
         opt._exit_quick_action_mode()
         assert opt.target_temperature == 20.0
 
-    def test_sleep_exit_restores_if_unmodified(self):
-        opt = _make_optimizer(target_temperature=25.0, hvac_mode="cool")
-        opt._quick_action_mode = "sleep"
-        opt._quick_action_original_settings = {
-            "target_temperature": 24.0,
-            "temperature_deadband": 0.5,
-        }
-        # Sleep mode set temp to 25.0 (original 24.0 + 1.0 for cool mode)
-        # User didn't change it, so current == what mode would have set
+    def test_sleep_never_edits_target(self):
+        """Sleep relaxes comfort through the relaxation layer: entering and
+        exiting it leaves the user's target alone, including a change the
+        user made while sleep was active."""
+        opt = _make_optimizer(target_temperature=24.0, hvac_mode="cool")
+        opt._enter_quick_action_mode("sleep")
+        assert opt.target_temperature == 24.0
+        opt.target_temperature = 25.0  # user change during sleep
         opt._exit_quick_action_mode()
-        assert opt.target_temperature == 24.0  # Restored to original
+        assert opt.target_temperature == 25.0
 
 
 class TestAutoModeOccupancySetback:

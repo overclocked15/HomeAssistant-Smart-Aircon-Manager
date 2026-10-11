@@ -48,7 +48,11 @@ Same logic as cooling, but inverted: rooms below target get more fan, rooms abov
 
 ### Auto Mode
 
-Detects from the main climate entity whether cooling or heating is needed.
+Auto mode decides each cycle whether the house needs cooling or heating, from the room temperatures:
+
+- **Reversal guard**: while the AC is running in cool (or heat) it keeps that direction. It switches off through the normal turn-off thresholds first, and only then may it restart the other way. It never reverses cool↔heat while running.
+- **Outlier rooms**: a single room more than 1.5× the turn-on threshold past its target sets the direction.
+- **Hysteresis**: otherwise the house must pass the target by the deadband on the other side before the direction changes.
 
 ## Fan Speed Smoothing
 
@@ -94,34 +98,35 @@ When learning is active and confident, additional adjustments are made:
 
 ## AC Control Logic
 
+Each room is judged against a **satisfaction threshold**: the global target, unless the room's own target (per-room override, schedule room target, occupancy setback or comfort relaxation) asks for *less* conditioning. That means a warmer room while cooling, or a cooler room while heating. A room asking for more conditioning than the global target is best-effort and never keeps the AC running on its own. The house "average" used below is the mean of each room's distance from its threshold. With no such rooms it is simply the average temperature minus the target.
+
 ### Turning AC On
 
-The AC is turned on when:
-- `auto_control_main_ac` is enabled
-- Average temperature exceeds target by `ac_turn_on_threshold` (default 1°C)
-- In cool mode: any room is significantly above target
-- In heat mode: any room is significantly below target
+The AC is turned on when `auto_control_main_ac` is enabled and either:
+- The house average needs conditioning by `ac_turn_on_threshold` (default 1°C), or
+- Any single room is 1.5× that threshold past its satisfaction threshold.
 
 ### Turning AC Off
 
 The AC is turned off when:
-- Average temperature is below target by `ac_turn_off_threshold` (default 2°C)
-- AND the maximum room temperature is at or below the target
-- This prevents premature turn-off when some rooms still need conditioning
+- The house average is past the target by `ac_turn_off_threshold` (default 2°C), in the direction being conditioned,
+- AND every room is satisfied (at or past its threshold).
+
+This prevents premature turn-off when some rooms still need conditioning.
+
+With **efficient operation** (efficiency mode, or battery-aware mode while running on the battery), the AC also switches off once every room has been satisfied for 5 minutes, instead of idling the blower until the house is 2°C past target. It restarts through the normal turn-on thresholds.
 
 ### AC Temperature Setpoint
 
-When `auto_control_ac_temperature` is enabled, the system calculates the optimal AC setpoint:
+When `auto_control_ac_temperature` is enabled, the setpoint is the target plus a proportional overdrive while the house still needs conditioning:
 
-**Cooling**:
-- Aggressive (far from target): 19°C
-- Moderate: 21°C
-- Maintenance (near target): 23°C
+```
+overdrive = min(4°C, 2 × house demand)      # 2°C cap with efficient operation
+cooling:  setpoint = target − overdrive
+heating:  setpoint = target + overdrive
+```
 
-**Heating**:
-- Aggressive (far from target): 25°C
-- Moderate: 23°C
-- Maintenance (near target): 21°C
+At or past the target the setpoint equals the target. It is refreshed even while every room sits inside the deadband, so a hard setpoint can't keep driving the unit past the target. Values are rounded to the unit's `target_temp_step` and clamped to its `min_temp`/`max_temp`.
 
 ### Main Fan Speed
 
@@ -129,6 +134,8 @@ The main AC fan speed is set based on overall need:
 - **Low**: All rooms near target (variance <= 1°C, avg deviation <= 0.5°C)
 - **High**: Significant need (avg deviation >= 2.5°C OR max deviation >= 3°C)
 - **Medium**: All other conditions
+
+The speed is mapped onto the fan modes the unit actually offers: `mid`/`med` spellings, numbered speeds such as Daikin's 1–5, or quiet modes. A command is only sent when the mode changes. A fan mode picked on the manager's climate card holds until "auto" is picked again.
 
 ## Compressor Protection
 
@@ -228,12 +235,12 @@ Quick actions temporarily override normal behavior:
 
 | Mode | Fan Speed Effect | Duration | Notes |
 |------|-----------------|----------|-------|
-| **Vacation** | All fans to 30% | Manual on/off | Widens deadband to 2.0°C |
-| **Boost** | All fans × 1.5 (max 100%) | 30 min default | Bypasses enhanced compressor protection |
-| **Sleep** | All fans capped at 40% | 8 hours default | Target adjusted ±1°C |
-| **Party** | All fans to median (min 60%) | 2 hours default | Equalizes all rooms |
+| **Vacation** | Fans at 30% of computed speed (never below minimum airflow) | Manual on/off | Widens deadband to 2.0°C; survives restarts |
+| **Boost** | All fans × 1.5 (max 100%) | 30 min default | Suspends comfort relaxation |
+| **Sleep** | All fans capped at 40% | 8 hours default | Comfort relaxed by 1°C (warmer while cooling, cooler while heating) |
+| **Party** | All fans to median (min 60%) | 2 hours default | Equalizes all rooms; suspends comfort relaxation |
 
-Quick actions are checked each cycle and auto-expire when their duration elapses. Original settings are restored on expiry, unless the user manually changed settings during the mode.
+Quick actions are checked each cycle and auto-expire when their duration elapses. Vacation's deadband is restored on exit, unless the user changed it during the mode. Sleep never edits the target temperature. Its 1°C relaxation is applied each cycle on top of schedules and per-room targets, so it can't flip auto mode to the opposite direction or outlive the mode. Quick actions never override a safety response: rooms paused by open-window detection and rooms in a critical-room emergency keep their airflow.
 
 ## Critical Room Protection
 
@@ -242,6 +249,12 @@ For rooms with critical temperature requirements (server rooms, wine cellars):
 | Status | Condition | Action |
 |--------|-----------|--------|
 | Normal | Below warning threshold | Normal optimization |
-| Warning | Within warning offset of critical temp | Alert sent, increased cooling |
-| Critical | At or above critical temp | Emergency alert, maximum cooling |
-| Recovering | Cooling back to safe temperature | Sustained cooling until safe |
+| Warning | Within warning offset of critical temp | Alert sent |
+| Critical | At or above critical temp (or at/below the freeze limit) | Emergency alert; the AC is turned on in the mode that serves the room |
+| Recovering | Returning to the safe temperature | The AC stays on until safe |
+
+While a room is critical or recovering, the optimizer works with the emergency:
+- It never turns the AC off, and keeps it in the mode that serves the room.
+- Dampers, setpoint and main fan follow the emergency's direction.
+- Comfort relaxation and quick-action caps are suspended for that room.
+- Turning the manager OFF leaves the AC running until the room recovers.

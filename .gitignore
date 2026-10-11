@@ -4,8 +4,7 @@ CLAUDE.md
 CLAUDE.local.md
 .claude-*
 
-# Tests and test artifacts
-tests/
+# Test artifacts
 .pytest_cache/
 .coverage
 coverage.xml

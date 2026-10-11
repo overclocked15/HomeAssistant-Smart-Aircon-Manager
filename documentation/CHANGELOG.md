@@ -1,5 +1,70 @@
 # Changelog
 
+## v3.0.2 - Bug Fixes (auto mode, per-room targets, restarts, safety)
+
+**Release Date**: 2026-10-11
+
+Every fix below was reproduced by running the optimizer against simulated Home Assistant states before it was changed, and each has a regression test in `tests/test_v302_fixes.py`.
+
+### High
+
+- **Auto mode no longer reverses a cooling AC to heat at the target** (`_resolve_cycle_direction`, `_determine_optimal_hvac_mode`): without humidity control, auto mode resolved `heat if average < target else cool` with no deadband or hysteresis. A cooling AC was switched to HEAT as soon as the house dipped 0.02 °C below target, and back to cool once it crossed again: 160 cool↔heat reversals in a simulated 4-hour run, and the turn-off test could never pass. Auto mode now resolves a conditioning direction each cycle:
+  - **Reversal guard:** an AC running in cool or heat keeps that direction. It turns off through the normal thresholds first, and only then may it restart the other way.
+  - **Outliers:** a room past 1.5× the turn-on threshold still sets the direction (hot rooms are checked first).
+  - **Hysteresis:** otherwise the house must pass the target by the deadband on the other side before the direction changes.
+
+  The humidity branch, the mode-change hysteresis and enhanced compressor protection never hold or select the opposite mode of that direction.
+- **Rooms set warmer (cooling) or cooler (heating) than the global target no longer keep the AC running forever** (`_room_satisfaction_target`, `_average_demand`, `_check_if_ac_needed`). Example: a storage room at 25 °C in a 22 °C house.
+  - **What went wrong:** the AC turned on for that room while it sat at its own target, and the "every room at or below target" turn-off test could never pass.
+  - **The rule now:** each room is measured against a satisfaction threshold. That is the global target, unless the room's own target asks for *less* conditioning, in which case its own target is used. This keeps v2.16.2's rule that overrides asking for *more* conditioning are best-effort.
+  - **Where it applies:** the outlier turn-on, the all-satisfied turn-off, the house-average on/off demand, the AC setpoint and auto-mode direction. With no such rooms the maths is unchanged.
+  - **Auto mode in winter:** a warm-override room being heated toward its target was resolved as a hot outlier and switched the AC to COOL (setpoint 19.5 °C in winter). That is fixed too.
+- **Sleep mode reworked as a comfort relaxation**. It no longer edits the target temperature:
+  - In auto mode, sleep's +1 °C pushed the target above the house temperature, which flipped a cooling AC to HEAT (setpoint ~25 °C on a summer night).
+  - While a schedule was active, sleep had no effect at all.
+  - If sleep expired while a schedule was active, the +1 °C was never removed. The base target crept up by 1 °C each night until a restart.
+  - Rooms with their own targets ignored sleep.
+  - A restart during sleep discarded a target change made during sleep.
+
+  Sleep now relaxes comfort by 1 °C every cycle, after schedules and weather, for every room. It applies only in the direction being conditioned (warmer while cooling, cooler while heating), never moves the opposite edge toward the house, and is suspended during critical-room emergencies and boost/party.
+- **Enhanced compressor protection no longer locks the mode after a restart** (`async_setup`, `_determine_optimal_hvac_mode`). With humidity control on, a restart or reload (every options save reloads) while the AC was cooling or heating seeded the current mode but not its start time. The minimum-duration check then computed 0 s forever and blocked every mode change. In a simulation the AC kept cooling a house 1.5 °C below target for 30 minutes. The start time is now seeded, and a missing one starts the clock instead of blocking.
+- **Vacation mode survives restarts and options saves** (`_load_compressor_state`): vacation has no expiry, and restore required one, so vacation (manual or presence-triggered) silently ended on every restart or reload, losing its 2.0 °C deadband.
+
+### Medium
+
+- **Crash every cycle when the AC was started externally with every room inside the deadband** (`_async_optimize_impl`): dampers pre-positioned while the AC was off counted as "optimized", so the stability skip triggered before any optimization had run and `current_time - None` raised `TypeError` every cycle. Dampers froze and the error count climbed. The stability skip now requires a real optimization first.
+- **Losing every room sensor no longer switches the AC off**. When all room sensors went unavailable (a Zigbee restart, or HA still loading), `_check_if_ac_needed` read "no demand" and the AC was commanded off before the no-data guard ran. The guard now runs before any AC decision and leaves the AC as it is.
+- **The setpoint no longer freezes while rooms sit inside the deadband**. Example: a 20 °C setpoint sent while pulling the house down to 23 °C stayed in place once every room entered the deadband, because the stability skip bypassed the only setpoint path. The house overcooled and wasted energy. Target changes landing in the deadband had the same problem. The setpoint is now refreshed (debounced) when the full optimization is skipped.
+- **The first cycle after a restart honours OFF and Manual Override** (`async_setup_entry`): the first refresh ran a full control cycle before the climate and switch entities restored those states. That cycle could turn the AC on or off and move dampers the user had taken out of automatic control.
+- **Main fan commands match the unit** (`_match_fan_mode`, `_determine_and_set_main_fan_speed`):
+  - Home Assistant has rejected unknown fan modes since 2024.1, but the optimizer always sent `low`/`medium`/`high`. Many units use `mid`/`med` (most SmartIR codes, Actron) or numbered speeds (Daikin), so every cycle cost three retries and a "Main Fan Error" notification.
+  - Speeds are now mapped onto the entity's own `fan_modes`. Unchanged modes are no longer re-sent; infrared units beeped every 30 s.
+  - A mode with no counterpart on the unit is skipped with a single warning.
+- **Fan mode chosen on the manager's climate card now sticks** until "auto" is chosen again. It was overwritten on the next cycle, despite the docstring.
+- **AC setpoint is rounded to the unit's `target_temp_step` and clamped to its `min_temp`/`max_temp`** (`_fit_setpoint_to_entity`). Home Assistant rejects out-of-range setpoints since 2024.8, for example 32 °C for a heating target of 28 °C. Fractional noise like `23.200000000000003` was also sent.
+- **Critical-room emergencies** (`_get_effective_operating_mode`, `_control_main_ac`, `async_turn_off_main_ac`, `_apply_quick_action_adjustments`):
+  - **Damper logic:** dampers, setpoint and main fan now follow the emergency's direction. Freeze protection heating a cool-configured house used to give the rescued room 5 % airflow as "overshoot".
+  - **Fan-only:** a "no demand" result, such as the fan-only idle shutdown, now switches the AC to the emergency's mode instead of leaving it in fan_only.
+  - **Manager OFF:** turning the manager OFF no longer cuts a rescue. The monitor's 5-minute cooldown would have left the room unprotected.
+  - **Quick actions:** sleep and vacation caps no longer apply to rooms in an emergency.
+- **AC switches made outside the integration arm the compressor timers** (`_observe_external_ac_transitions`). This covers the critical monitor, the unit's remote and other automations. The optimizer could switch off an AC the critical monitor had just started, because its min-on timer was stale.
+- **Options pages can clear optional entities** (`OptionsFlowHandler._merged_data`). The Settings and Weather pages merged submissions with `{**data, **user_input}`. A field the user cleared is omitted from `user_input`, so the old main climate, main fan, weather entity or outdoor sensor was silently kept. v2.16.3's `suggested_value` change alone could not fix this. The Advanced page's notification services field had the same problem through `default=`.
+
+### Low
+
+- **`vacation_mode(enabled: false)` only ends vacation**: it used to cancel an active sleep, boost or party, for example from a home-coming automation.
+- **Party and boost no longer override open-window pauses**, and vacation no longer drops rooms below `min_airflow_percent`.
+- **Setpoint and dampers are sent in the same cycle the AC is switched on**, instead of starting the unit on the previous session's setpoint for another poll interval.
+- **Pre-positioning includes the occupancy setback**, as its comment always said.
+- **A fresh install's climate entity shows the mode the optimizer actually runs** (cool) instead of AUTO.
+- **State-file writes are serialized**, each with a unique temp file. Overlapping background saves could interleave or fail the rename.
+- **Learning ignores target changes when counting overshoots** (`learning.py`). A schedule switch, a user change or a relaxation step used to register as the room "overshooting", which skewed learned smoothing and balancing bias.
+
+### Tests
+
+- New `tests/test_v302_fixes.py` (33 tests): full optimization cycles against simulated HA states covering every fix above. Two existing tests that encoded the old sleep design (target edited, then restored) were updated to the new behaviour. Suite: 154 tests, all passing.
+- `tests/` is no longer git-ignored. Since v3.0.0 the rule silently kept new test files out of the repository (v3.0.1's `tests/test_code_review_fixes.py` never reached it); regression tests are now committed with their fixes.
+
 ## v3.0.1 - Code Review Fixes (2 critical + 6 medium + 9 low)
 
 **Release Date**: 2026-07-05

@@ -264,6 +264,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(seconds=DEFAULT_DATA_POLL_INTERVAL),
     )
 
+    # Restore the user's OFF / manual-override state BEFORE the first refresh.
+    # The climate and switch entities restore it too, but only once their
+    # platforms are set up — after the first refresh has already run a full
+    # control cycle that could switch the AC or move dampers.
+    optimizer.is_enabled = entry.data.get("is_system_on", True)
+    optimizer.manual_override_enabled = entry.data.get("manual_override_enabled", False)
+
     # Setup optimizer (initializes learning manager with config)
     await optimizer.async_setup()
 
@@ -501,7 +508,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 optimizer = hass.data[DOMAIN][config_entry_id]["optimizer"]
                 if enabled:
                     optimizer._enter_quick_action_mode("vacation")
-                else:
+                elif optimizer._quick_action_mode == "vacation":
+                    # Only end vacation: an automation turning vacation off at
+                    # home-coming must not cancel an active sleep/boost/party.
                     optimizer._exit_quick_action_mode()
                 _LOGGER.info("Vacation mode %s for entry %s", "enabled" if enabled else "disabled", config_entry_id)
             else:

@@ -16,7 +16,7 @@ Complete reference for all Smart Aircon Manager configuration options.
 | `target_temperature` | float | `22` | 10-35 | Desired whole-house temperature (°C) |
 | `temperature_deadband` | float | `0.5` | 0.1-5.0 | Acceptable deviation (±°C) before taking action |
 | `update_interval` | float | `0.5` | 0.1-60 | Optimization frequency in minutes (0.5 = 30 seconds) |
-| `hvac_mode` | select | `cool` | cool/heat/auto | Cooling, heating, or auto-detect from main climate entity |
+| `hvac_mode` | select | `cool` | cool/heat/auto | Cooling, heating, or auto (heats or cools as the house needs, never reversing while running) |
 
 ## Entity Configuration
 

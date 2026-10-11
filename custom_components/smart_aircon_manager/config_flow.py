@@ -349,6 +349,20 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         # config_entry is already available as self.config_entry via parent class
         self._rooms = list(config_entry.data.get(CONF_ROOM_CONFIGS, []))
 
+    def _merged_data(self, user_input: dict[str, Any], clearable: tuple[str, ...]) -> dict[str, Any]:
+        """Merge a submitted options page into the entry data.
+
+        Optional fields pre-filled through suggested_value are left out of
+        user_input when the user clears them (voluptuous drops absent
+        Optional keys), so a plain {**data, **user_input} merge silently kept
+        the old value. Clearable keys that come back empty are removed.
+        """
+        new_data = {**self.config_entry.data, **user_input}
+        for key in clearable:
+            if user_input.get(key) in (None, "", []):
+                new_data.pop(key, None)
+        return new_data
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -367,8 +381,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Handle settings configuration."""
         if user_input is not None:
-            # Merge with existing data and update the config entry
-            new_data = {**self.config_entry.data, **user_input}
+            # Merge with existing data and update the config entry; a cleared
+            # main climate / main fan entity is removed, not kept.
+            new_data = self._merged_data(user_input, (CONF_MAIN_CLIMATE_ENTITY, CONF_MAIN_FAN_ENTITY))
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
@@ -416,7 +431,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             options=[
                                 {"label": "Cooling", "value": HVAC_MODE_COOL},
                                 {"label": "Heating", "value": HVAC_MODE_HEAT},
-                                {"label": "Auto (based on main climate)", "value": HVAC_MODE_AUTO},
+                                {"label": "Auto (heat or cool as needed)", "value": HVAC_MODE_AUTO},
                             ],
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
@@ -900,8 +915,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Handle weather integration configuration."""
         if user_input is not None:
-            # Merge with existing data
-            new_data = {**self.config_entry.data, **user_input}
+            # Merge with existing data; cleared entity fields are removed
+            new_data = self._merged_data(user_input, (CONF_WEATHER_ENTITY, CONF_OUTDOOR_TEMP_SENSOR))
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
@@ -1953,11 +1968,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if not errors:
                 # Convert the CSV notify-services field into the stored list
                 user_input = dict(user_input)
-                notify_csv = user_input.pop("notify_services_csv", None)
-                if notify_csv is not None:
-                    user_input[CONF_NOTIFY_SERVICES] = [
-                        s.strip() for s in notify_csv.split(",") if s.strip()
-                    ]
+                # The field is pre-filled via suggested_value, so a missing
+                # value means the user cleared it: store an empty list.
+                notify_csv = user_input.pop("notify_services_csv", None) or ""
+                user_input[CONF_NOTIFY_SERVICES] = [
+                    s.strip() for s in notify_csv.split(",") if s.strip()
+                ]
 
                 # Merge with existing data and update the config entry
                 new_data = {**self.config_entry.data, **user_input}
@@ -2145,7 +2161,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         "notify_services_csv",
-                        default=", ".join(self.config_entry.data.get(CONF_NOTIFY_SERVICES, []) or []),
+                        # suggested_value (not default=) so the field can be cleared
+                        description={
+                            "suggested_value": ", ".join(self.config_entry.data.get(CONF_NOTIFY_SERVICES, []) or [])
+                        },
                     ): cv.string,
                 }
             ),
