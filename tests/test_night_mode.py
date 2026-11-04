@@ -313,3 +313,107 @@ class TestReviewFixes:
         assert switch.extra_state_attributes["closed_rooms"] == ["Living"]
         opt.enable_night_mode = False
         assert switch.extra_state_attributes["closed_rooms"] == []
+
+
+def fail_cover_calls(opt, calls, entity_id):
+    """Make service calls for one cover raise (zone online but rejecting)."""
+    original = opt.hass.services.async_call
+
+    async def service_call(domain, service, data, blocking=False):
+        if domain == "cover" and data.get("entity_id") == entity_id:
+            calls.append(("failed", service, dict(data)))
+            raise RuntimeError("zone controller error")
+        return await original(domain, service, data, blocking)
+
+    opt.hass.services.async_call = service_call
+    return original
+
+
+def failed_attempts(calls, entity_id):
+    return sum(1 for c in calls if c[0] == "failed" and c[2]["entity_id"] == entity_id)
+
+
+class TestDeliveryConfirmation:
+    """A night-mode change only settles once its command actually went through."""
+
+    def test_apply_reports_delivered_rooms(self):
+        import asyncio
+        opt, calls, states = night_optimizer()
+        states["cover.bed"].attributes["current_position"] = 51   # within debounce of 50
+        states["cover.kids"].state = "unavailable"
+        opt.room_overrides["Living_enabled"] = False
+        delivered = asyncio.run(opt._apply_recommendations({"Bed": 50, "Kids": 40, "Living": 0}))
+        assert delivered == {"Bed", "Living"}
+        opt.manual_override_enabled = True
+        assert asyncio.run(opt._apply_recommendations({"Bed": 10})) == set()
+
+    def test_failed_close_is_retried_with_backoff(self):
+        opt, calls, states = night_optimizer()
+        original = fail_cover_calls(opt, calls, "cover.living")
+        with patch("asyncio.sleep", new=_no_sleep):
+            run_cycle(opt)                      # full pass: command fails -> backoff
+            assert opt._night_mode_unsettled == {"Living"}
+            assert failed_attempts(calls, "cover.living") == 3   # existing per-call retries
+            assert opt._night_mode_retry_backoff["Living"][1] == 60
+            run_cycle(opt)                      # inside the backoff: no attempt
+            assert failed_attempts(calls, "cover.living") == 3
+            opt._night_mode_retry_backoff["Living"] = (0.0, 60.0)
+            run_cycle(opt)                      # backoff elapsed: retried, fails again
+            assert failed_attempts(calls, "cover.living") == 6
+            assert opt._night_mode_retry_backoff["Living"][1] == 120
+            # Zone recovers and the backoff elapses
+            opt.hass.services.async_call = original
+            opt._night_mode_retry_backoff["Living"] = (0.0, 60.0)
+            calls.clear()
+            run_cycle(opt)
+        assert cover_positions(calls).get("cover.living") == 0
+        assert opt._night_mode_unsettled == set()
+        assert opt._night_mode_retry_backoff == {}
+
+    def test_backoff_grows_and_is_capped(self):
+        opt, calls, states = night_optimizer()
+        fail_cover_calls(opt, calls, "cover.living")
+        delays = []
+        with patch("asyncio.sleep", new=_no_sleep):
+            run_cycle(opt)
+            for _ in range(8):
+                if "Living" in opt._night_mode_retry_backoff:
+                    # Let the backoff elapse, keep its delay
+                    opt._night_mode_retry_backoff["Living"] = (0.0, opt._night_mode_retry_backoff["Living"][1])
+                run_cycle(opt)
+                delays.append(opt._night_mode_retry_backoff["Living"][1])
+        assert delays[:3] == [120, 240, 480]   # 60 s was set by the full pass
+        assert max(delays) == 1800
+
+    def test_manual_override_mid_cycle_keeps_change_pending(self):
+        opt, calls, states = night_optimizer()
+        real_apply = opt._apply_recommendations
+
+        async def override_switched_on(recommendations):
+            opt.manual_override_enabled = True   # user hits Manual Override mid-cycle
+            return await real_apply(recommendations)
+
+        with patch.object(opt, "_apply_recommendations", side_effect=override_switched_on):
+            run_cycle(opt)
+        assert "cover.living" not in cover_positions(calls)
+        assert "Living" in opt._night_mode_unsettled
+        assert opt._night_mode_retry_backoff == {}   # not a zone failure
+        run_cycle(opt)                            # override on: cycle skipped entirely
+        assert "cover.living" not in cover_positions(calls)
+        opt.manual_override_enabled = False
+        run_cycle(opt)                            # override off: the close goes out
+        assert cover_positions(calls).get("cover.living") == 0
+        assert opt._night_mode_unsettled == set()
+
+    def test_new_target_resets_backoff(self):
+        opt, calls, states = night_optimizer()
+        opt._night_mode_retry_backoff["Living"] = (10**12, 1800.0)
+        opt._night_mode_unsettled.add("Living")
+        opt.enable_night_mode = False             # Living now reopens: new target
+        opt._night_mode_applied_closed = frozenset({"Living"})
+        run_cycle(opt)
+        assert "Living" not in opt._night_mode_retry_backoff
+
+
+async def _no_sleep(*_args, **_kwargs):
+    return None
