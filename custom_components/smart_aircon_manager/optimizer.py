@@ -13,7 +13,11 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from .const import NIGHT_MODE_REOPEN_POSITION
+from .const import (
+    NIGHT_MODE_REOPEN_POSITION,
+    NIGHT_MODE_RETRY_MAX_SECONDS,
+    NIGHT_MODE_RETRY_MIN_SECONDS,
+)
 from .learning import LearningManager
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
@@ -412,6 +416,8 @@ class AirconOptimizer:
         # Rooms whose close/reopen hasn't reached the damper yet (zone moving,
         # unavailable or unknown when it was due); retried each cycle
         self._night_mode_unsettled: set[str] = set()
+        # room -> (earliest next attempt, current delay) after a failed command
+        self._night_mode_retry_backoff: dict[str, tuple[float, float]] = {}
 
     def _validate_temperature(self, value: float, name: str, min_val: float, max_val: float) -> float:
         """Validate temperature value is within acceptable range."""
@@ -2754,10 +2760,10 @@ class AirconOptimizer:
 
                 # Night mode closures go last so nothing reopens a closed room
                 recommendations = self._apply_night_mode_closures(recommendations, set(night_closed))
-                self._night_mode_full_pass(recommendations)
-                full_damper_pass = True
 
-                await self._apply_recommendations(recommendations)
+                delivered = await self._apply_recommendations(recommendations)
+                self._night_mode_full_pass(recommendations, delivered)
+                full_damper_pass = True
 
                 if self.main_fan_entity:
                     main_fan_speed = await self._determine_and_set_main_fan_speed(active_states)
@@ -2814,9 +2820,9 @@ class AirconOptimizer:
                 pre_position[room] = pre_pos
             pre_position = self._apply_night_mode_closures(pre_position, set(night_closed))
             if pre_position != self._last_recommendations or self._night_mode_pending:
-                self._night_mode_full_pass(pre_position)
+                delivered = await self._apply_recommendations(pre_position)
+                self._night_mode_full_pass(pre_position, delivered)
                 full_damper_pass = True
-                await self._apply_recommendations(pre_position)
                 self._last_recommendations = pre_position
             # Report what was actually applied so sensors don't show the
             # stale recommendations from before the AC turned off.
@@ -3699,27 +3705,57 @@ class AirconOptimizer:
             return True
         return cover_state.state not in ("unavailable", "unknown", "opening", "closing")
 
-    def _night_mode_full_pass(self, applied: dict[str, int | float]) -> None:
-        """Record a full damper pass that is about to be applied.
+    def _night_mode_full_pass(self, applied: dict[str, int | float], delivered: set[str]) -> None:
+        """Record a full damper pass that has just been applied.
 
-        Rooms whose zone couldn't take the command stay unsettled and are
-        retried on later cycles by _settle_night_mode_rooms.
+        Only rooms whose damper actually got its command settle. The rest
+        (zone moving or unavailable, command failed, manual override switched
+        on mid-cycle) are retried by _settle_night_mode_rooms; a rejected
+        command starts the backoff.
         """
         self._night_mode_pending = False
-        self._night_mode_unsettled = {
+        self._night_mode_settled(delivered)
+        self._night_mode_back_off({
             room for room in self._night_mode_unsettled
-            if room not in applied or not self._room_cover_ready(room)
-        }
+            if room in applied and room not in delivered and self._room_cover_ready(room)
+        })
+
+    def _night_mode_back_off(self, failed: set[str]) -> None:
+        """Delay the next attempt for zones that rejected their command.
+
+        1, 2, 4 ... minutes up to 30, so a zone that is online but keeps
+        failing isn't hammered every cycle (each attempt carries the usual
+        per-command retries and a failure notification). Not applied when
+        manual override caused the miss.
+        """
+        if not failed or getattr(self, 'manual_override_enabled', False):
+            return
+        now = time.time()
+        for room in failed:
+            _, delay = self._night_mode_retry_backoff.get(room, (0.0, 0.0))
+            delay = min(NIGHT_MODE_RETRY_MAX_SECONDS, max(NIGHT_MODE_RETRY_MIN_SECONDS, delay * 2))
+            self._night_mode_retry_backoff[room] = (now + delay, delay)
+            _LOGGER.warning(
+                "Night mode: couldn't move %s's zone - retrying in %.0f min", room, delay / 60
+            )
+
+    def _night_mode_settled(self, rooms: set[str]) -> None:
+        """Drop delivered rooms from the retry set and forget their backoff."""
+        self._night_mode_unsettled -= rooms
+        for room in rooms:
+            self._night_mode_retry_backoff.pop(room, None)
 
     async def _settle_night_mode_rooms(self, closed_rooms: frozenset[str]) -> None:
         """Retry night-mode closes/reopens that didn't reach the damper.
 
         Each room gets a single command once its zone is ready, so a zone
-        that reports its position loosely isn't re-commanded every cycle.
-        A reopened room waits for the full pass that computes its position.
+        that reports its position loosely isn't re-commanded every cycle; a
+        failed command is retried with backoff. A reopened room waits for
+        the full pass that computes its position.
         """
-        if not self._night_mode_unsettled:
+        if not self._night_mode_unsettled or getattr(self, 'manual_override_enabled', False):
             return
+        now = time.time()
         targets: dict[str, int | float] = {}
         for room in self._night_mode_unsettled:
             if room in closed_rooms:
@@ -3727,10 +3763,16 @@ class AirconOptimizer:
             elif not self._night_mode_pending:
                 position = (self._last_recommendations or {}).get(room)
                 targets[room] = position if position is not None else NIGHT_MODE_REOPEN_POSITION
-        ready = {room: pos for room, pos in targets.items() if self._room_cover_ready(room)}
-        if ready:
-            await self._apply_recommendations(ready)
-            self._night_mode_unsettled -= set(ready)
+        ready = {
+            room: pos for room, pos in targets.items()
+            if self._room_cover_ready(room)
+            and now >= self._night_mode_retry_backoff.get(room, (0.0, 0.0))[0]
+        }
+        if not ready:
+            return
+        delivered = await self._apply_recommendations(ready)
+        self._night_mode_settled(delivered)
+        self._night_mode_back_off(set(ready) - delivered)
 
     def _on_night_mode_change(self, closed_rooms: frozenset[str]) -> None:
         """Reset per-room memory that would mislead once rooms change state.
@@ -3749,6 +3791,9 @@ class AirconOptimizer:
             # is meaningless; a reopened room starts clean
             self._open_window_state.pop(room, None)
         self._night_mode_unsettled |= changed
+        # A new target deserves a prompt attempt
+        for room in changed:
+            self._night_mode_retry_backoff.pop(room, None)
         _LOGGER.info(
             "Night mode %s - closed rooms: %s",
             "active" if closed_rooms else "inactive",
@@ -4107,12 +4152,21 @@ class AirconOptimizer:
         
         return "\n".join(summary_lines)
 
-    async def _apply_recommendations(self, recommendations: dict[str, int | float]) -> None:
-        """Apply the recommended cover positions and AC temperature."""
+    async def _apply_recommendations(self, recommendations: dict[str, int | float]) -> set[str]:
+        """Apply the recommended cover positions and AC temperature.
+
+        Returns the rooms whose damper needs nothing more: the command went
+        through, the zone was already within the debounce, or there is
+        nothing a retry could change (control disabled for the room, room or
+        cover entity missing). Rooms skipped because the zone was moving,
+        unavailable or unknown, rooms whose command failed, and every room
+        while manual override is on, are left out.
+        """
+        delivered: set[str] = set()
         # Check manual override before issuing any commands
         if getattr(self, 'manual_override_enabled', False):
             _LOGGER.debug("Manual override active - skipping apply_recommendations")
-            return
+            return delivered
 
         if "ac_temperature" in recommendations and self.auto_control_ac_temperature and self.main_climate_entity:
             await self._set_ac_temperature(recommendations["ac_temperature"])
@@ -4124,10 +4178,12 @@ class AirconOptimizer:
             room_override = self.room_overrides.get(f"{room_name}_enabled")
             if room_override is False:
                 _LOGGER.debug("Skipping %s - control disabled via override", room_name)
+                delivered.add(room_name)
                 continue
 
             room_config = next((r for r in self.room_configs if r["room_name"] == room_name), None)
             if not room_config:
+                delivered.add(room_name)
                 continue
 
             cover_entity = room_config["cover_entity"]
@@ -4135,6 +4191,7 @@ class AirconOptimizer:
 
             if not cover_state:
                 _LOGGER.warning("Cover entity %s for room %s not found", cover_entity, room_name)
+                delivered.add(room_name)
                 continue
 
             if cover_state.state in ["unavailable", "unknown"]:
@@ -4159,6 +4216,7 @@ class AirconOptimizer:
                             "Skipping %s position change (%d%% → %d%%) - within 3%% debounce",
                             room_name, int(current_pos), int(position)
                         )
+                        delivered.add(room_name)
                         continue
                 except (ValueError, TypeError):
                     pass  # Can't parse current position, proceed with update
@@ -4172,12 +4230,15 @@ class AirconOptimizer:
             )
 
             if success:
+                delivered.add(room_name)
                 _LOGGER.debug("Set cover position for %s (%s) to %d%%", room_name, cover_entity, position)
             else:
                 await self._send_notification(
                     "Cover Control Error",
                     f"Failed to set fan speed for {room_name} after {MAX_RETRIES} attempts"
                 )
+
+        return delivered
 
     async def _determine_and_set_main_fan_speed(self, room_states: dict[str, dict[str, Any]]) -> str:
         """Determine and set the main aircon fan speed."""

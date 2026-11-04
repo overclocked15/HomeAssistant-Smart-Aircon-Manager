@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.2.1 - Night Mode Retries Failed Zone Commands
+
+**Release Date**: 2026-11-04
+
+- **A night-mode close or reopen only counts as done once the zone actually took it.** In v3.2.0 a room was marked done when its command was attempted. If the zone controller rejected the command, or Manual Override was switched on mid-cycle, the change was never retried. In a house sitting at temperature, a closed-off room's zone could then stay open for hours.
+- **Failed commands back off.** A zone that's online but keeps rejecting commands is retried after 1, 2, 4 ... minutes, up to 30 minutes, instead of every cycle. Each attempt includes the usual per-command retries and failure notification. Moving or unavailable zones are still sent their command as soon as they're ready.
+
+### Tests
+
+- 5 new tests in `tests/test_night_mode.py` (31 total): delivery reporting, a rejected close retried with backoff, the backoff limit, Manual Override switched on mid-cycle, and the backoff reset on a new target. All 5 fail on v3.2.0.
+- With night mode off, the 800-cycle simulation still produces exactly the same service calls and outputs as v3.1.1.
+- Suite: 233 tests (232 passing, 1 skipped).
+
 ## v3.2.0 - Night Mode
 
 **Release Date**: 2026-11-04
