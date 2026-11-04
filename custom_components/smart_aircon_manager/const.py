@@ -282,6 +282,17 @@ DEFAULT_BATTERY_SOLAR_OFFSET_HOURS = 2.0
 BATTERY_POWER_SIGN_OPTIONS = ["auto", "positive_discharging", "positive_charging"]
 BATTERY_STRATEGY_OPTIONS = ["efficient", "balanced", "max_saving"]
 
+# Night mode: only the selected rooms (e.g. bedrooms) are conditioned. Every
+# other room's damper is closed to the configured position and the room is
+# left out of every AC decision (mode, on/off, setpoint, main fan, balancing).
+# Rooms in a critical-room emergency are always kept in control.
+CONF_ENABLE_NIGHT_MODE = "enable_night_mode"
+CONF_NIGHT_MODE_ROOMS = "night_mode_rooms"
+CONF_NIGHT_MODE_CLOSED_POSITION = "night_mode_closed_position"
+DEFAULT_ENABLE_NIGHT_MODE = False
+DEFAULT_NIGHT_MODE_CLOSED_POSITION = 0  # % damper position for closed-off rooms
+NIGHT_MODE_REOPEN_POSITION = 50  # % for a reopened room with no reading to compute from
+
 SCHEDULE_DAYS_OPTIONS = [
     "monday",
     "tuesday",

@@ -83,7 +83,11 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
 
     @property
     def current_temperature(self) -> float | None:
-        """Return the current temperature (average of all rooms)."""
+        """Return the current temperature (average of the controlled rooms).
+
+        Rooms night mode has closed off are left out: the average reflects
+        the rooms the manager is actually conditioning.
+        """
         if not self.coordinator.data:
             return None
 
@@ -91,7 +95,7 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         temps = [
             state["current_temperature"]
             for state in room_states.values()
-            if state["current_temperature"] is not None
+            if state["current_temperature"] is not None and not state.get("night_mode_closed")
         ]
 
         if not temps:
