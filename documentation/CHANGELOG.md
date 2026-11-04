@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.2.2 - Night Mode Backoff Holds During Optimization Passes
+
+**Release Date**: 2026-11-04
+
+- **The retry backoff now applies to every attempt.** In v3.2.1 only the retry path honoured the backoff for a zone that keeps rejecting commands. Regular optimization passes still sent the command every pass, every 30 s by default while the bedrooms were outside the deadband, with retries and a failure notification each time. They also doubled the delay on every pass. Optimization passes now hold the command until the retry time, and the delay only grows on real attempts. The room still reports its intended position, and other zones are unaffected.
+
+### Tests
+
+- 3 new tests in `tests/test_night_mode.py` (34 total): optimization passes during the backoff, the AC-off pre-positioning pass, and healthy zones still being driven. The first two fail on v3.2.1: six passes made 18 rejected attempts, now 3.
+- With night mode off, the 800-cycle simulation still produces exactly the same service calls and outputs as v3.1.1.
+- Suite: 236 tests (235 passing, 1 skipped).
+
 ## v3.2.1 - Night Mode Retries Failed Zone Commands
 
 **Release Date**: 2026-11-04

@@ -417,3 +417,54 @@ class TestDeliveryConfirmation:
 
 async def _no_sleep(*_args, **_kwargs):
     return None
+
+
+class TestBackoffInFullPasses:
+    """Full optimization passes honour the retry backoff (v3.2.2)."""
+
+    @staticmethod
+    def _full_pass(opt):
+        # Optimization due on every cycle, as when rooms sit outside the deadband
+        opt._last_optimization = None
+        return run_cycle(opt)
+
+    def test_full_pass_does_not_resend_during_backoff(self):
+        rooms = (("Bed", 25.0, None), ("Kids", 24.5, None), ("Living", 27.0, None))
+        opt, calls, states = night_optimizer(rooms=rooms)
+        fail_cover_calls(opt, calls, "cover.living")
+        with patch("asyncio.sleep", new=_no_sleep):
+            result = self._full_pass(opt)       # rejected -> backoff 60 s
+            assert failed_attempts(calls, "cover.living") == 3
+            for _ in range(5):                  # five more full passes inside the backoff
+                result = self._full_pass(opt)
+            assert failed_attempts(calls, "cover.living") == 3
+            assert opt._night_mode_retry_backoff["Living"][1] == 60   # no doubling without attempts
+            # Intended position still reported
+            assert result["recommendations"]["Living"] == 0
+            # Deadline passes: the next full pass tries once and doubles once
+            opt._night_mode_retry_backoff["Living"] = (0.0, 60.0)
+            self._full_pass(opt)
+            assert failed_attempts(calls, "cover.living") == 6
+            assert opt._night_mode_retry_backoff["Living"][1] == 120
+
+    def test_preposition_pass_honours_backoff(self):
+        rooms = (("Bed", 23.0, None), ("Kids", 23.0, None), ("Living", 23.2, None))
+        opt, calls, states = night_optimizer(rooms=rooms, ac_state="off")
+        fail_cover_calls(opt, calls, "cover.living")
+        with patch("asyncio.sleep", new=_no_sleep):
+            run_cycle(opt)
+            assert failed_attempts(calls, "cover.living") == 3
+            opt._night_mode_pending = True      # e.g. a critical room flips: forced pass
+            run_cycle(opt)
+            assert failed_attempts(calls, "cover.living") == 3
+
+    def test_healthy_rooms_still_applied_while_one_backs_off(self):
+        rooms = (("Bed", 25.0, None), ("Kids", 24.5, None), ("Living", 27.0, None))
+        opt, calls, states = night_optimizer(rooms=rooms)
+        fail_cover_calls(opt, calls, "cover.living")
+        with patch("asyncio.sleep", new=_no_sleep):
+            self._full_pass(opt)
+            states["cover.bed"].attributes["current_position"] = 10
+            calls.clear()
+            self._full_pass(opt)
+        assert cover_positions(calls).get("cover.bed", 10) != 10

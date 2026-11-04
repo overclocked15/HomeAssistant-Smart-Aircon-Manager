@@ -2761,8 +2761,9 @@ class AirconOptimizer:
                 # Night mode closures go last so nothing reopens a closed room
                 recommendations = self._apply_night_mode_closures(recommendations, set(night_closed))
 
-                delivered = await self._apply_recommendations(recommendations)
-                self._night_mode_full_pass(recommendations, delivered)
+                to_apply = self._night_mode_hold_backed_off(recommendations)
+                delivered = await self._apply_recommendations(to_apply)
+                self._night_mode_full_pass(to_apply, delivered)
                 full_damper_pass = True
 
                 if self.main_fan_entity:
@@ -2820,8 +2821,9 @@ class AirconOptimizer:
                 pre_position[room] = pre_pos
             pre_position = self._apply_night_mode_closures(pre_position, set(night_closed))
             if pre_position != self._last_recommendations or self._night_mode_pending:
-                delivered = await self._apply_recommendations(pre_position)
-                self._night_mode_full_pass(pre_position, delivered)
+                to_apply = self._night_mode_hold_backed_off(pre_position)
+                delivered = await self._apply_recommendations(to_apply)
+                self._night_mode_full_pass(to_apply, delivered)
                 full_damper_pass = True
                 self._last_recommendations = pre_position
             # Report what was actually applied so sensors don't show the
@@ -3704,6 +3706,28 @@ class AirconOptimizer:
         if cover_state is None:
             return True
         return cover_state.state not in ("unavailable", "unknown", "opening", "closing")
+
+    def _night_mode_hold_backed_off(self, recommendations: dict[str, int | float]) -> dict[str, int | float]:
+        """Leave out rooms whose failed night-mode command is still backing off.
+
+        Full passes run every optimization interval (30 s by default) while
+        rooms are outside the deadband; without this they would re-send to a
+        zone that keeps rejecting commands on every pass, which is exactly
+        what the backoff is there to stop. The room keeps its intended
+        position in the recommendations (sensors, later retries); only the
+        command waits for the retry deadline, when _settle_night_mode_rooms
+        or the next full pass sends it.
+        """
+        if not self._night_mode_retry_backoff:
+            return recommendations
+        now = time.time()
+        held = {
+            room for room, (retry_at, _) in self._night_mode_retry_backoff.items()
+            if room in self._night_mode_unsettled and now < retry_at
+        }
+        if not held:
+            return recommendations
+        return {room: pos for room, pos in recommendations.items() if room not in held}
 
     def _night_mode_full_pass(self, applied: dict[str, int | float], delivered: set[str]) -> None:
         """Record a full damper pass that has just been applied.
