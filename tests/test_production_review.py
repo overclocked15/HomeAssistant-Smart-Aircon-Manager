@@ -233,6 +233,72 @@ class TestCriticalMonitorUnavailableAC:
             assert [c[2]["hvac_mode"] for c in calls] == ["cool"], state
 
 
+class TestCriticalMonitorRecovery:
+    """An AC outage must never delay the critical-room response (review of #3)."""
+
+    @staticmethod
+    def _monitor():
+        from custom_components.smart_aircon_manager.critical_monitor import CriticalRoomMonitor
+
+        calls = []
+        ac = {"state": "off"}
+
+        async def service_call(domain, service, data, blocking=False):
+            calls.append((domain, service, dict(data)))
+
+        hass = MagicMock()
+        hass.services.async_call = service_call
+        hass.states.get = lambda entity_id: FakeState(ac["state"])
+        return CriticalRoomMonitor(hass, {}, [], "climate.ac"), calls, ac
+
+    @staticmethod
+    def _ensure(monitor):
+        asyncio.run(monitor._ensure_ac_running("Server", 31.0, {"critical_temp_max": 28}, "hot"))
+
+    def test_ac_back_from_unavailable_is_turned_on_at_once(self):
+        monitor, calls, ac = self._monitor()
+        ac["state"] = "unavailable"
+        self._ensure(monitor)
+        assert calls == []
+        ac["state"] = "off"          # back on the next 30 s poll
+        self._ensure(monitor)
+        assert [c[2]["hvac_mode"] for c in calls] == ["cool"]
+
+    def test_outage_clears_an_earlier_cooldown(self):
+        monitor, calls, ac = self._monitor()
+        self._ensure(monitor)        # turned on: cooldown armed
+        ac["state"] = "unavailable"  # unit drops out and power-cycles
+        self._ensure(monitor)
+        ac["state"] = "off"
+        self._ensure(monitor)
+        assert [c[2]["hvac_mode"] for c in calls] == ["cool", "cool"]
+
+    def test_cooldown_still_stops_fighting_an_off_switch(self):
+        monitor, calls, ac = self._monitor()
+        self._ensure(monitor)
+        ac["state"] = "off"          # someone switched it off again, no outage
+        self._ensure(monitor)
+        assert [c[2]["hvac_mode"] for c in calls] == ["cool"]
+
+    def test_unavailable_warning_is_rate_limited(self, caplog):
+        import logging
+        monitor, _, ac = self._monitor()
+        ac["state"] = "unavailable"
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                self._ensure(monitor)
+        warnings = [r for r in caplog.records if "unavailable" in r.getMessage()]
+        assert len(warnings) == 1
+        # Back, then a new outage warns again
+        ac["state"] = "cool"
+        self._ensure(monitor)
+        ac["state"] = "unavailable"
+        with caplog.at_level(logging.WARNING):
+            self._ensure(monitor)
+        warnings = [r for r in caplog.records if "unavailable" in r.getMessage()]
+        assert len(warnings) == 2
+
+
 def test_minimum_home_assistant_version_matches_used_apis():
     """OptionsFlow.config_entry (used by every options step) arrived in 2024.12."""
     import json
