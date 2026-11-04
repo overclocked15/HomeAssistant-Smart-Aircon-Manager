@@ -53,6 +53,9 @@ class CriticalRoomMonitor:
         # Track when we last triggered AC
         self._last_ac_trigger = None
         self._ac_trigger_cooldown = timedelta(minutes=5)  # Prevent rapid on/off cycling
+        # Rate limit for the "AC unavailable" warning; deliberately separate
+        # from the trigger cooldown so an outage never delays the response
+        self._last_unavailable_warning = None
 
         # Monitoring interval (fast polling for critical rooms)
         self._monitor_interval = timedelta(seconds=30)
@@ -336,6 +339,37 @@ class CriticalRoomMonitor:
             )
             return
 
+        climate_state = self.hass.states.get(self._main_climate_entity)
+
+        if not climate_state:
+            _LOGGER.error("Main climate entity %s not found", self._main_climate_entity)
+            return
+
+        current_hvac_mode = climate_state.state
+
+        # Availability is checked BEFORE the cooldown, and an outage never
+        # consumes it: the AC must be turned on on the first poll after it is
+        # back. An outage also clears a cooldown from an earlier turn-on: an
+        # AC that dropped out and returns "off" (e.g. a power cycle) lost the
+        # state we set, so restarting it isn't fighting anyone.
+        if current_hvac_mode == STATE_UNAVAILABLE:
+            # Home Assistant drops commands to unavailable entities, so a
+            # "turn on" here would only log a false success
+            self._last_ac_trigger = None
+            now = dt_util.now()
+            if (
+                self._last_unavailable_warning is None
+                or now - self._last_unavailable_warning >= self._ac_trigger_cooldown
+            ):
+                _LOGGER.warning(
+                    "🚨 CRITICAL: %s at %.1f°C but the main AC %s is unavailable - "
+                    "will turn it on as soon as it is back",
+                    room_name, current_temp, self._main_climate_entity,
+                )
+                self._last_unavailable_warning = now
+            return
+        self._last_unavailable_warning = None
+
         # Check cooldown to prevent rapid on/off cycling
         if self._last_ac_trigger:
             time_since_trigger = dt_util.now() - self._last_ac_trigger
@@ -345,26 +379,6 @@ class CriticalRoomMonitor:
                     (self._ac_trigger_cooldown - time_since_trigger).total_seconds(),
                 )
                 return
-
-        # Check if AC is already running
-        climate_state = self.hass.states.get(self._main_climate_entity)
-
-        if not climate_state:
-            _LOGGER.error("Main climate entity %s not found", self._main_climate_entity)
-            return
-
-        current_hvac_mode = climate_state.state
-
-        if current_hvac_mode == STATE_UNAVAILABLE:
-            # Home Assistant drops commands to unavailable entities, so a
-            # "turn on" here would only log a false success. Warn (once per
-            # cooldown) and act as soon as the AC is back.
-            _LOGGER.warning(
-                "🚨 CRITICAL: %s at %.1f°C but the main AC %s is unavailable - can't turn it on",
-                room_name, current_temp, self._main_climate_entity,
-            )
-            self._last_ac_trigger = dt_util.now()
-            return
 
         # If AC is off, turn it on in the mode that addresses the emergency
         if current_hvac_mode in ["off", STATE_UNKNOWN]:
