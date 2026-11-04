@@ -136,7 +136,9 @@ Prevents rapid switching between cool/heat/dry/fan_only modes.
 | `vacant_room_setback` | float | `2.0` | °C to add/subtract from target for vacant rooms |
 | `vacancy_timeout` | float | `300` | Seconds before considering room vacant |
 
-**Behavior**: Vacant rooms get a setback (higher target in cool mode, lower in heat mode), reducing energy usage while maintaining occupied room comfort.
+**Behavior**: Vacant rooms get a setback (higher target in cool mode, lower in heat mode), reducing energy usage while maintaining occupied room comfort. A sensor that goes unavailable or unknown is ignored: the room keeps its last known state until the sensor reports again.
+
+Motion sensors don't see sleepers. If a bedroom is a night-mode room, its occupancy setback can still apply overnight; use a presence or bed sensor there, or leave that room out of occupancy control.
 
 Configured under **Options > Occupancy & Presence**.
 
@@ -148,7 +150,7 @@ Configured under **Options > Occupancy & Presence**.
 | `away_mode_entities` | list | `[]` | person/device_tracker entities to watch |
 | `away_mode_delay_minutes` | float | `30` | How long everyone must be away before vacation mode |
 
-Vacation mode is entered automatically once all presence entities have been away for the delay, and exits as soon as anyone returns. A manually-entered quick action mode is never overridden.
+Vacation mode is entered automatically once all presence entities have been away for the delay, and exits as soon as anyone returns. Away means any state other than `home`, so a person in a named zone (for example "Work") counts as away. Entities that are unavailable or unknown are ignored. A manually-entered quick action mode is never overridden.
 
 ## Night Mode
 

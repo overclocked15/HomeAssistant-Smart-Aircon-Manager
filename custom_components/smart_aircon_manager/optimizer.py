@@ -28,6 +28,14 @@ MAX_RETRIES = 3
 INITIAL_RETRY_DELAY = 1.0  # seconds
 RETRY_BACKOFF_FACTOR = 2.0  # exponential backoff multiplier
 
+# States that carry no reading. Covers in them are skipped; occupancy
+# sensors in them are ignored rather than counted as "vacant".
+UNREACHABLE_STATES = ("unavailable", "unknown")
+# Zone states in which a new position would fight the current movement
+COVER_MOVING_STATES = ("opening", "closing")
+# A repeated failure notification (same room) waits this long
+FAILURE_NOTIFY_COOLDOWN_SECONDS = 1800
+
 
 class AirconOptimizer:
     """Manages logic-based aircon optimization."""
@@ -418,6 +426,17 @@ class AirconOptimizer:
         self._night_mode_unsettled: set[str] = set()
         # room -> (earliest next attempt, current delay) after a failed command
         self._night_mode_retry_backoff: dict[str, tuple[float, float]] = {}
+
+        # One optimization cycle at a time: HA's coordinator doesn't serialize
+        # refreshes, and a refresh requested mid-cycle (switches, the climate
+        # card, force_optimize) would otherwise run a second cycle
+        # interleaved with the first at every await.
+        self._cycle_lock: asyncio.Lock | None = None
+        self._cycle_lock_loop: asyncio.AbstractEventLoop | None = None
+        # Notify once per outage / per failing zone, not every cycle
+        self._no_temp_data_notified = False
+        self._main_ac_unreachable_logged = False
+        self._failure_notified_at: dict[str, float] = {}
 
     def _validate_temperature(self, value: float, name: str, min_val: float, max_val: float) -> float:
         """Validate temperature value is within acceptable range."""
@@ -1557,6 +1576,12 @@ class AirconOptimizer:
                 _LOGGER.debug("Occupancy sensor %s not found for room %s", sensor_entity, room_name)
                 continue
 
+            if state.state in UNREACHABLE_STATES:
+                # A dead or restarting sensor says nothing about the room:
+                # keep the last known state instead of counting toward vacancy
+                _LOGGER.debug("Occupancy sensor %s for room %s is %s", sensor_entity, room_name, state.state)
+                continue
+
             is_occupied = state.state in ["on", "home", "occupied", "detected", "motion", "true"]
 
             # Initialize room occupancy tracking if needed
@@ -2302,7 +2327,9 @@ class AirconOptimizer:
         if not known:
             return
 
-        all_away = all(s.state in ("not_home", "away") for s in known)
+        # person/device_tracker report "home", "not_home" or the name of the
+        # zone they're in ("Work"); every state but "home" is away
+        all_away = all(s.state != "home" for s in known)
 
         if all_away:
             if self._all_away_since is None:
@@ -2404,6 +2431,20 @@ class AirconOptimizer:
             await self._save_compressor_state()
 
     async def async_optimize(self) -> dict[str, Any]:
+        """Run one optimization cycle at a time.
+
+        A cycle that is requested while another is running waits for it and
+        then runs on fresh state, instead of interleaving with it (duplicate
+        AC/damper commands, racing compressor timers).
+        """
+        loop = asyncio.get_running_loop()
+        if self._cycle_lock is None or self._cycle_lock_loop is not loop:
+            self._cycle_lock = asyncio.Lock()
+            self._cycle_lock_loop = loop
+        async with self._cycle_lock:
+            return await self._async_optimize_guarded()
+
+    async def _async_optimize_guarded(self) -> dict[str, Any]:
         """Run optimization cycle with error handling."""
         if not self.is_enabled:
             _LOGGER.debug("Optimizer disabled (system OFF) - skipping optimization cycle")
@@ -2628,17 +2669,21 @@ class AirconOptimizer:
                 _LOGGER.warning(
                     "Night mode: no valid temperature readings from the night-mode rooms - leaving the AC unchanged"
                 )
-                await self._send_notification(
-                    "No Temperature Data",
-                    "Night mode is on but none of its rooms has a valid temperature reading. "
-                    "Check those sensors."
-                )
+                if not self._no_temp_data_notified:
+                    self._no_temp_data_notified = True
+                    await self._send_notification(
+                        "No Temperature Data",
+                        "Night mode is on but none of its rooms has a valid temperature reading. "
+                        "Check those sensors."
+                    )
             else:
                 _LOGGER.warning("No valid temperature readings available - leaving the AC unchanged")
-                await self._send_notification(
-                    "No Temperature Data",
-                    "No valid temperature readings from sensors. Check sensor availability."
-                )
+                if not self._no_temp_data_notified:
+                    self._no_temp_data_notified = True
+                    await self._send_notification(
+                        "No Temperature Data",
+                        "No valid temperature readings from sensors. Check sensor availability."
+                    )
 
             # The AC is left alone, but closed-off rooms still get closed so
             # the toggle takes effect. Reopened rooms wait for sensor data:
@@ -2656,6 +2701,9 @@ class AirconOptimizer:
                 "last_error": "No valid temperature data" if not in_startup_delay else None,
                 "error_count": self._error_count if not in_startup_delay else 0,
             }
+
+        # Readings are back: the next outage notifies again
+        self._no_temp_data_notified = False
 
         # Efficient operation: how long has every room been satisfied?
         self._update_satisfied_state(active_states, effective_target, direction, main_ac_running)
@@ -3705,7 +3753,7 @@ class AirconOptimizer:
         cover_state = self.hass.states.get(room_config["cover_entity"])
         if cover_state is None:
             return True
-        return cover_state.state not in ("unavailable", "unknown", "opening", "closing")
+        return cover_state.state not in UNREACHABLE_STATES + COVER_MOVING_STATES
 
     def _night_mode_hold_backed_off(self, recommendations: dict[str, int | float]) -> dict[str, int | float]:
         """Leave out rooms whose failed night-mode command is still backing off.
@@ -4218,13 +4266,13 @@ class AirconOptimizer:
                 delivered.add(room_name)
                 continue
 
-            if cover_state.state in ["unavailable", "unknown"]:
+            if cover_state.state in UNREACHABLE_STATES:
                 _LOGGER.warning("Cover entity %s for room %s is %s", cover_entity, room_name, cover_state.state)
                 continue
 
             # Skip if cover is currently moving to prevent oscillation
             # Wait for current movement to complete before issuing new command
-            if cover_state.state in ["opening", "closing"]:
+            if cover_state.state in COVER_MOVING_STATES:
                 _LOGGER.debug(
                     "Cover %s for room %s is currently %s, skipping position update to avoid oscillation",
                     cover_entity, room_name, cover_state.state
@@ -4255,9 +4303,12 @@ class AirconOptimizer:
 
             if success:
                 delivered.add(room_name)
+                # The zone works again: a later failure notifies promptly
+                self._failure_notified_at.pop(f"cover:{room_name}", None)
                 _LOGGER.debug("Set cover position for %s (%s) to %d%%", room_name, cover_entity, position)
             else:
-                await self._send_notification(
+                await self._notify_failure(
+                    f"cover:{room_name}",
                     "Cover Control Error",
                     f"Failed to set fan speed for {room_name} after {MAX_RETRIES} attempts"
                 )
@@ -4589,6 +4640,8 @@ class AirconOptimizer:
             return
 
         current_mode = main_climate_state.get("hvac_mode")
+        if not self._main_ac_reachable(current_mode):
+            return
 
         # Don't change if already in the desired mode
         if current_mode == optimal_mode:
@@ -4682,6 +4735,8 @@ class AirconOptimizer:
             return False
 
         current_mode = main_climate_state.get("hvac_mode")
+        if not self._main_ac_reachable(current_mode):
+            return False
 
         # Critical-room emergency handling: while the critical monitor is
         # driving a recovery, never turn the AC off, and make sure it runs in
@@ -4763,6 +4818,31 @@ class AirconOptimizer:
                     await self._send_notification("AC Turned Off", "Smart Manager turned off AC (rooms at target)")
         return False
 
+    def _main_ac_reachable(self, current_mode: str | None) -> bool:
+        """Whether the main AC can take commands right now.
+
+        Home Assistant silently skips service calls to unavailable entities,
+        so "switching off" an unavailable AC used to succeed every cycle:
+        an "AC Turned Off" notification every 30 s, a state-file write, and a
+        min-off timer that delayed the restart once the AC came back.
+        Logged once per outage.
+        """
+        # Only "unavailable" blocks commands: HA skips unavailable entities
+        # silently, but does deliver to an available entity whose state is
+        # "unknown" (some IR units only report a mode after the first command)
+        if current_mode is None or current_mode == "unavailable":
+            if not self._main_ac_unreachable_logged:
+                _LOGGER.warning(
+                    "Main AC %s is %s - not sending commands until it is back",
+                    self.main_climate_entity, current_mode or "missing a state",
+                )
+                self._main_ac_unreachable_logged = True
+            return False
+        if self._main_ac_unreachable_logged:
+            _LOGGER.info("Main AC %s is available again", self.main_climate_entity)
+            self._main_ac_unreachable_logged = False
+        return True
+
     @staticmethod
     def _fit_setpoint_to_entity(temperature: float, attributes: dict[str, Any]) -> float:
         """Round a setpoint to the unit's step and clamp it to its range.
@@ -4799,6 +4879,8 @@ class AirconOptimizer:
             if not climate_state:
                 _LOGGER.warning("Main climate entity %s not found", self.main_climate_entity)
                 return
+            if not self._main_ac_reachable(climate_state.state):
+                return
 
             temperature = self._fit_setpoint_to_entity(temperature, climate_state.attributes)
 
@@ -4822,6 +4904,21 @@ class AirconOptimizer:
             _LOGGER.error("Error in _set_ac_temperature: %s", e)
             self._last_error = f"AC Temperature Control Error: {e}"
             self._error_count += 1
+
+    async def _notify_failure(self, key: str, title: str, message: str) -> None:
+        """Notify about a persistent failure at most once per cooldown per key.
+
+        A zone that keeps rejecting commands is retried every optimization
+        pass; without this each pass pushed the same alert to every notify
+        service.
+        """
+        now = time.time()
+        last = self._failure_notified_at.get(key)
+        if last is not None and now - last < FAILURE_NOTIFY_COOLDOWN_SECONDS:
+            _LOGGER.debug("Suppressing repeated notification %s (%s)", title, key)
+            return
+        self._failure_notified_at[key] = now
+        await self._send_notification(title, message)
 
     async def _send_notification(self, title: str, message: str) -> None:
         """Send notifications via persistent_notification and configured services."""
