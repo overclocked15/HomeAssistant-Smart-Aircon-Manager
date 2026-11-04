@@ -1,5 +1,23 @@
 # Changelog
 
+## v3.2.0 - Night Mode
+
+**Release Date**: 2026-11-04
+
+Condition only the rooms that matter at night. Pick the night-mode rooms (typically bedrooms) under **Options > Night Mode**, then toggle the new **Night Mode** switch from a dashboard or an automation.
+
+- **Closed-off rooms:** every room that isn't a night-mode room has its zone set to the closed position (default 0%, configurable up to 50% for ducting that needs minimum airflow). It's applied after balancing and quick actions, so nothing reopens it.
+- **AC decisions follow the night-mode rooms only:** on/off, mode (including humidity and auto direction), setpoint, main fan speed, efficient operation and battery-aware relaxation. A hot living room no longer starts or holds the AC overnight.
+- **Immediate effect:** toggling the switch refreshes straight away and forces a full damper pass, even when every room is inside the deadband.
+- **Safety:** a room in a critical-room emergency stays open and in control. If every night-mode sensor drops out, the AC is left as it is and the closed-off rooms stay closed.
+- **Reporting:** closed-off rooms keep their sensors. The climate entity's current temperature and the Optimization Status sensor reflect the night-mode rooms. The switch shows the night-mode rooms, the rooms currently closed and the closed position; diagnostics include the same.
+- **Room changes:** renaming or removing a room updates the night-mode room list.
+
+### Tests
+
+- New `tests/test_night_mode.py` (19 tests): configuration, damper closing (also while the AC is off and under quick actions), AC on/off and setpoint ignoring closed rooms, immediate apply on toggle on and off, stale smoothing/learning reset, critical-room precedence, night-room sensor outage, and the climate entity's temperature.
+- Suite: 221 tests (220 passing, 1 skipped).
+
 ## v3.1.1 - Efficient Operation Keeps Air Moving; Battery Mode Keeps Dehumidifying
 
 **Release Date**: 2026-10-11

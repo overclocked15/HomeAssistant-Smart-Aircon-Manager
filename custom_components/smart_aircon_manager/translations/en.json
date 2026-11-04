@@ -69,6 +69,7 @@
           "occupancy": "Occupancy & Presence",
           "predictive": "Predictive & Open Window",
           "protection": "Compressor Protection & Thresholds",
+          "night_mode": "Night Mode (focus on bedrooms, close off other rooms)",
           "battery": "Battery & Efficiency"
         }
       },
@@ -315,6 +316,20 @@
           "min_compressor_run_cycles": "Minimum compressor run cycles"
         }
       },
+      "night_mode": {
+        "title": "Night Mode",
+        "description": "Night mode conditions only the rooms you pick here (for example bedrooms). Every other room's zone is closed off and stops affecting the AC: its temperature no longer counts toward turning the AC on or off, the mode, the setpoint or the main fan.\n\nTurn night mode on and off with the Night Mode switch, from a dashboard or an automation (for example on at bedtime, off in the morning). A room in a critical-room emergency is always kept open.",
+        "data": {
+          "enable_night_mode": "Night mode on",
+          "night_mode_rooms": "Night mode rooms (kept conditioned)",
+          "night_mode_closed_position": "Closed-off room zone position (%)"
+        },
+        "data_description": {
+          "enable_night_mode": "Same as the Night Mode switch. The switch appears once at least one room is selected.",
+          "night_mode_rooms": "The rooms to keep comfortable while night mode is on. All other rooms are closed off.",
+          "night_mode_closed_position": "0 closes the zone fully. Use a small opening if your ducting needs a minimum airflow with few zones open."
+        }
+      },
       "battery": {
         "title": "Battery & Efficiency",
         "description": "Efficient operation saves energy at no comfort cost: once every room is satisfied the compressor rests (fan-only while cooling so air keeps moving, off while heating), the setpoint is driven more gently, and with humidity control your cool / dry / fan-only flow is left as it is.\n\nBattery-aware mode works with any home battery: pick its state-of-charge (%) sensor. While the house runs on the battery it turns efficient operation on, learns your battery's habits (when it starts draining, when solar takes over in the morning, how fast it drains), projects the charge left at solar recovery and - depending on the strategy - relaxes the temperature step by step (priority rooms last) so the battery lasts longer. It never stops dehumidifying. Critical-room protection, boost and party always take precedence.",
@@ -367,7 +382,8 @@
       "invalid_fan_threshold_ordering": "Main fan medium threshold must be less than high threshold",
       "battery_soc_required": "Choose the battery's state-of-charge sensor to enable battery-aware mode.",
       "battery_soc_invalid": "This sensor doesn't report a percentage between 0 and 100.",
-      "battery_power_invalid_unit": "The battery power sensor must report W or kW."
+      "battery_power_invalid_unit": "The battery power sensor must report W or kW.",
+      "night_mode_rooms_required": "Pick at least one room to turn night mode on."
     }
   }
 }

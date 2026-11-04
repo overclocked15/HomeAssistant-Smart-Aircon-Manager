@@ -278,6 +278,17 @@ Dehumidifying is never suppressed at any level. In humid weather a dry house at 
 - **Weather:** the weather adjustment, which only makes conditioning more aggressive, is skipped while saving.
 - **Direction:** relaxation always widens the comfort band outward, so it can never cause the opposite mode, even in auto mode.
 
+## Night Mode
+
+When night mode is on, each cycle splits the rooms in two:
+
+- **Night-mode rooms** (plus any room in a critical-room emergency) go through the normal pipeline: fan bands, smoothing, balancing, normalization, quick actions, and every AC-level decision (direction, on/off, mode, setpoint, main fan, efficient operation, battery relaxation).
+- **Closed-off rooms** are still read but take no part in any decision. Their zone is set to the closed position after every other adjustment, so nothing reopens them.
+
+A change in which rooms are closed (the switch, or a critical emergency starting or ending) forces a full pass on that cycle, even when every room is inside the deadband. Rooms changing state drop their smoothing history and learning baseline, so a reopened room isn't smoothed from a speed set hours earlier and the night isn't learned as one long conditioning cycle.
+
+Night mode is a hard version of battery-aware night zoning: battery zoning keeps air flowing to non-priority rooms and only stops them driving the AC, while night mode closes them. They compose: battery-aware mode sees only the night-mode rooms.
+
 ## Critical Room Protection
 
 For rooms with critical temperature requirements (server rooms, wine cellars):

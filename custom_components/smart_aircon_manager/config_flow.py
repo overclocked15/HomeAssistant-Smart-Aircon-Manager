@@ -161,6 +161,11 @@ from .const import (
     DEFAULT_BATTERY_STRATEGY,
     DEFAULT_BATTERY_COMFORT_LIMIT,
     DEFAULT_BATTERY_SOLAR_OFFSET_HOURS,
+    CONF_ENABLE_NIGHT_MODE,
+    CONF_NIGHT_MODE_ROOMS,
+    CONF_NIGHT_MODE_CLOSED_POSITION,
+    DEFAULT_ENABLE_NIGHT_MODE,
+    DEFAULT_NIGHT_MODE_CLOSED_POSITION,
 )
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
@@ -390,7 +395,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             step_id="init",
             menu_options=[
                 "settings", "manage_rooms", "room_overrides", "weather", "humidity",
-                "schedules", "occupancy", "battery", "predictive", "protection", "learning",
+                "schedules", "occupancy", "night_mode", "battery", "predictive", "protection", "learning",
                 "balancing", "critical_rooms", "advanced",
             ],
         )
@@ -655,6 +660,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 priority.remove(room_to_remove)
                 new_data[CONF_BATTERY_PRIORITY_ROOMS] = priority
 
+            night_rooms = list(new_data.get(CONF_NIGHT_MODE_ROOMS, []))
+            if room_to_remove in night_rooms:
+                night_rooms.remove(room_to_remove)
+                new_data[CONF_NIGHT_MODE_ROOMS] = night_rooms
+
             # Drop the room from any schedule's per-room targets
             schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
             for schedule in schedules:
@@ -819,6 +829,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     if room_to_edit_name in priority:
                         new_data[CONF_BATTERY_PRIORITY_ROOMS] = [
                             new_name if name == room_to_edit_name else name for name in priority
+                        ]
+
+                    # Migrate night mode rooms (room names)
+                    night_rooms = list(new_data.get(CONF_NIGHT_MODE_ROOMS, []))
+                    if room_to_edit_name in night_rooms:
+                        new_data[CONF_NIGHT_MODE_ROOMS] = [
+                            new_name if name == room_to_edit_name else name for name in night_rooms
                         ]
 
                     # Migrate per-room schedule targets (keyed by room name)
@@ -1349,6 +1366,67 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="occupancy",
             data_schema=vol.Schema(schema_dict),
+        )
+
+    async def async_step_night_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure night mode: which rooms stay conditioned at night.
+
+        Night mode itself is toggled with the Night Mode switch (dashboard or
+        automation); this page picks the rooms and the closed-off position.
+        """
+        errors: dict[str, str] = {}
+        rooms = [room[CONF_ROOM_NAME] for room in self.config_entry.data.get(CONF_ROOM_CONFIGS, [])]
+
+        if user_input is not None:
+            selected = [room for room in user_input.get(CONF_NIGHT_MODE_ROOMS, []) if room in rooms]
+            enabled = user_input.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE)
+            if enabled and not selected:
+                errors[CONF_NIGHT_MODE_ROOMS] = "night_mode_rooms_required"
+            if not errors:
+                new_data = {
+                    **self.config_entry.data,
+                    CONF_ENABLE_NIGHT_MODE: enabled,
+                    CONF_NIGHT_MODE_ROOMS: selected,
+                    CONF_NIGHT_MODE_CLOSED_POSITION: int(user_input.get(
+                        CONF_NIGHT_MODE_CLOSED_POSITION, DEFAULT_NIGHT_MODE_CLOSED_POSITION
+                    )),
+                }
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                return self.async_create_entry(title="", data={})
+
+        data = {**self.config_entry.data, **(user_input or {})}
+        selected_rooms = [room for room in data.get(CONF_NIGHT_MODE_ROOMS, []) if room in rooms]
+        schema = {
+            vol.Optional(
+                CONF_ENABLE_NIGHT_MODE,
+                default=data.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE),
+            ): cv.boolean,
+            vol.Optional(
+                CONF_NIGHT_MODE_ROOMS,
+                **({"description": {"suggested_value": selected_rooms}} if selected_rooms else {}),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[{"label": room, "value": room} for room in rooms],
+                    multiple=True,
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+            vol.Optional(
+                CONF_NIGHT_MODE_CLOSED_POSITION,
+                default=data.get(CONF_NIGHT_MODE_CLOSED_POSITION, DEFAULT_NIGHT_MODE_CLOSED_POSITION),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=50, step=5, unit_of_measurement="%", mode=selector.NumberSelectorMode.SLIDER,
+                )
+            ),
+        }
+        return self.async_show_form(
+            step_id="night_mode",
+            data_schema=vol.Schema(schema),
+            errors=errors,
         )
 
     async def async_step_battery(

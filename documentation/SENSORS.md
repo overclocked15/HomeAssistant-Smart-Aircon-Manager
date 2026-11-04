@@ -61,6 +61,16 @@ Turns efficient operation on or off at runtime (same as the option on **Battery 
 
 Turns battery-aware mode on or off at runtime. Learning continues while it is off.
 
+### `switch.smart_aircon_manager_night_mode` (if night mode rooms are configured)
+
+Turns night mode on or off at runtime: only the night-mode rooms are conditioned, every other room's zone is closed off. The state survives restarts.
+
+| Attribute | Description |
+|-----------|-------------|
+| `night_mode_rooms` | Rooms kept conditioned |
+| `closed_rooms` | Rooms currently closed off (a room in a critical-room emergency stays open) |
+| `closed_position` | Zone position (%) used for closed-off rooms |
+
 ## Binary Sensor
 
 ### `binary_sensor.smart_aircon_manager_main_aircon_running`

@@ -150,6 +150,49 @@ Configured under **Options > Occupancy & Presence**.
 
 Vacation mode is entered automatically once all presence entities have been away for the delay, and exits as soon as anyone returns. A manually-entered quick action mode is never overridden.
 
+## Night Mode
+
+Configured under **Options > Night Mode**. Toggled at runtime with the **Night Mode** switch.
+
+Night mode conditions only the rooms you pick (typically bedrooms) and closes off the rest of the house (living, dining, media room).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enable_night_mode` | bool | `false` | Same as the Night Mode switch. Can't be turned on without at least one room |
+| `night_mode_rooms` | list | `[]` | Rooms kept conditioned while night mode is on. Every other room is closed off |
+| `night_mode_closed_position` | int | `0` | Zone position (%) for closed-off rooms. `0` closes the zone; use a small opening if your ducting needs minimum airflow with few zones open |
+
+While night mode is on:
+- **Closed-off rooms** get their zone set to the closed position, and nothing (balancing, quick actions, minimum airflow) reopens them.
+- **AC decisions** (on/off, mode, setpoint, main fan speed, humidity mode, battery-aware relaxation) use the night-mode rooms only. A hot living room no longer keeps the AC running at 2am.
+- **Readings continue:** closed-off rooms keep their temperature sensors and per-room sensors, so dashboards still show them. The climate entity's current temperature and the Optimization Status sensor report the night-mode rooms only.
+- **Critical rooms win:** a room in a critical-room emergency is kept open and in control even if it isn't a night-mode room.
+- **Sensor outage:** if none of the night-mode rooms has a valid reading, the AC is left as it is (same as a whole-house sensor outage) and the closed-off rooms stay closed.
+
+Turning night mode on or off moves the zones on the next cycle (the switch triggers one straight away), without waiting for the optimization interval. Rooms that reopen start fan smoothing fresh.
+
+Example automation:
+
+```yaml
+automation:
+  - alias: "Night mode at bedtime"
+    trigger:
+      - platform: time
+        at: "22:00:00"
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.smart_aircon_manager_night_mode
+  - alias: "Whole house in the morning"
+    trigger:
+      - platform: time
+        at: "06:30:00"
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.smart_aircon_manager_night_mode
+```
+
 ## Battery & Efficiency
 
 Configured under **Options > Battery & Efficiency**.

@@ -39,6 +39,10 @@ async def async_setup_entry(
             "Battery-Aware Mode", "mdi:home-battery",
         ))
 
+    # Night mode needs its rooms (chosen on the Night Mode options page)
+    if optimizer.night_mode_rooms:
+        entities.append(NightModeSwitch(optimizer, config_entry))
+
     async_add_entities(entities)
 
 
@@ -151,3 +155,43 @@ class OptimizerFeatureSwitch(SwitchEntity):
             _LOGGER.debug("Could not persist %s", self._conf_key)
         self.async_write_ha_state()
         _LOGGER.info("%s %s", self._attr_name, "enabled" if enabled else "disabled")
+
+
+class NightModeSwitch(OptimizerFeatureSwitch):
+    """Condition only the night-mode rooms and close off the rest.
+
+    Toggle it from a dashboard or an automation (e.g. on at bedtime, off in
+    the morning). The state survives restarts.
+    """
+
+    def __init__(self, optimizer, config_entry: ConfigEntry) -> None:
+        """Initialize the night mode switch."""
+        from .const import CONF_ENABLE_NIGHT_MODE
+
+        super().__init__(
+            optimizer, config_entry, "enable_night_mode", CONF_ENABLE_NIGHT_MODE,
+            "Night Mode", "mdi:weather-night",
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the rooms night mode focuses on and the rooms it closes."""
+        rooms = list(self._optimizer.night_mode_rooms)
+        closed = []
+        if self._optimizer.night_mode_active:
+            # The rooms actually closed right now (a room in a critical-room
+            # emergency stays open)
+            closed = sorted(self._optimizer._night_mode_applied_closed or [])
+        return {
+            "night_mode_rooms": rooms,
+            "closed_rooms": closed,
+            "closed_position": self._optimizer.night_mode_closed_position,
+        }
+
+    def _set(self, enabled: bool) -> None:
+        super()._set(enabled)
+        # Apply the change now instead of at the next 30 s poll
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+        coordinator = entry_data.get("coordinator")
+        if coordinator is not None:
+            self.hass.async_create_task(coordinator.async_request_refresh())

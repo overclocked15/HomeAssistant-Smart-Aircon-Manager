@@ -81,6 +81,11 @@ from .const import (
     CONF_BATTERY_STRATEGY,
     CONF_BATTERY_COMFORT_LIMIT,
     CONF_BATTERY_PRIORITY_ROOMS,
+    CONF_ENABLE_NIGHT_MODE,
+    CONF_NIGHT_MODE_ROOMS,
+    CONF_NIGHT_MODE_CLOSED_POSITION,
+    DEFAULT_ENABLE_NIGHT_MODE,
+    DEFAULT_NIGHT_MODE_CLOSED_POSITION,
     CONF_BATTERY_SOLAR_OFFSET_HOURS,
     DEFAULT_ENABLE_EFFICIENCY_MODE,
     DEFAULT_EFFICIENT_SATISFIED_ACTION,
@@ -272,6 +277,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         battery_comfort_limit=entry.data.get(CONF_BATTERY_COMFORT_LIMIT, DEFAULT_BATTERY_COMFORT_LIMIT),
         battery_priority_rooms=entry.data.get(CONF_BATTERY_PRIORITY_ROOMS, []),
         battery_solar_offset_hours=entry.data.get(CONF_BATTERY_SOLAR_OFFSET_HOURS, DEFAULT_BATTERY_SOLAR_OFFSET_HOURS),
+        enable_night_mode=entry.data.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE),
+        night_mode_rooms=entry.data.get(CONF_NIGHT_MODE_ROOMS, []),
+        night_mode_closed_position=entry.data.get(CONF_NIGHT_MODE_CLOSED_POSITION, DEFAULT_NIGHT_MODE_CLOSED_POSITION),
     )
 
     # Get update interval from config
