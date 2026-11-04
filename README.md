@@ -53,7 +53,7 @@ Uses smart logic-based algorithms to achieve precise temperature control across 
 
 ## Prerequisites
 
-- Home Assistant with custom integrations support
+- Home Assistant 2024.12 or newer
 - Temperature sensors for each room (e.g., `sensor.bedroom_temperature`)
 - Cover entities representing zone fan speed controls (e.g., `cover.bedroom_zone_fan`)
 
@@ -169,7 +169,8 @@ logger:
 
 See [Changelog](documentation/CHANGELOG.md) for full version history.
 
-- **v3.2.1** (Current): Night mode only counts a zone close/reopen as done once the zone accepted it. Rejected commands are retried with backoff (1 min up to 30 min) instead of being dropped
+- **v3.2.2** (Current): Production review fixes. One optimization cycle at a time (no duplicate commands). An unavailable main AC is no longer "switched off" every 30 s with a notification each time. "No Temperature Data" and zone-failure notifications are no longer repeated every cycle. Away mode counts a person in a named zone (e.g. Work) as away. A dead occupancy sensor no longer marks its room vacant. Night mode's retry backoff holds on every pass. Requires Home Assistant 2024.12+ (the Options pages already needed it)
+- **v3.2.1**: Night mode only counts a zone close/reopen as done once the zone accepted it. Rejected commands are retried with backoff (1 min up to 30 min) instead of being dropped
 - **v3.2.0**: Night mode. Pick the rooms to keep conditioned at night (Options > Night Mode) and toggle the new Night Mode switch. Every other room's zone is closed and left out of AC on/off, mode, setpoint and main fan decisions. Critical-room emergencies keep their room open
 - **v3.1.1**: Efficient operation rests the compressor in fan-only while cooling instead of switching the AC off (new "When every room is satisfied" option: auto / fan only / off), and no longer caps fan-only circulation. With humidity control, the cool → dry → fan-only flow is untouched. Battery-aware mode never suppresses dehumidifying, and dry mode is no longer skipped below a sleep- or battery-relaxed target
 - **v3.1.0**: Efficient operation and vendor-agnostic battery-aware mode. It learns the battery's evening drain, morning solar recovery and overnight drain profile, projects the charge at solar recovery, and relaxes comfort only as far as needed (priority rooms last). New Battery & Efficiency options page, switches, sensors and `reset_battery_learning` service

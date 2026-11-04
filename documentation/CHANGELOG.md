@@ -1,5 +1,32 @@
 # Changelog
 
+## v3.2.2 - Production Review Fixes
+
+**Release Date**: 2026-11-04
+
+A full review of the integration for production use. Most of these issues predate night mode. Every behaviour fix was reproduced before it was changed and has a regression test.
+
+**Requires Home Assistant 2024.12 or newer.** Earlier versions already couldn't open the Options pages (see below), so nobody on them had a working setup to lose.
+
+### Fixes
+
+- **One optimization cycle at a time.** Home Assistant doesn't serialize refreshes, so a refresh requested mid-cycle (the Night Mode switch, a target or mode change on the climate card, `force_optimize`) could run a second cycle interleaved with the first. That sent duplicate AC and zone commands and duplicate notifications: in a reproduction, the AC was turned on twice and "AC Turned On" was sent twice. A requested cycle now waits for the running one, then runs on fresh state.
+- **An unavailable main AC is left alone.** Home Assistant silently drops commands to unavailable entities, so when the AC integration went offline (cloud outage, IR blaster down) with the house at target, the manager "switched it off" every 30 s. Each time it sent an "AC Turned Off" notification to every notify service, wrote the state file, and restarted the minimum-off timer, which then delayed cooling once the AC came back. Commands now wait until the AC is available again, and the outage is logged once. An AC whose state is merely `unknown` is still commanded, because Home Assistant delivers those commands. The critical-room monitor no longer reports turning on an unavailable AC as a success.
+- **The correct minimum Home Assistant version.** `hacs.json` claimed 2024.1.0, but the Options pages need 2024.12.0 (where options flows get their config entry from Home Assistant). On 2024.2 to 2024.11 every Options page failed, and on 2024.1 the integration didn't load. HACS now only offers the update to versions it works on.
+- **"No Temperature Data" is sent once per outage**, not every 30 s. A one-hour sensor outage used to produce about 120 pushes. This also covers the night-mode variant.
+- **A zone that keeps rejecting commands notifies once per 30 minutes per room**, not on every optimization pass. A zone that works again notifies promptly the next time it fails.
+- **Away mode counts a person in a named zone as away.** Person and device-tracker entities report the zone's name (for example "Work") instead of `not_home`. Anyone in a zone used to count as home, so automatic vacation mode never engaged.
+- **An occupancy sensor that goes unavailable no longer marks its room vacant.** A dead motion sensor used to relax the bedroom's target by the vacancy setback after the timeout. The room now keeps its last known state until the sensor reports again.
+- **Night mode's retry backoff applies to every attempt.** In v3.2.1 regular optimization passes still re-sent a rejected command on every pass (every 30 s while the bedrooms were outside the deadband) and doubled the delay each time. Every pass now holds the command until its retry time, and the delay only grows on real attempts.
+- **Housekeeping:** the data coordinator gets its config entry explicitly (the implicit path is deprecated in newer Home Assistant), the cover "unreachable" and "moving" states are defined once and shared, and a stray compiled file is no longer shipped.
+
+### Tests
+
+- New `tests/test_production_review.py` (15 tests). 9 reproduce the defects above and fail on v3.2.1. The other 6 guard behaviour that must not change: control resumes when the AC returns, an `unknown`-state AC is still commanded, the critical monitor still turns on an `off` or `unknown` AC, and a person at home still prevents vacation.
+- 3 new night-mode tests (34 total) for the backoff during optimization passes. On v3.2.1, six passes made 18 rejected attempts; now 3.
+- With night mode off, the 800-cycle simulation matches v3.1.1 exactly, except for the intended change: repeated "No Temperature Data" notifications during the simulated outage are no longer sent.
+- Suite: 251 tests (250 passing, 1 skipped).
+
 ## v3.2.1 - Night Mode Retries Failed Zone Commands
 
 **Release Date**: 2026-11-04

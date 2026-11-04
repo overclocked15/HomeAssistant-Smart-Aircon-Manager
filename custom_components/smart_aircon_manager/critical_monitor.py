@@ -355,8 +355,19 @@ class CriticalRoomMonitor:
 
         current_hvac_mode = climate_state.state
 
+        if current_hvac_mode == STATE_UNAVAILABLE:
+            # Home Assistant drops commands to unavailable entities, so a
+            # "turn on" here would only log a false success. Warn (once per
+            # cooldown) and act as soon as the AC is back.
+            _LOGGER.warning(
+                "🚨 CRITICAL: %s at %.1f°C but the main AC %s is unavailable - can't turn it on",
+                room_name, current_temp, self._main_climate_entity,
+            )
+            self._last_ac_trigger = dt_util.now()
+            return
+
         # If AC is off, turn it on in the mode that addresses the emergency
-        if current_hvac_mode in ["off", STATE_UNAVAILABLE, STATE_UNKNOWN]:
+        if current_hvac_mode in ["off", STATE_UNKNOWN]:
             if direction == "cold":
                 response_mode = HVACMode.HEAT
                 threshold = critical_config.get(CONF_CRITICAL_TEMP_MIN)
