@@ -169,7 +169,9 @@ While night mode is on:
 - **Critical rooms win:** a room in a critical-room emergency is kept open and in control even if it isn't a night-mode room.
 - **Sensor outage:** if none of the night-mode rooms has a valid reading, the AC is left as it is (same as a whole-house sensor outage) and the closed-off rooms stay closed.
 
-Turning night mode on or off moves the zones on the next cycle (the switch triggers one straight away), without waiting for the optimization interval. Rooms that reopen start fan smoothing fresh.
+Turning night mode on or off moves the zones straight away (the switch triggers a cycle), without waiting for the optimization interval. If a zone is moving or unavailable at that moment, its command is sent as soon as it's ready. Rooms that reopen start fan smoothing fresh; a reopened room with no temperature reading opens to 50%.
+
+A room you've disabled under **Room Overrides** is never moved, night mode included.
 
 Example automation:
 

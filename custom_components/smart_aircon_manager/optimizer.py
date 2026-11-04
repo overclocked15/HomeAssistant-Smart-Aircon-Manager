@@ -13,6 +13,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .const import NIGHT_MODE_REOPEN_POSITION
 from .learning import LearningManager
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
@@ -408,6 +409,9 @@ class AirconOptimizer:
         # _night_mode_pending, which forces a full damper pass.
         self._night_mode_applied_closed: frozenset[str] | None = None
         self._night_mode_pending = False
+        # Rooms whose close/reopen hasn't reached the damper yet (zone moving,
+        # unavailable or unknown when it was due); retried each cycle
+        self._night_mode_unsettled: set[str] = set()
 
     def _validate_temperature(self, value: float, name: str, min_val: float, max_val: float) -> float:
         """Validate temperature value is within acceptable range."""
@@ -2207,7 +2211,11 @@ class AirconOptimizer:
 
         # Collect per-room rate-of-change magnitudes.
         rates = []
+        # Rooms night mode closed off drift freely and don't count
+        closed = self._night_mode_applied_closed or frozenset()
         for room_name in self._temp_history.keys():
+            if room_name in closed:
+                continue
             rate = self._get_temp_rate_of_change(room_name)
             if rate is not None:
                 rates.append(abs(rate))
@@ -2493,6 +2501,7 @@ class AirconOptimizer:
             self._night_mode_applied_closed = night_closed
             # Move every damper on this cycle, not at the next interval
             self._night_mode_pending = True
+        full_damper_pass = False
         for room_name, state in room_states.items():
             state["night_mode_closed"] = room_name in night_closed
         active_states = {
@@ -2628,13 +2637,11 @@ class AirconOptimizer:
             # The AC is left alone, but closed-off rooms still get closed so
             # the toggle takes effect. Reopened rooms wait for sensor data:
             # the pending flag forces a full pass once readings return.
-            held = {room: self.night_mode_closed_position for room in night_closed}
-            if held:
-                await self._apply_recommendations(held)
+            await self._settle_night_mode_rooms(night_closed)
 
             return {
                 "room_states": room_states,
-                "recommendations": held,
+                "recommendations": {room: self.night_mode_closed_position for room in night_closed},
                 "optimization_response_text": None,
                 "main_climate_state": main_climate_state,
                 "main_fan_speed": None,
@@ -2747,6 +2754,8 @@ class AirconOptimizer:
 
                 # Night mode closures go last so nothing reopens a closed room
                 recommendations = self._apply_night_mode_closures(recommendations, set(night_closed))
+                self._night_mode_full_pass(recommendations)
+                full_damper_pass = True
 
                 await self._apply_recommendations(recommendations)
 
@@ -2761,7 +2770,6 @@ class AirconOptimizer:
                 self._last_recommendations = recommendations
                 self._last_main_fan_speed = main_fan_speed
                 self._last_optimization = current_time
-                self._night_mode_pending = False
                 optimization_ran = True
             elif self._last_optimization is not None:
                 time_until_next = self._optimization_interval - (current_time - self._last_optimization)
@@ -2805,13 +2813,18 @@ class AirconOptimizer:
                     pre_pos = 50  # Default neutral for unavailable sensors
                 pre_position[room] = pre_pos
             pre_position = self._apply_night_mode_closures(pre_position, set(night_closed))
-            self._night_mode_pending = False
-            if pre_position != self._last_recommendations:
+            if pre_position != self._last_recommendations or self._night_mode_pending:
+                self._night_mode_full_pass(pre_position)
+                full_damper_pass = True
                 await self._apply_recommendations(pre_position)
                 self._last_recommendations = pre_position
             # Report what was actually applied so sensors don't show the
             # stale recommendations from before the AC turned off.
             recommendations = pre_position
+
+        # A night-mode close/reopen that couldn't reach its damper earlier
+        if not full_damper_pass:
+            await self._settle_night_mode_rooms(night_closed)
 
         # End performance tracking
         cycle_end = time.time()
@@ -3655,12 +3668,69 @@ class AirconOptimizer:
         Runs after every other adjustment (quick actions included) so nothing
         can reopen a room the user closed off for the night.
         """
-        if not closed_rooms:
+        if not closed_rooms and not self._night_mode_unsettled:
             return recommendations
         adjusted = dict(recommendations)
         for room in closed_rooms:
             adjusted[room] = self.night_mode_closed_position
+        if self._night_mode_pending:
+            # A reopened room without a reading gets no computed position;
+            # don't leave it shut all day. Same neutral value pre-positioning
+            # uses for rooms with unavailable sensors.
+            for room in self._night_mode_unsettled - set(closed_rooms):
+                adjusted.setdefault(room, NIGHT_MODE_REOPEN_POSITION)
         return adjusted
+
+    def _room_cover_ready(self, room_name: str) -> bool:
+        """Can a damper command for this room be delivered right now?
+
+        False while the zone is moving, unavailable or unknown, the states
+        in which _apply_recommendations skips it. Rooms the user took out of
+        control, and rooms whose cover entity doesn't exist, count as ready:
+        retrying can't change anything for them.
+        """
+        if self.room_overrides.get(f"{room_name}_enabled") is False:
+            return True
+        room_config = next((r for r in self.room_configs if r["room_name"] == room_name), None)
+        if not room_config:
+            return True
+        cover_state = self.hass.states.get(room_config["cover_entity"])
+        if cover_state is None:
+            return True
+        return cover_state.state not in ("unavailable", "unknown", "opening", "closing")
+
+    def _night_mode_full_pass(self, applied: dict[str, int | float]) -> None:
+        """Record a full damper pass that is about to be applied.
+
+        Rooms whose zone couldn't take the command stay unsettled and are
+        retried on later cycles by _settle_night_mode_rooms.
+        """
+        self._night_mode_pending = False
+        self._night_mode_unsettled = {
+            room for room in self._night_mode_unsettled
+            if room not in applied or not self._room_cover_ready(room)
+        }
+
+    async def _settle_night_mode_rooms(self, closed_rooms: frozenset[str]) -> None:
+        """Retry night-mode closes/reopens that didn't reach the damper.
+
+        Each room gets a single command once its zone is ready, so a zone
+        that reports its position loosely isn't re-commanded every cycle.
+        A reopened room waits for the full pass that computes its position.
+        """
+        if not self._night_mode_unsettled:
+            return
+        targets: dict[str, int | float] = {}
+        for room in self._night_mode_unsettled:
+            if room in closed_rooms:
+                targets[room] = self.night_mode_closed_position
+            elif not self._night_mode_pending:
+                position = (self._last_recommendations or {}).get(room)
+                targets[room] = position if position is not None else NIGHT_MODE_REOPEN_POSITION
+        ready = {room: pos for room, pos in targets.items() if self._room_cover_ready(room)}
+        if ready:
+            await self._apply_recommendations(ready)
+            self._night_mode_unsettled -= set(ready)
 
     def _on_night_mode_change(self, closed_rooms: frozenset[str]) -> None:
         """Reset per-room memory that would mislead once rooms change state.
@@ -3671,9 +3741,14 @@ class AirconOptimizer:
         conditioning cycle.
         """
         previous = self._night_mode_applied_closed or frozenset()
-        for room in previous ^ closed_rooms:
+        changed = previous ^ closed_rooms
+        for room in changed:
             self._last_fan_speeds.pop(room, None)
             self._last_room_temps.pop(room, None)
+            # A closed room isn't conditioned, so an open-window pause on it
+            # is meaningless; a reopened room starts clean
+            self._open_window_state.pop(room, None)
+        self._night_mode_unsettled |= changed
         _LOGGER.info(
             "Night mode %s - closed rooms: %s",
             "active" if closed_rooms else "inactive",

@@ -291,6 +291,7 @@ CONF_NIGHT_MODE_ROOMS = "night_mode_rooms"
 CONF_NIGHT_MODE_CLOSED_POSITION = "night_mode_closed_position"
 DEFAULT_ENABLE_NIGHT_MODE = False
 DEFAULT_NIGHT_MODE_CLOSED_POSITION = 0  # % damper position for closed-off rooms
+NIGHT_MODE_REOPEN_POSITION = 50  # % for a reopened room with no reading to compute from
 
 SCHEDULE_DAYS_OPTIONS = [
     "monday",

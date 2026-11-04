@@ -215,3 +215,101 @@ class TestSurfaces:
         set_room_temps(states, Living=28.5)
         result = run_cycle(opt)
         assert result["room_states"]["Living"]["current_temperature"] == 28.5
+
+
+class TestReviewFixes:
+    """Regression tests for issues found in the v3.2.0 pre-release review."""
+
+    def test_adaptive_deadband_ignores_closed_rooms(self):
+        import time as _time
+        opt, _, _ = night_optimizer(
+            enable_adaptive_deadband=True, adaptive_deadband_max_scale=2.0,
+            adaptive_deadband_rate_threshold=0.5,
+        )
+        now = _time.time()
+        # Bedrooms steady, closed living room warming fast (damper shut)
+        for room, rate in (("Bed", 0.0), ("Kids", 0.0), ("Living", 0.5)):
+            opt._temp_history[room] = [(now - 600 + i * 60, 23.0 + rate * i) for i in range(11)]
+        opt._night_mode_applied_closed = frozenset({"Living"})
+        assert opt._get_adaptive_deadband() == opt.temperature_deadband
+        # Without night mode the same drift widens it
+        opt._night_mode_applied_closed = frozenset()
+        assert opt._get_adaptive_deadband() > opt.temperature_deadband
+
+    def test_moving_zone_closed_once_it_stops(self):
+        opt, calls, states = night_optimizer()
+        states["cover.living"].state = "closing"  # still moving from an earlier command
+        run_cycle(opt)
+        assert "cover.living" not in cover_positions(calls)
+        assert opt._night_mode_unsettled == {"Living"}
+        # Zone stops; the house is stable, so no full pass would run
+        states["cover.living"].state = "open"
+        calls.clear()
+        run_cycle(opt)
+        assert cover_positions(calls).get("cover.living") == 0
+        assert opt._night_mode_unsettled == set()
+        # Delivered once; not re-sent every cycle
+        calls.clear()
+        run_cycle(opt)
+        assert "cover.living" not in cover_positions(calls)
+
+    def test_unavailable_zone_retried_without_forcing_optimizations(self):
+        opt, calls, states = night_optimizer()
+        states["cover.living"].state = "unavailable"
+        run_cycle(opt)
+        assert opt._night_mode_pending is False
+        last_opt = opt._last_optimization
+        calls.clear()
+        run_cycle(opt)  # still unavailable: nothing sent, no forced pass
+        assert "cover.living" not in cover_positions(calls)
+        assert opt._last_optimization == last_opt
+        states["cover.living"].state = "open"
+        calls.clear()
+        run_cycle(opt)
+        assert cover_positions(calls).get("cover.living") == 0
+
+    def test_reopen_retried_with_computed_position(self):
+        opt, calls, states = night_optimizer()
+        run_cycle(opt)
+        states["cover.living"].attributes["current_position"] = 0
+        states["cover.living"].state = "unavailable"
+        opt.enable_night_mode = False
+        run_cycle(opt)
+        assert opt._night_mode_unsettled == {"Living"}
+        computed = opt._last_recommendations["Living"]
+        assert computed > 0
+        states["cover.living"].state = "open"
+        calls.clear()
+        run_cycle(opt)
+        assert cover_positions(calls).get("cover.living") == computed
+
+    def test_reopened_room_without_reading_is_not_left_shut(self):
+        opt, calls, states = night_optimizer()
+        run_cycle(opt)
+        states["cover.living"].attributes["current_position"] = 0
+        states["sensor.living"].state = "unavailable"
+        calls.clear()
+        opt.enable_night_mode = False
+        result = run_cycle(opt)
+        assert result["recommendations"]["Living"] == 50
+        assert cover_positions(calls).get("cover.living") == 50
+
+    def test_closed_room_open_window_pause_cleared(self):
+        opt, _, _ = night_optimizer(enable_open_window_detection=True)
+        opt._open_window_state["Living"] = {"detected_at": 0}
+        result = run_cycle(opt)
+        assert "Living" not in result["open_window_rooms"]
+
+    def test_switch_entity_naming_and_live_attributes(self):
+        from custom_components.smart_aircon_manager.switch import NightModeSwitch
+        opt, _, _ = night_optimizer()
+        entry = type("Entry", (), {"entry_id": "abc", "data": {}})()
+        switch = NightModeSwitch(opt, entry)
+        assert switch.has_entity_name is True
+        assert switch.name == "Night Mode"
+        assert switch.unique_id == "abc_enable_night_mode"
+        assert switch.extra_state_attributes["closed_rooms"] == []
+        run_cycle(opt)
+        assert switch.extra_state_attributes["closed_rooms"] == ["Living"]
+        opt.enable_night_mode = False
+        assert switch.extra_state_attributes["closed_rooms"] == []

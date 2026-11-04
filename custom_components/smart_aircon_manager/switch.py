@@ -41,7 +41,7 @@ async def async_setup_entry(
 
     # Night mode needs its rooms (chosen on the Night Mode options page)
     if optimizer.night_mode_rooms:
-        entities.append(NightModeSwitch(optimizer, config_entry))
+        entities.append(NightModeSwitch(optimizer, config_entry, data.get("coordinator")))
 
     async_add_entities(entities)
 
@@ -164,7 +164,11 @@ class NightModeSwitch(OptimizerFeatureSwitch):
     the morning). The state survives restarts.
     """
 
-    def __init__(self, optimizer, config_entry: ConfigEntry) -> None:
+    # New entity, so it can follow the documented naming without renaming
+    # anyone's existing entities: switch.smart_aircon_manager_night_mode
+    _attr_has_entity_name = True
+
+    def __init__(self, optimizer, config_entry: ConfigEntry, coordinator=None) -> None:
         """Initialize the night mode switch."""
         from .const import CONF_ENABLE_NIGHT_MODE
 
@@ -172,26 +176,39 @@ class NightModeSwitch(OptimizerFeatureSwitch):
             optimizer, config_entry, "enable_night_mode", CONF_ENABLE_NIGHT_MODE,
             "Night Mode", "mdi:weather-night",
         )
+        self._coordinator = coordinator
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh the closed-room attributes after every cycle."""
+        await super().async_added_to_hass()
+        if self._coordinator is not None:
+            self.async_on_remove(self._coordinator.async_add_listener(self.async_write_ha_state))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the rooms night mode focuses on and the rooms it closes."""
-        rooms = list(self._optimizer.night_mode_rooms)
         closed = []
         if self._optimizer.night_mode_active:
-            # The rooms actually closed right now (a room in a critical-room
-            # emergency stays open)
+            # The rooms actually closed as of the last cycle (a room in a
+            # critical-room emergency stays open)
             closed = sorted(self._optimizer._night_mode_applied_closed or [])
         return {
-            "night_mode_rooms": rooms,
+            "night_mode_rooms": list(self._optimizer.night_mode_rooms),
             "closed_rooms": closed,
             "closed_position": self._optimizer.night_mode_closed_position,
         }
 
-    def _set(self, enabled: bool) -> None:
-        super()._set(enabled)
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn night mode on and apply it now."""
+        self._set(True)
+        await self._refresh()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn night mode off and reopen the house now."""
+        self._set(False)
+        await self._refresh()
+
+    async def _refresh(self) -> None:
         # Apply the change now instead of at the next 30 s poll
-        entry_data = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
-        coordinator = entry_data.get("coordinator")
-        if coordinator is not None:
-            self.hass.async_create_task(coordinator.async_request_refresh())
+        if self._coordinator is not None:
+            await self._coordinator.async_request_refresh()
