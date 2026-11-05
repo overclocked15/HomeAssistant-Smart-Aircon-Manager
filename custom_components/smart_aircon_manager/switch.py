@@ -186,17 +186,57 @@ class NightModeSwitch(OptimizerFeatureSwitch):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the rooms night mode focuses on and the rooms it closes."""
+        """Return the rooms night mode focuses on, the rooms it closes and
+        the temperature drop."""
+        from .const import (
+            CONF_NIGHT_MODE_SAVED_TARGET,
+            CONF_NIGHT_MODE_TEMP_DROP,
+            DEFAULT_NIGHT_MODE_TEMP_DROP,
+        )
+
         closed = []
         if self._optimizer.night_mode_active:
             # The rooms actually closed as of the last cycle (a room in a
             # critical-room emergency stays open)
             closed = sorted(self._optimizer._night_mode_applied_closed or [])
+        data = self._config_entry.data
         return {
             "night_mode_rooms": list(self._optimizer.night_mode_rooms),
             "closed_rooms": closed,
             "closed_position": self._optimizer.night_mode_closed_position,
+            "temperature_drop": data.get(CONF_NIGHT_MODE_TEMP_DROP, DEFAULT_NIGHT_MODE_TEMP_DROP),
+            # The target night mode restores when it turns off (None when
+            # no drop was applied)
+            "restores_target": data.get(CONF_NIGHT_MODE_SAVED_TARGET),
         }
+
+    def _set(self, enabled: bool) -> None:
+        """Turn night mode on or off, applying or undoing the temperature drop.
+
+        The drop happens once per switch-on (see night_mode_entry_data): a
+        target adjusted during the night stands until night mode turns off,
+        which restores the target from before night mode.
+        """
+        from .const import CONF_TARGET_TEMPERATURE
+        from .night_mode import night_mode_entry_data
+
+        old_data = self._config_entry.data
+        new_data = night_mode_entry_data(old_data, enabled, self._optimizer.target_temperature)
+        self._optimizer.enable_night_mode = enabled
+        new_target = new_data.get(CONF_TARGET_TEMPERATURE)
+        if new_target is not None and new_target != old_data.get(CONF_TARGET_TEMPERATURE):
+            previous = self._optimizer.target_temperature
+            self._optimizer.target_temperature = float(new_target)
+            _LOGGER.info(
+                "Night mode %s - target %.1f -> %.1f °C",
+                "on" if enabled else "off", previous, float(new_target),
+            )
+        try:
+            self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
+        except Exception:
+            _LOGGER.debug("Could not persist night mode state")
+        self.async_write_ha_state()
+        _LOGGER.info("Night Mode %s", "enabled" if enabled else "disabled")
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn night mode on and apply it now."""

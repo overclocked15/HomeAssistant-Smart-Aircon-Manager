@@ -166,7 +166,11 @@ from .const import (
     CONF_NIGHT_MODE_CLOSED_POSITION,
     DEFAULT_ENABLE_NIGHT_MODE,
     DEFAULT_NIGHT_MODE_CLOSED_POSITION,
+    CONF_NIGHT_MODE_TEMP_DROP,
+    DEFAULT_NIGHT_MODE_TEMP_DROP,
+    NIGHT_MODE_TEMP_DROP_MAX,
 )
+from .night_mode import night_mode_entry_data
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
 _LOGGER = logging.getLogger(__name__)
@@ -1374,7 +1378,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Configure night mode: which rooms stay conditioned at night.
 
         Night mode itself is toggled with the Night Mode switch (dashboard or
-        automation); this page picks the rooms and the closed-off position.
+        automation); this page picks the rooms, the closed-off position and
+        the optional temperature drop. Ticking or unticking "Night mode on"
+        here applies or undoes the drop exactly like the switch.
         """
         errors: dict[str, str] = {}
         rooms = [room[CONF_ROOM_NAME] for room in self.config_entry.data.get(CONF_ROOM_CONFIGS, [])]
@@ -1385,14 +1391,19 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if enabled and not selected:
                 errors[CONF_NIGHT_MODE_ROOMS] = "night_mode_rooms_required"
             if not errors:
-                new_data = {
+                # Built on the stored on/off flag so night_mode_entry_data
+                # sees the transition (if any) and applies or undoes the drop
+                settings = {
                     **self.config_entry.data,
-                    CONF_ENABLE_NIGHT_MODE: enabled,
                     CONF_NIGHT_MODE_ROOMS: selected,
                     CONF_NIGHT_MODE_CLOSED_POSITION: int(user_input.get(
                         CONF_NIGHT_MODE_CLOSED_POSITION, DEFAULT_NIGHT_MODE_CLOSED_POSITION
                     )),
+                    CONF_NIGHT_MODE_TEMP_DROP: float(user_input.get(
+                        CONF_NIGHT_MODE_TEMP_DROP, DEFAULT_NIGHT_MODE_TEMP_DROP
+                    )),
                 }
+                new_data = night_mode_entry_data(settings, enabled)
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
                 await self.hass.config_entries.async_reload(self.config_entry.entry_id)
                 return self.async_create_entry(title="", data={})
@@ -1420,6 +1431,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=50, step=5, unit_of_measurement="%", mode=selector.NumberSelectorMode.SLIDER,
+                )
+            ),
+            vol.Optional(
+                CONF_NIGHT_MODE_TEMP_DROP,
+                default=data.get(CONF_NIGHT_MODE_TEMP_DROP, DEFAULT_NIGHT_MODE_TEMP_DROP),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=NIGHT_MODE_TEMP_DROP_MAX, step=0.5, unit_of_measurement="°C",
+                    mode=selector.NumberSelectorMode.BOX,
                 )
             ),
         }

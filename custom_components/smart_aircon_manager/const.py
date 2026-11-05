@@ -294,6 +294,14 @@ DEFAULT_NIGHT_MODE_CLOSED_POSITION = 0  # % damper position for closed-off rooms
 NIGHT_MODE_REOPEN_POSITION = 50  # % for a reopened room with no reading to compute from
 NIGHT_MODE_RETRY_MIN_SECONDS = 60  # backoff after a failed zone command
 NIGHT_MODE_RETRY_MAX_SECONDS = 1800
+# Optional temperature drop: applied once each time night mode turns on, so
+# the target can still be adjusted during the night; the target it replaced
+# is stored and restored when night mode turns off
+CONF_NIGHT_MODE_TEMP_DROP = "night_mode_temp_drop"
+CONF_NIGHT_MODE_SAVED_TARGET = "night_mode_saved_target"  # internal
+DEFAULT_NIGHT_MODE_TEMP_DROP = 0.0  # °C, 0 = off
+NIGHT_MODE_TEMP_DROP_MAX = 5.0
+MIN_TARGET_TEMPERATURE = 10.0  # the climate entity's lower bound
 
 SCHEDULE_DAYS_OPTIONS = [
     "monday",

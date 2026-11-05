@@ -163,6 +163,7 @@ Night mode conditions only the rooms you pick (typically bedrooms) and closes of
 | `enable_night_mode` | bool | `false` | Same as the Night Mode switch. Can't be turned on without at least one room |
 | `night_mode_rooms` | list | `[]` | Rooms kept conditioned while night mode is on. Every other room is closed off |
 | `night_mode_closed_position` | int | `0` | Zone position (%) for closed-off rooms. `0` closes the zone; use a small opening if your ducting needs minimum airflow with few zones open |
+| `night_mode_temp_drop` | float | `0` | Lower the target by this much (°C, up to 5) when night mode turns on. `0` turns it off |
 
 While night mode is on:
 - **Closed-off rooms** get their zone set to the closed position, and nothing (balancing, quick actions, minimum airflow) reopens them.
@@ -174,6 +175,16 @@ While night mode is on:
 Turning night mode on or off moves the zones straight away (the switch triggers a cycle), without waiting for the optimization interval. If a zone is moving or unavailable at that moment, its command is sent as soon as it's ready. If the zone rejects the command, it's retried after 1, 2, 4 ... minutes (up to 30). Rooms that reopen start fan smoothing fresh; a reopened room with no temperature reading opens to 50%.
 
 A room you've disabled under **Room Overrides** is never moved, night mode included.
+
+### Temperature drop
+
+With a drop set (for example 2 °C on a 23 °C target), turning night mode on lowers the target to 21 °C, and you'll see it on the climate card. You can still adjust it during the night: the drop happens once each time night mode turns on, not on every cycle, so a target you raise to 22 °C stays at 22 °C. Turning night mode off restores the target from before night mode (23 °C), even if you changed it during the night. The drop therefore never compounds from one night to the next.
+
+- The target to restore is saved with the integration's settings, so a restart during the night doesn't lose it.
+- Ticking or unticking **Night mode on** on the options page applies or undoes the drop, just like the switch.
+- Changing the drop while night mode is on takes effect the next time it turns on.
+- The target never goes below 10 °C.
+- The drop changes the main target. A room with its own target keeps it, and while a schedule with its own target is active, the schedule's target wins, just as it does for any other change to the main target.
 
 Example automation:
 
