@@ -220,3 +220,135 @@ class TestOptionsPage:
         assert entry.data["target_temperature"] == 21.0
         assert entry.data["night_mode_saved_target"] == 23.0
         assert entry.data["night_mode_temp_drop"] == 4.0
+
+
+class TestReviewHardening:
+    """Fixes from the v3.3.0 pre-release bug check."""
+
+    @staticmethod
+    def _switch(data, hass=None, coordinator=None):
+        from custom_components.smart_aircon_manager.switch import NightModeSwitch
+
+        opt, _, _ = make_cycle_optimizer(
+            rooms=(("Bed", 23.0, None), ("Living", 23.0, None)),
+            target=float(data["target_temperature"]),
+            enable_night_mode=data["enable_night_mode"], night_mode_rooms=["Bed"],
+        )
+        entry = FakeEntry(data)
+        switch = NightModeSwitch(opt, entry, coordinator)
+        switch.hass = hass or fake_hass(entry)
+        switch.async_write_ha_state = MagicMock()
+        return switch, opt, entry
+
+    def test_failed_save_changes_nothing_and_cannot_compound(self):
+        switch, opt, entry = self._switch(entry_data())
+        working = switch.hass
+        broken = fake_hass(entry)
+        broken.config_entries.async_update_entry = MagicMock(side_effect=RuntimeError("entry not loaded"))
+        switch.hass = broken
+        asyncio.run(switch.async_turn_on())
+        assert opt.enable_night_mode is False
+        assert opt.target_temperature == 23.0
+        assert entry.data["target_temperature"] == 23.0
+        switch.async_write_ha_state.assert_called()      # state re-shown as unchanged
+        # Saving works again: one clean night, no drift
+        switch.hass = working
+        asyncio.run(switch.async_turn_on())
+        asyncio.run(switch.async_turn_off())
+        asyncio.run(switch.async_turn_on())
+        assert opt.target_temperature == 21.0
+        asyncio.run(switch.async_turn_off())
+        assert opt.target_temperature == 23.0
+
+    def test_feature_switch_failed_save_leaves_feature_alone(self):
+        from custom_components.smart_aircon_manager.switch import OptimizerFeatureSwitch
+
+        opt, _, _ = make_cycle_optimizer()
+        entry = FakeEntry({"enable_efficiency_mode": False})
+        switch = OptimizerFeatureSwitch(
+            opt, entry, "enable_efficiency_mode", "enable_efficiency_mode", "Efficient Operation", "mdi:leaf",
+        )
+        switch.hass = fake_hass(entry)
+        switch.hass.config_entries.async_update_entry = MagicMock(side_effect=RuntimeError("boom"))
+        switch.async_write_ha_state = MagicMock()
+        asyncio.run(switch.async_turn_on())
+        assert opt.enable_efficiency_mode is False
+
+    def test_climate_card_updates_immediately(self):
+        coordinator = MagicMock()
+        coordinator.async_request_refresh = AsyncMock()
+        switch, _, _ = self._switch(entry_data(), coordinator=coordinator)
+        asyncio.run(switch.async_turn_on())
+        coordinator.async_update_listeners.assert_called_once()
+        coordinator.async_request_refresh.assert_awaited_once()
+
+    def test_removing_the_last_night_room_turns_night_mode_off_and_restores(self):
+        flow, entry = TestOptionsPage._flow(entry_data(
+            enable_night_mode=True, target_temperature=21.0, night_mode_saved_target=23.0,
+        ))
+        asyncio.run(flow.async_step_remove_room({"room_to_remove": "Bed"}))
+        assert entry.data["night_mode_rooms"] == []
+        assert entry.data["enable_night_mode"] is False
+        assert entry.data["target_temperature"] == 23.0
+        assert "night_mode_saved_target" not in entry.data
+
+    def test_removing_another_night_room_keeps_night_mode_on(self):
+        flow, entry = TestOptionsPage._flow(entry_data(
+            enable_night_mode=True, night_mode_rooms=["Bed", "Living"],
+            target_temperature=21.0, night_mode_saved_target=23.0,
+        ))
+        asyncio.run(flow.async_step_remove_room({"room_to_remove": "Living"}))
+        assert entry.data["enable_night_mode"] is True
+        assert entry.data["target_temperature"] == 21.0
+
+    def test_stale_night_mode_form_does_not_reverse_the_switch(self):
+        flow, entry = TestOptionsPage._flow(entry_data())
+        asyncio.run(flow.async_step_night_mode(None))        # opened at 21:55, shows "off"
+        entry.data = night_mode_entry_data(entry.data, ON)   # 22:00 automation turns it on
+        TestOptionsPage._submit(flow, enable_night_mode=False, night_mode_temp_drop=2.0)
+        assert entry.data["enable_night_mode"] is True
+        assert entry.data["target_temperature"] == 21.0
+        assert entry.data["night_mode_saved_target"] == 23.0
+
+    def test_tick_survives_a_validation_error(self):
+        flow, entry = TestOptionsPage._flow(entry_data())
+        asyncio.run(flow.async_step_night_mode(None))
+        retry = asyncio.run(flow.async_step_night_mode(
+            {"enable_night_mode": True, "night_mode_rooms": [], "night_mode_temp_drop": 2.0}
+        ))
+        assert retry["errors"] == {"night_mode_rooms": "night_mode_rooms_required"}
+        TestOptionsPage._submit(flow, enable_night_mode=True, night_mode_temp_drop=2.0)
+        assert entry.data["enable_night_mode"] is True
+        assert entry.data["target_temperature"] == 21.0
+
+    def test_clearing_the_drop_box_turns_the_drop_off(self):
+        flow, entry = TestOptionsPage._flow(entry_data(night_mode_temp_drop=2.0))
+        form = asyncio.run(flow.async_step_night_mode(None))
+        # The frontend leaves a cleared box out; HA validates against the schema
+        validated = form["data_schema"](
+            {"enable_night_mode": False, "night_mode_rooms": ["Bed"], "night_mode_closed_position": 0}
+        )
+        assert "night_mode_temp_drop" not in validated
+        asyncio.run(flow.async_step_night_mode(validated))
+        assert entry.data["night_mode_temp_drop"] == 0.0
+
+    def test_untouched_drop_box_keeps_its_value(self):
+        flow, entry = TestOptionsPage._flow(entry_data(night_mode_temp_drop=2.0))
+        TestOptionsPage._submit(flow, enable_night_mode=False, night_mode_temp_drop=2.0)
+        assert entry.data["night_mode_temp_drop"] == 2.0
+
+    def test_stale_settings_form_does_not_overwrite_the_target(self):
+        flow, entry = TestOptionsPage._flow(entry_data(
+            enable_night_mode=True, target_temperature=21.0, night_mode_saved_target=23.0,
+        ))
+        asyncio.run(flow.async_step_settings(None))           # opened during the night: shows 21
+        entry.data = night_mode_entry_data(entry.data, OFF)   # morning: back to 23
+        asyncio.run(flow.async_step_settings({"target_temperature": 21.0, "temperature_deadband": 0.5}))
+        assert entry.data["target_temperature"] == 23.0
+        assert entry.data["temperature_deadband"] == 0.5
+
+    def test_settings_form_target_change_still_applies(self):
+        flow, entry = TestOptionsPage._flow(entry_data())
+        asyncio.run(flow.async_step_settings(None))           # shows 23
+        asyncio.run(flow.async_step_settings({"target_temperature": 24.0}))
+        assert entry.data["target_temperature"] == 24.0

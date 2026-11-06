@@ -185,6 +185,8 @@ With a drop set (for example 2 °C on a 23 °C target), turning night mode on lo
 - Changing the drop while night mode is on takes effect the next time it turns on.
 - The target never goes below 10 °C.
 - The drop changes the main target. A room with its own target keeps it, and while a schedule with its own target is active, the schedule's target wins, just as it does for any other change to the main target.
+- In **auto** mode a lower target can start cooling, exactly as lowering it by hand would. For example, on a winter night after heating to 23 °C, a 2 °C drop has the AC cool the night rooms to 21 °C. In winter, use heat mode (or a drop of 0) if you only want the house to drift down.
+- Removing the last night-mode room turns night mode off and restores the target.
 
 Example automation:
 

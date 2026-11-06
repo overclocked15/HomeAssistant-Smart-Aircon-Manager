@@ -9,7 +9,17 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import (
+    CONF_ENABLE_BATTERY_MODE,
+    CONF_ENABLE_EFFICIENCY_MODE,
+    CONF_ENABLE_NIGHT_MODE,
+    CONF_NIGHT_MODE_SAVED_TARGET,
+    CONF_NIGHT_MODE_TEMP_DROP,
+    CONF_TARGET_TEMPERATURE,
+    DEFAULT_NIGHT_MODE_TEMP_DROP,
+    DOMAIN,
+)
+from .night_mode import night_mode_entry_data
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,8 +32,6 @@ async def async_setup_entry(
     """Set up Smart Aircon Manager switch platform."""
     data = hass.data[DOMAIN][config_entry.entry_id]
     optimizer = data["optimizer"]
-
-    from .const import CONF_ENABLE_BATTERY_MODE, CONF_ENABLE_EFFICIENCY_MODE
 
     entities = [
         ManualOverrideSwitch(optimizer, config_entry),
@@ -147,21 +155,38 @@ class OptimizerFeatureSwitch(SwitchEntity):
         self._set(False)
 
     def _set(self, enabled: bool) -> None:
-        setattr(self._optimizer, self._attribute, enabled)
+        """Save the new state first, then apply it.
+
+        If saving fails nothing changes, so the running state never drifts
+        from the stored one (night mode's on/off transitions depend on it).
+        """
+        new_data = self._new_entry_data(enabled)
         try:
-            new_data = {**self._config_entry.data, self._conf_key: enabled}
             self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
-        except Exception:
-            _LOGGER.debug("Could not persist %s", self._conf_key)
+        except Exception as err:  # noqa: BLE001 - report and leave the state alone
+            _LOGGER.warning("Could not save %s (%s) - left unchanged", self._attr_name, err)
+            self.async_write_ha_state()
+            return
+        self._apply(enabled, new_data)
         self.async_write_ha_state()
         _LOGGER.info("%s %s", self._attr_name, "enabled" if enabled else "disabled")
+
+    def _new_entry_data(self, enabled: bool) -> dict[str, Any]:
+        """Entry data with the feature switched on or off."""
+        return {**self._config_entry.data, self._conf_key: enabled}
+
+    def _apply(self, enabled: bool, new_data: dict[str, Any]) -> None:
+        """Apply a saved change to the running optimizer."""
+        setattr(self._optimizer, self._attribute, enabled)
 
 
 class NightModeSwitch(OptimizerFeatureSwitch):
     """Condition only the night-mode rooms and close off the rest.
 
     Toggle it from a dashboard or an automation (e.g. on at bedtime, off in
-    the morning). The state survives restarts.
+    the morning). The state survives restarts. With a temperature drop set,
+    turning it on lowers the target once and turning it off restores the
+    target from before (see night_mode_entry_data).
     """
 
     # New entity, so it can follow the documented naming without renaming
@@ -170,8 +195,6 @@ class NightModeSwitch(OptimizerFeatureSwitch):
 
     def __init__(self, optimizer, config_entry: ConfigEntry, coordinator=None) -> None:
         """Initialize the night mode switch."""
-        from .const import CONF_ENABLE_NIGHT_MODE
-
         super().__init__(
             optimizer, config_entry, "enable_night_mode", CONF_ENABLE_NIGHT_MODE,
             "Night Mode", "mdi:weather-night",
@@ -188,12 +211,6 @@ class NightModeSwitch(OptimizerFeatureSwitch):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the rooms night mode focuses on, the rooms it closes and
         the temperature drop."""
-        from .const import (
-            CONF_NIGHT_MODE_SAVED_TARGET,
-            CONF_NIGHT_MODE_TEMP_DROP,
-            DEFAULT_NIGHT_MODE_TEMP_DROP,
-        )
-
         closed = []
         if self._optimizer.night_mode_active:
             # The rooms actually closed as of the last cycle (a room in a
@@ -210,33 +227,21 @@ class NightModeSwitch(OptimizerFeatureSwitch):
             "restores_target": data.get(CONF_NIGHT_MODE_SAVED_TARGET),
         }
 
-    def _set(self, enabled: bool) -> None:
-        """Turn night mode on or off, applying or undoing the temperature drop.
+    def _new_entry_data(self, enabled: bool) -> dict[str, Any]:
+        """Entry data with night mode on or off, its drop applied or undone."""
+        return night_mode_entry_data(self._config_entry.data, enabled, self._optimizer.target_temperature)
 
-        The drop happens once per switch-on (see night_mode_entry_data): a
-        target adjusted during the night stands until night mode turns off,
-        which restores the target from before night mode.
-        """
-        from .const import CONF_TARGET_TEMPERATURE
-        from .night_mode import night_mode_entry_data
-
-        old_data = self._config_entry.data
-        new_data = night_mode_entry_data(old_data, enabled, self._optimizer.target_temperature)
+    def _apply(self, enabled: bool, new_data: dict[str, Any]) -> None:
+        """Switch the optimizer over, including any target change."""
         self._optimizer.enable_night_mode = enabled
         new_target = new_data.get(CONF_TARGET_TEMPERATURE)
-        if new_target is not None and new_target != old_data.get(CONF_TARGET_TEMPERATURE):
+        if new_target is not None and float(new_target) != self._optimizer.target_temperature:
             previous = self._optimizer.target_temperature
             self._optimizer.target_temperature = float(new_target)
             _LOGGER.info(
                 "Night mode %s - target %.1f -> %.1f °C",
                 "on" if enabled else "off", previous, float(new_target),
             )
-        try:
-            self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
-        except Exception:
-            _LOGGER.debug("Could not persist night mode state")
-        self.async_write_ha_state()
-        _LOGGER.info("Night Mode %s", "enabled" if enabled else "disabled")
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn night mode on and apply it now."""
@@ -249,6 +254,8 @@ class NightModeSwitch(OptimizerFeatureSwitch):
         await self._refresh()
 
     async def _refresh(self) -> None:
-        # Apply the change now instead of at the next 30 s poll
         if self._coordinator is not None:
+            # Show the change at once (e.g. the dropped target on the climate
+            # card), then run a cycle with it instead of waiting for the poll
+            self._coordinator.async_update_listeners()
             await self._coordinator.async_request_refresh()

@@ -14,6 +14,8 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    MAX_TARGET_TEMPERATURE,
+    MIN_TARGET_TEMPERATURE,
     NIGHT_MODE_REOPEN_POSITION,
     NIGHT_MODE_RETRY_MAX_SECONDS,
     NIGHT_MODE_RETRY_MIN_SECONDS,
@@ -131,7 +133,9 @@ class AirconOptimizer:
         self.hass = hass
 
         # Validate and store configuration parameters
-        self.target_temperature = self._validate_temperature(target_temperature, "target_temperature", 10.0, 35.0)
+        self.target_temperature = self._validate_temperature(
+            target_temperature, "target_temperature", MIN_TARGET_TEMPERATURE, MAX_TARGET_TEMPERATURE
+        )
         self.room_configs = room_configs
         self.main_climate_entity = main_climate_entity
         self.main_fan_entity = main_fan_entity

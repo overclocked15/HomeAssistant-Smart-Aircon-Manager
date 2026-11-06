@@ -169,6 +169,8 @@ from .const import (
     CONF_NIGHT_MODE_TEMP_DROP,
     DEFAULT_NIGHT_MODE_TEMP_DROP,
     NIGHT_MODE_TEMP_DROP_MAX,
+    MIN_TARGET_TEMPERATURE,
+    MAX_TARGET_TEMPERATURE,
 )
 from .night_mode import night_mode_entry_data
 from .temperature_utils import normalize_temperature, validate_temperature_range
@@ -178,7 +180,10 @@ _LOGGER = logging.getLogger(__name__)
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_TARGET_TEMPERATURE, default=DEFAULT_TARGET_TEMPERATURE): selector.NumberSelector(
-            selector.NumberSelectorConfig(min=10, max=35, step=0.5, mode="box", unit_of_measurement="°C")
+            selector.NumberSelectorConfig(
+                            min=MIN_TARGET_TEMPERATURE, max=MAX_TARGET_TEMPERATURE, step=0.5,
+                            mode="box", unit_of_measurement="°C",
+                        )
         ),
         vol.Optional(CONF_MAIN_CLIMATE_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="climate")
@@ -290,8 +295,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Optional(CONF_ROOM_TARGET_TEMPERATURE): selector.NumberSelector(
                     selector.NumberSelectorConfig(
-                        min=10.0,
-                        max=35.0,
+                        min=MIN_TARGET_TEMPERATURE,
+                        max=MAX_TARGET_TEMPERATURE,
                         step=0.5,
                         unit_of_measurement="°C",
                         mode=selector.NumberSelectorMode.BOX,
@@ -409,6 +414,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Handle settings configuration."""
         if user_input is not None:
+            # A target left as the form showed it is not a change: the target
+            # may have moved since the form opened (night mode's drop and
+            # restore, the climate card), and writing back the stale value
+            # would undo that.
+            shown_target = getattr(self, "_settings_shown_target", None)
+            if shown_target is not None and user_input.get(CONF_TARGET_TEMPERATURE) == shown_target:
+                user_input = {k: v for k, v in user_input.items() if k != CONF_TARGET_TEMPERATURE}
             # Merge with existing data and update the config entry; a cleared
             # main climate / main fan entity is removed, not kept.
             new_data = self._merged_data(user_input, (CONF_MAIN_CLIMATE_ENTITY, CONF_MAIN_FAN_ENTITY))
@@ -419,17 +431,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             await self.hass.config_entries.async_reload(self.config_entry.entry_id)
             return self.async_create_entry(title="", data={})
 
+        self._settings_shown_target = self.config_entry.data.get(
+            CONF_TARGET_TEMPERATURE, DEFAULT_TARGET_TEMPERATURE
+        )
         return self.async_show_form(
             step_id="settings",
             data_schema=vol.Schema(
                 {
                     vol.Optional(
                         CONF_TARGET_TEMPERATURE,
-                        default=self.config_entry.data.get(
-                            CONF_TARGET_TEMPERATURE, DEFAULT_TARGET_TEMPERATURE
-                        ),
+                        default=self._settings_shown_target,
                     ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(min=10, max=35, step=0.5, mode="box", unit_of_measurement="°C")
+                        selector.NumberSelectorConfig(
+                            min=MIN_TARGET_TEMPERATURE, max=MAX_TARGET_TEMPERATURE, step=0.5,
+                            mode="box", unit_of_measurement="°C",
+                        )
                     ),
                     vol.Optional(
                         CONF_TEMPERATURE_DEADBAND,
@@ -612,8 +628,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Optional(CONF_ROOM_TARGET_TEMPERATURE): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=10.0,
-                            max=35.0,
+                            min=MIN_TARGET_TEMPERATURE,
+                            max=MAX_TARGET_TEMPERATURE,
                             step=0.5,
                             unit_of_measurement="°C",
                             mode=selector.NumberSelectorMode.BOX,
@@ -668,6 +684,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if room_to_remove in night_rooms:
                 night_rooms.remove(room_to_remove)
                 new_data[CONF_NIGHT_MODE_ROOMS] = night_rooms
+                if not night_rooms and new_data.get(CONF_ENABLE_NIGHT_MODE):
+                    # Night mode can't run without rooms and its switch goes
+                    # away: turn it off so a lowered target is restored
+                    new_data = night_mode_entry_data(new_data, False)
 
             # Drop the room from any schedule's per-room targets
             schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
@@ -900,7 +920,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             target_key = vol.Optional(CONF_ROOM_TARGET_TEMPERATURE)
         schema_dict[target_key] = selector.NumberSelector(
             selector.NumberSelectorConfig(
-                min=10.0, max=35.0, step=0.5,
+                min=MIN_TARGET_TEMPERATURE, max=MAX_TARGET_TEMPERATURE, step=0.5,
                 unit_of_measurement="°C",
                 mode=selector.NumberSelectorMode.BOX,
             )
@@ -1387,7 +1407,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         if user_input is not None:
             selected = [room for room in user_input.get(CONF_NIGHT_MODE_ROOMS, []) if room in rooms]
-            enabled = user_input.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE)
+            stored = bool(self.config_entry.data.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE))
+            requested = bool(user_input.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE))
+            shown = getattr(self, "_night_mode_shown_enabled", stored)
+            # The checkbox only counts when the user changed it: a form opened
+            # before the switch was toggled (e.g. by the bedtime automation)
+            # must not toggle it back, or apply/undo the temperature drop
+            enabled = requested if requested != shown else stored
             if enabled and not selected:
                 errors[CONF_NIGHT_MODE_ROOMS] = "night_mode_rooms_required"
             if not errors:
@@ -1410,10 +1436,18 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         data = {**self.config_entry.data, **(user_input or {})}
         selected_rooms = [room for room in data.get(CONF_NIGHT_MODE_ROOMS, []) if room in rooms]
+        if user_input is None:
+            # The checkbox as the user first sees it. A submitted value equal
+            # to this was left alone; re-showing the form after a validation
+            # error keeps this baseline so the user's change still counts.
+            self._night_mode_shown_enabled = bool(
+                self.config_entry.data.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE)
+            )
+        drop = data.get(CONF_NIGHT_MODE_TEMP_DROP, DEFAULT_NIGHT_MODE_TEMP_DROP)
         schema = {
             vol.Optional(
                 CONF_ENABLE_NIGHT_MODE,
-                default=data.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE),
+                default=bool(data.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE)),
             ): cv.boolean,
             vol.Optional(
                 CONF_NIGHT_MODE_ROOMS,
@@ -1433,9 +1467,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     min=0, max=50, step=5, unit_of_measurement="%", mode=selector.NumberSelectorMode.SLIDER,
                 )
             ),
+            # Suggested (not default) value: a cleared box comes back empty and
+            # means "off", instead of voluptuous re-filling the old drop
             vol.Optional(
                 CONF_NIGHT_MODE_TEMP_DROP,
-                default=data.get(CONF_NIGHT_MODE_TEMP_DROP, DEFAULT_NIGHT_MODE_TEMP_DROP),
+                **({"description": {"suggested_value": drop}} if drop else {}),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=NIGHT_MODE_TEMP_DROP_MAX, step=0.5, unit_of_measurement="°C",
