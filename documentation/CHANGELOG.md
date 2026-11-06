@@ -1,5 +1,37 @@
 # Changelog
 
+## v3.3.0 - Night Mode Temperature Drop
+
+**Release Date**: 2026-11-05
+
+Night mode can now lower the target temperature when it turns on, for example from 23 °C to 21 °C for sleeping.
+
+- **Set it on the Night Mode options page:** "Lower the target when night mode turns on", 0 to 5 °C in 0.5 °C steps. 0 (the default) turns it off.
+- **Applied once per switch-on.** Turning night mode on lowers the target once and the climate card shows the new target. Adjust it during the night as usual; the change stands, because the drop isn't re-applied while night mode stays on (an automation turning the switch on again changes nothing).
+- **Restored when night mode turns off.** The target from before night mode comes back, even if you adjusted it during the night, so the day target returns in the morning and the drop never compounds from night to night. The target to restore is saved with the integration's settings and survives restarts.
+- **Same behaviour from the switch and the options page:** ticking or unticking "Night mode on" applies or undoes the drop too.
+- **Switch attributes:** `temperature_drop` and `restores_target` (the target night mode will restore).
+- The target never goes below 10 °C. A room with its own target keeps it, and an active schedule with its own target still takes precedence, as with any change to the main target. In auto mode a lower target can start cooling, as lowering it by hand would.
+
+### Robustness (from the pre-release bug check)
+
+- **Saved, then applied.** The night mode, efficient operation and battery-aware switches now save the change before applying it. If saving fails, nothing changes; before, the running and stored state could drift apart, and the drop could then compound or never be undone.
+- **Removing the last night-mode room turns night mode off** and restores the target, instead of leaving the whole house at the lowered target with no switch to undo it.
+- **Stale options pages no longer undo changes.** A Night Mode page opened before night mode was switched on or off (for example by the bedtime automation) doesn't switch it back when submitted, unless you change the checkbox. A Settings page doesn't write back a target that changed while it was open.
+- **Clearing the drop box turns the drop off.** Before, Home Assistant re-filled the previous value.
+- **The climate card shows the new target straight away** when night mode turns on or off.
+- The target temperature limits (10 to 35 °C) are defined once and shared by the climate entity, the optimizer and the options pages.
+
+### Tests
+
+- New `tests/test_night_mode_temp_drop.py` (28 tests):
+  - the drop: once per switch-on, not again while already on, restored after a manual change, no compounding over several nights, a zero drop, the 10 °C limit, half-degree drops;
+  - the switch end to end, including a restart during the night and the dropped target driving the next cycle;
+  - the options page: ticking on applies the submitted drop, unticking restores, changing the drop while on leaves the target alone;
+  - the robustness fixes above. 7 of these fail on the first v3.3.0 build; 4 more guard behaviour that must not change, including a tick surviving a validation error.
+- With the drop at 0 and night mode off, the 800-cycle simulation is identical to v3.2.2.
+- Suite: 283 tests (282 passing, 1 skipped).
+
 ## v3.2.2 - Production Review Fixes
 
 **Release Date**: 2026-11-04

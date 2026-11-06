@@ -70,6 +70,8 @@ Turns night mode on or off at runtime: only the night-mode rooms are conditioned
 | `night_mode_rooms` | Rooms kept conditioned |
 | `closed_rooms` | Rooms currently closed off (a room in a critical-room emergency stays open) |
 | `closed_position` | Zone position (%) used for closed-off rooms |
+| `temperature_drop` | °C the target is lowered by when night mode turns on (`0` = off) |
+| `restores_target` | The target that comes back when night mode turns off (empty when no drop was applied) |
 
 ## Binary Sensor
 

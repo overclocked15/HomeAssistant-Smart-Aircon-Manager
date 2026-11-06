@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, MAX_TARGET_TEMPERATURE, MIN_TARGET_TEMPERATURE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,8 +53,8 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
     _attr_fan_modes = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH]
     # Match the bounds used in the config flow's NumberSelector so service
     # calls (which bypass the UI selector) can't push out-of-range targets.
-    _attr_min_temp = 10.0
-    _attr_max_temp = 35.0
+    _attr_min_temp = MIN_TARGET_TEMPERATURE
+    _attr_max_temp = MAX_TARGET_TEMPERATURE
     _attr_target_temperature_step = 0.5
 
     def __init__(self, coordinator, optimizer, config_entry: ConfigEntry) -> None:

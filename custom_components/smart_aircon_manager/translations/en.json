@@ -318,16 +318,18 @@
       },
       "night_mode": {
         "title": "Night Mode",
-        "description": "Night mode conditions only the rooms you pick here (for example bedrooms). Every other room's zone is closed off and stops affecting the AC: its temperature no longer counts toward turning the AC on or off, the mode, the setpoint or the main fan.\n\nTurn night mode on and off with the Night Mode switch, from a dashboard or an automation (for example on at bedtime, off in the morning). A room in a critical-room emergency is always kept open.",
+        "description": "Night mode conditions only the rooms you pick here (for example bedrooms). Every other room's zone is closed off and stops affecting the AC: its temperature no longer counts toward turning the AC on or off, the mode, the setpoint or the main fan.\n\nTurn night mode on and off with the Night Mode switch, from a dashboard or an automation (for example on at bedtime, off in the morning). Optionally, night mode can also lower the target temperature when it turns on. A room in a critical-room emergency is always kept open.",
         "data": {
           "enable_night_mode": "Night mode on",
           "night_mode_rooms": "Night mode rooms (kept conditioned)",
-          "night_mode_closed_position": "Closed-off room zone position (%)"
+          "night_mode_closed_position": "Closed-off room zone position (%)",
+          "night_mode_temp_drop": "Lower the target when night mode turns on (°C)"
         },
         "data_description": {
           "enable_night_mode": "Same as the Night Mode switch. The switch appears once at least one room is selected.",
           "night_mode_rooms": "The rooms to keep comfortable while night mode is on. All other rooms are closed off.",
-          "night_mode_closed_position": "0 closes the zone fully. Use a small opening if your ducting needs a minimum airflow with few zones open."
+          "night_mode_closed_position": "0 closes the zone fully. Use a small opening if your ducting needs a minimum airflow with few zones open.",
+          "night_mode_temp_drop": "Applied once each time night mode turns on, so you can still change the target during the night. When night mode turns off, the target goes back to what it was before. 0 turns this off."
         }
       },
       "battery": {
