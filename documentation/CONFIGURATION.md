@@ -32,7 +32,7 @@ Each room requires:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `room_name` | string | Yes | Display name (e.g., "Living Room") |
+| `room_name` | string | Yes | Display name (e.g., "Living Room"). Must differ from every other room's name in more than capitals, spaces or underscores ("Guest Room" and "guest_room" count as the same) |
 | `temperature_sensor` | entity | Yes | Temperature sensor entity (e.g., `sensor.living_room_temperature`) |
 | `cover_entity` | entity | Yes | Zone fan damper control (e.g., `cover.living_room_zone`) |
 | `humidity_sensor` | entity | No | Humidity sensor for the room |

@@ -158,7 +158,7 @@ class TestSwitch:
         switch, _, _, _, _ = self._switch(room="Guest Room")
         assert switch.has_entity_name is True
         assert switch.name == "Guest Room In Use"
-        assert switch.unique_id == "entry1_guest_room_in_use"
+        assert switch.unique_id == "entry1_in_use_Guest Room"
 
     def test_one_switch_per_room_is_set_up(self):
         from custom_components.smart_aircon_manager import switch as switch_platform
@@ -398,3 +398,58 @@ class TestCodexReviewFixes:
         assert result["excluded_rooms"] == []                 # none in effect
         switch = NightModeSwitch(opt, FakeEntry(entry_data(enable_night_mode=True)))
         assert switch.extra_state_attributes["closed_rooms"] == ["Guest", "Living"]
+
+
+class TestRoomNameCollisions:
+    """Codex re-review of #6: per-room IDs must not collide."""
+
+    def test_switch_ids_differ_for_names_that_normalise_alike(self):
+        from custom_components.smart_aircon_manager.switch import RoomInUseSwitch
+
+        opt, _, _ = make_cycle_optimizer(rooms=(("Guest Room", 23.0, None), ("Guest_Room", 23.0, None)))
+        entry = FakeEntry({})
+        ids = {RoomInUseSwitch(opt, entry, name).unique_id for name in ("Guest Room", "Guest_Room")}
+        assert len(ids) == 2
+
+    @staticmethod
+    def _flow(rooms):
+        flow, entry = TestRoomChanges._flow(entry_data(room_configs=_configs(rooms), excluded_rooms=[]))
+        flow._validate_entities = MagicMock(return_value={})
+        return flow, entry
+
+    def test_adding_a_name_that_normalises_alike_is_rejected(self):
+        for name in ("Guest_Room", "guest room", " Guest Room "):
+            flow, entry = self._flow(("Bed", "Guest Room"))
+            result = asyncio.run(flow.async_step_add_room({
+                "room_name": name, "temperature_sensor": "sensor.x", "cover_entity": "cover.x",
+            }))
+            assert result["errors"] == {"room_name": "duplicate_room_name"}, name
+            assert len(entry.data["room_configs"]) == 2
+
+    def test_renaming_into_a_collision_is_rejected_but_recasing_is_fine(self):
+        flow, entry = self._flow(("Bed", "Guest Room"))
+        flow._room_to_edit = "Bed"
+        result = asyncio.run(flow.async_step_edit_room({
+            "room_name": "guest_room", "temperature_sensor": "sensor.bed", "cover_entity": "cover.bed",
+        }))
+        assert result["errors"] == {"room_name": "duplicate_room_name"}
+        flow, entry = self._flow(("Bed", "Guest Room"))
+        flow._room_to_edit = "Guest Room"
+        asyncio.run(flow.async_step_edit_room({
+            "room_name": "Guest room", "temperature_sensor": "sensor.guest room", "cover_entity": "cover.guest room",
+        }))
+        assert [r["room_name"] for r in entry.data["room_configs"]] == ["Bed", "Guest room"]
+
+    def test_initial_setup_rejects_names_that_normalise_alike(self):
+        from custom_components.smart_aircon_manager.config_flow import ConfigFlow
+
+        flow = ConfigFlow()
+        flow.hass = MagicMock()
+        flow.flow_id = "setup1"
+        flow.context = {}
+        flow._rooms = [{"room_name": "Guest Room", "temperature_sensor": "sensor.g", "cover_entity": "cover.g"}]
+        flow._validate_entities = MagicMock(return_value={})
+        result = asyncio.run(flow.async_step_add_room({
+            "room_name": "guest_room", "temperature_sensor": "sensor.x", "cover_entity": "cover.x",
+        }))
+        assert result["errors"] == {"base": "duplicate_room_name"}

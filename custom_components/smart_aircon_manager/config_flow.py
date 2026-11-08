@@ -196,6 +196,13 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
+def _room_key(name: str) -> str:
+    """How per-room entities tell rooms apart: case, surrounding spaces and
+    spaces vs underscores don't count ("Guest Room" and "guest_room" are the
+    same room), so names that differ only in those are rejected."""
+    return name.strip().lower().replace(" ", "_")
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Smart Aircon Manager."""
 
@@ -232,8 +239,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Check for duplicate room name
             new_name = user_input[CONF_ROOM_NAME].strip()
-            existing_names = [r[CONF_ROOM_NAME].lower() for r in self._rooms]
-            if new_name.lower() in existing_names:
+            existing_keys = {_room_key(r[CONF_ROOM_NAME]) for r in self._rooms}
+            if _room_key(new_name) in existing_keys:
                 errors["base"] = "duplicate_room_name"
 
             # Validate entities
@@ -571,8 +578,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             # Check for duplicate room name
             current_rooms = list(self.config_entry.data.get(CONF_ROOM_CONFIGS, []))
-            existing_names = [room[CONF_ROOM_NAME].lower() for room in current_rooms]
-            if user_input[CONF_ROOM_NAME].strip().lower() in existing_names:
+            existing_keys = {_room_key(room[CONF_ROOM_NAME]) for room in current_rooms}
+            if _room_key(user_input[CONF_ROOM_NAME]) in existing_keys:
                 errors["room_name"] = "duplicate_room_name"
 
             # Validate entities
@@ -796,9 +803,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             # Check for duplicate room name (allow keeping the same name)
             new_name = user_input[CONF_ROOM_NAME].strip()
-            if new_name.lower() != room_to_edit_name.lower():
-                existing_names = [room[CONF_ROOM_NAME].lower() for room in current_rooms]
-                if new_name.lower() in existing_names:
+            if _room_key(new_name) != _room_key(room_to_edit_name):
+                existing_keys = {_room_key(room[CONF_ROOM_NAME]) for room in current_rooms}
+                if _room_key(new_name) in existing_keys:
                     errors["room_name"] = "duplicate_room_name"
 
             # Validate entities

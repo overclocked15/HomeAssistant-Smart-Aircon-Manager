@@ -24,14 +24,15 @@ Take a room out of use, and back, without reconfiguring it. For example, a guest
 ### From the Codex review
 
 - **The night drop follows whether night mode has a room to focus on.** If the last night-mode room in use is switched out during the night (or removed, or deselected on the Night Mode page), the target from before night mode is restored, instead of the rest of the house staying at the night target. If a night-mode room comes back in use while night mode is on, the drop is applied again.
+- **Room switch IDs can't collide.** Each In Use switch's ID uses the exact room name. Rooms whose names differ only in capitals, spaces or underscores ("Guest Room" and "Guest_Room") are now rejected when adding or renaming a room, because per-room entities can't tell them apart.
 - **Night-mode closures are reported correctly when every room is out of use** (and the exclusions are therefore ignored): the cycle's `night_mode_closed_rooms` and the Night Mode switch's `closed_rooms` now subtract only the exclusions in effect.
 
 ### Tests
 
-- New `tests/test_room_in_use.py` (30 tests): closing and ignoring a room, the closed-off position, the climate temperature, unknown rooms, every room out of use, critical emergencies, night mode with rooms out of use (including the drop), the switch (out and back, the last room refused, a failed save, a repeated switch-off, reopening on the next cycle, naming, one switch per room), the reported exclusions, room removal and renaming, and the drop following night-mode rooms in and out of use (switch, room removal, Night Mode page).
-- Three deliberate bugs (exclusions ignored, no every-room guard, night mode ignoring exclusions) are each caught. 4 of the bug-check tests fail on the first v3.4.0 build, and the 6 Codex-review tests fail on the build it reviewed.
+- New `tests/test_room_in_use.py` (34 tests): closing and ignoring a room, the closed-off position, the climate temperature, unknown rooms, every room out of use, critical emergencies, night mode with rooms out of use (including the drop), the switch (out and back, the last room refused, a failed save, a repeated switch-off, reopening on the next cycle, naming, one switch per room), the reported exclusions, room removal and renaming, the drop following night-mode rooms in and out of use (switch, room removal, Night Mode page), and room names that would collide (switch IDs, adding, renaming, initial setup).
+- Three deliberate bugs (exclusions ignored, no every-room guard, night mode ignoring exclusions) are each caught. 4 of the bug-check tests fail on the first v3.4.0 build, and the 10 Codex-review tests fail on the builds it reviewed.
 - With no room out of use and night mode off, the 800-cycle simulation is identical to v3.3.0.
-- Suite: 313 tests (312 passing, 1 skipped).
+- Suite: 317 tests (316 passing, 1 skipped).
 
 ## v3.3.0 - Night Mode Temperature Drop
 

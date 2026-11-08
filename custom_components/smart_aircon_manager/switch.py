@@ -292,8 +292,10 @@ class RoomInUseSwitch(OptimizerFeatureSwitch):
         )
         self._room_name = room_name
         self._coordinator = coordinator
-        room_id = room_name.lower().replace(" ", "_")
-        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_in_use"
+        # The exact room name, not a normalised one: names like "Guest Room"
+        # and "Guest_Room" would otherwise share an ID (rooms only have to
+        # differ case-insensitively), and Home Assistant would drop one
+        self._attr_unique_id = f"{config_entry.entry_id}_in_use_{room_name}"
 
     @property
     def is_on(self) -> bool:
