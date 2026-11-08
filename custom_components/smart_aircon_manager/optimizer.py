@@ -128,6 +128,7 @@ class AirconOptimizer:
         enable_night_mode: bool = False,
         night_mode_rooms: list[str] | None = None,
         night_mode_closed_position: int = 0,
+        excluded_rooms: list[str] | None = None,
     ) -> None:
         """Initialize the optimizer."""
         self.hass = hass
@@ -424,6 +425,14 @@ class AirconOptimizer:
         # Rooms closed off by night mode as of the last cycle; a change sets
         # _night_mode_pending, which forces a full damper pass.
         self._night_mode_applied_closed: frozenset[str] | None = None
+        # Rooms switched out of use (the per-room "In Use" switches): closed
+        # off and left out of every AC decision until switched back in. The
+        # closing machinery is night mode's, which now covers both.
+        self.excluded_rooms: list[str] = [
+            room for room in (excluded_rooms or [])
+            if any(cfg.get("room_name") == room for cfg in self.room_configs)
+        ]
+        self._all_rooms_excluded_logged = False
         self._night_mode_pending = False
         # Rooms whose close/reopen hasn't reached the damper yet (zone moving,
         # unavailable or unknown when it was due); retried each cycle
@@ -2542,21 +2551,22 @@ class AirconOptimizer:
         # mode, which is stale/absent on the first cycle).
         room_states = await self._collect_room_states(effective_target)
 
-        # Night mode: closed-off rooms stay in room_states (sensors and the
-        # dashboard still show them) but every control decision below runs on
-        # active_states only. The dicts are shared, so target adjustments made
-        # through active_states show up in room_states too.
-        night_closed = frozenset(self._night_mode_closed_rooms(room_states))
-        if night_closed != (self._night_mode_applied_closed or frozenset()):
-            self._on_night_mode_change(night_closed)
-            self._night_mode_applied_closed = night_closed
+        # Closed-off rooms (switched out of use, or closed by night mode) stay
+        # in room_states (sensors and the dashboard still show them) but every
+        # control decision below runs on active_states only. The dicts are
+        # shared, so target adjustments made through active_states show up in
+        # room_states too.
+        closed_off = frozenset(self._closed_off_rooms(room_states))
+        if closed_off != (self._night_mode_applied_closed or frozenset()):
+            self._on_night_mode_change(closed_off)
+            self._night_mode_applied_closed = closed_off
             # Move every damper on this cycle, not at the next interval
             self._night_mode_pending = True
         full_damper_pass = False
         for room_name, state in room_states.items():
-            state["night_mode_closed"] = room_name in night_closed
+            state["closed_off"] = room_name in closed_off
         active_states = {
-            room_name: state for room_name, state in room_states.items() if room_name not in night_closed
+            room_name: state for room_name, state in room_states.items() if room_name not in closed_off
         }
 
         outdoor_temp = None
@@ -2669,16 +2679,16 @@ class AirconOptimizer:
                     time_since_startup,
                     self._startup_delay_seconds,
                 )
-            elif night_closed:
+            elif closed_off:
+                which = "night-mode rooms" if self.night_mode_active else "rooms in use"
                 _LOGGER.warning(
-                    "Night mode: no valid temperature readings from the night-mode rooms - leaving the AC unchanged"
+                    "No valid temperature readings from the %s - leaving the AC unchanged", which
                 )
                 if not self._no_temp_data_notified:
                     self._no_temp_data_notified = True
                     await self._send_notification(
                         "No Temperature Data",
-                        "Night mode is on but none of its rooms has a valid temperature reading. "
-                        "Check those sensors."
+                        f"None of the {which} has a valid temperature reading. Check those sensors."
                     )
             else:
                 _LOGGER.warning("No valid temperature readings available - leaving the AC unchanged")
@@ -2692,11 +2702,11 @@ class AirconOptimizer:
             # The AC is left alone, but closed-off rooms still get closed so
             # the toggle takes effect. Reopened rooms wait for sensor data:
             # the pending flag forces a full pass once readings return.
-            await self._settle_night_mode_rooms(night_closed)
+            await self._settle_night_mode_rooms(closed_off)
 
             return {
                 "room_states": room_states,
-                "recommendations": {room: self.night_mode_closed_position for room in night_closed},
+                "recommendations": {room: self.night_mode_closed_position for room in closed_off},
                 "optimization_response_text": None,
                 "main_climate_state": main_climate_state,
                 "main_fan_speed": None,
@@ -2811,7 +2821,7 @@ class AirconOptimizer:
                 recommendations = self._apply_quick_action_adjustments(recommendations, active_states)
 
                 # Night mode closures go last so nothing reopens a closed room
-                recommendations = self._apply_night_mode_closures(recommendations, set(night_closed))
+                recommendations = self._apply_night_mode_closures(recommendations, set(closed_off))
 
                 to_apply = self._night_mode_hold_backed_off(recommendations)
                 delivered = await self._apply_recommendations(to_apply)
@@ -2871,7 +2881,7 @@ class AirconOptimizer:
                 else:
                     pre_pos = 50  # Default neutral for unavailable sensors
                 pre_position[room] = pre_pos
-            pre_position = self._apply_night_mode_closures(pre_position, set(night_closed))
+            pre_position = self._apply_night_mode_closures(pre_position, set(closed_off))
             if pre_position != self._last_recommendations or self._night_mode_pending:
                 to_apply = self._night_mode_hold_backed_off(pre_position)
                 delivered = await self._apply_recommendations(to_apply)
@@ -2884,7 +2894,7 @@ class AirconOptimizer:
 
         # A night-mode close/reopen that couldn't reach its damper earlier
         if not full_damper_pass:
-            await self._settle_night_mode_rooms(night_closed)
+            await self._settle_night_mode_rooms(closed_off)
 
         # End performance tracking
         cycle_end = time.time()
@@ -2972,10 +2982,12 @@ class AirconOptimizer:
             },
             "comfort_relaxation_sources": list(relaxation.get("sources") or []),
             "conditioning_direction": direction,
-            # Night mode (rooms closed off for the night)
+            # Closed-off rooms: switched out of use, or closed by night mode
+            "closed_off_rooms": sorted(closed_off),
+            "excluded_rooms": sorted(self.excluded_rooms),
             "night_mode_active": self.night_mode_active,
             "night_mode_rooms": list(self.night_mode_rooms),
-            "night_mode_closed_rooms": sorted(night_closed),
+            "night_mode_closed_rooms": sorted(closed_off - set(self.excluded_rooms)),
             "efficiency_active": self._efficiency_active(),
             "efficient_fan_idle": self._efficient_fan_idle,
             "battery": self.battery_summary(),
@@ -3703,27 +3715,54 @@ class AirconOptimizer:
             if room_state.get("status") in (CRITICAL_STATUS_CRITICAL, CRITICAL_STATUS_RECOVERING)
         }
 
+    def _excluded_rooms_now(self) -> set[str]:
+        """Rooms switched out of use, unless that would be every room.
+
+        With every zone closed there would be nothing to manage (and a
+        running AC would be blowing into closed ducts), so exclusions are
+        ignored until at least one room is back in use.
+        """
+        configured = {cfg["room_name"] for cfg in self.room_configs}
+        excluded = set(self.excluded_rooms) & configured
+        if configured and excluded == configured:
+            return set()
+        return excluded
+
     @property
     def night_mode_active(self) -> bool:
-        """Night mode is on and has at least one room to focus on."""
-        return self.enable_night_mode and bool(self.night_mode_rooms)
+        """Night mode is on and at least one of its rooms is in use."""
+        return self.enable_night_mode and bool(set(self.night_mode_rooms) - self._excluded_rooms_now())
 
-    def _night_mode_closed_rooms(self, room_names) -> set[str]:
-        """Rooms night mode closes off this cycle.
+    def _closed_off_rooms(self, room_names) -> set[str]:
+        """Rooms closed off this cycle.
 
-        Every room that isn't a night-mode room, except rooms in a
-        critical-room emergency: their rescue needs the damper open and the
-        room in the AC decisions, whatever night mode says.
+        Rooms switched out of use, plus, while night mode is on, every room
+        that isn't a night-mode room. A room in a critical-room emergency is
+        never closed off: its rescue needs the damper open and the room in
+        the AC decisions.
         """
-        if not self.night_mode_active:
+        excluded = self._excluded_rooms_now()
+        if self.excluded_rooms and not excluded:
+            if not self._all_rooms_excluded_logged:
+                _LOGGER.warning(
+                    "Every room is switched out of use - managing all of them until one is back in use"
+                )
+                self._all_rooms_excluded_logged = True
+        else:
+            self._all_rooms_excluded_logged = False
+        closed = set(excluded)
+        if self.night_mode_active:
+            closed |= {room for room in room_names if room not in self.night_mode_rooms}
+        if not closed:
             return set()
-        keep = set(self.night_mode_rooms) | self._critical_emergency_rooms()
-        return {room for room in room_names if room not in keep}
+        closed -= self._critical_emergency_rooms()
+        return {room for room in room_names if room in closed}
 
     def _apply_night_mode_closures(
         self, recommendations: dict[str, int | float], closed_rooms: set[str]
     ) -> dict[str, int | float]:
-        """Park closed-off rooms at the night-mode damper position.
+        """Park closed-off rooms (out of use, or closed by night mode) at the
+        closed-off damper position.
 
         Runs after every other adjustment (quick actions included) so nothing
         can reopen a room the user closed off for the night.
@@ -3871,9 +3910,9 @@ class AirconOptimizer:
         for room in changed:
             self._night_mode_retry_backoff.pop(room, None)
         _LOGGER.info(
-            "Night mode %s - closed rooms: %s",
-            "active" if closed_rooms else "inactive",
+            "Closed-off rooms now: %s (night mode %s)",
             ", ".join(sorted(closed_rooms)) or "none",
+            "active" if self.night_mode_active else "inactive",
         )
 
     def _apply_quick_action_adjustments(

@@ -83,7 +83,8 @@ async def async_get_config_entry_diagnostics(
             "enable_night_mode": optimizer.enable_night_mode,
             "night_mode_rooms": list(optimizer.night_mode_rooms),
             "night_mode_closed_position": optimizer.night_mode_closed_position,
-            "night_mode_closed_rooms": sorted(optimizer._night_mode_applied_closed or []),
+            "closed_off_rooms": sorted(optimizer._night_mode_applied_closed or []),
+            "excluded_rooms": sorted(optimizer.excluded_rooms),
         }
 
     if coordinator and coordinator.data:
@@ -94,7 +95,7 @@ async def async_get_config_entry_diagnostics(
                 "target_temperature": state.get("target_temperature"),
                 "cover_position": state.get("cover_position"),
                 "current_humidity": state.get("current_humidity"),
-                "night_mode_closed": state.get("night_mode_closed", False),
+                "closed_off": state.get("closed_off", False),
             }
             for room, state in room_states.items()
         }

@@ -171,6 +171,7 @@ from .const import (
     NIGHT_MODE_TEMP_DROP_MAX,
     MIN_TARGET_TEMPERATURE,
     MAX_TARGET_TEMPERATURE,
+    CONF_EXCLUDED_ROOMS,
 )
 from .night_mode import night_mode_entry_data
 from .temperature_utils import normalize_temperature, validate_temperature_range
@@ -689,6 +690,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     # away: turn it off so a lowered target is restored
                     new_data = night_mode_entry_data(new_data, False)
 
+            excluded = [room for room in new_data.get(CONF_EXCLUDED_ROOMS, []) if room != room_to_remove]
+            if updated_rooms and {r[CONF_ROOM_NAME] for r in updated_rooms} <= set(excluded):
+                # Every remaining room was out of use: put them back, at
+                # least one room has to stay in use
+                excluded = []
+            if excluded != list(new_data.get(CONF_EXCLUDED_ROOMS, [])):
+                new_data[CONF_EXCLUDED_ROOMS] = excluded
+
             # Drop the room from any schedule's per-room targets
             schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
             for schedule in schedules:
@@ -860,6 +869,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     if room_to_edit_name in night_rooms:
                         new_data[CONF_NIGHT_MODE_ROOMS] = [
                             new_name if name == room_to_edit_name else name for name in night_rooms
+                        ]
+
+                    # Migrate rooms switched out of use (room names)
+                    excluded = list(new_data.get(CONF_EXCLUDED_ROOMS, []))
+                    if room_to_edit_name in excluded:
+                        new_data[CONF_EXCLUDED_ROOMS] = [
+                            new_name if name == room_to_edit_name else name for name in excluded
                         ]
 
                     # Migrate per-room schedule targets (keyed by room name)

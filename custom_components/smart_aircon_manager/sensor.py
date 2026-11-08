@@ -364,7 +364,7 @@ class OptimizationStatusSensor(AirconManagerSensorBase):
 
         for state in room_states.values():
             # Rooms closed off by night mode aren't being conditioned
-            if state["current_temperature"] is None or state.get("night_mode_closed"):
+            if state["current_temperature"] is None or state.get("closed_off"):
                 continue
 
             any_valid_data = True
@@ -401,7 +401,7 @@ class OptimizationStatusSensor(AirconManagerSensorBase):
         temps = [
             state["current_temperature"]
             for state in room_states.values()
-            if state["current_temperature"] is not None and not state.get("night_mode_closed")
+            if state["current_temperature"] is not None and not state.get("closed_off")
         ]
 
         if not temps:

@@ -20,6 +20,7 @@ Uses smart logic-based algorithms to achieve precise temperature control across 
 - **Occupancy Control**: Temperature setbacks for vacant rooms
 - **Away Mode**: Auto vacation mode when everyone leaves (person/device tracker based)
 - **Night Mode**: Toggle to focus on selected rooms (e.g. bedrooms) and close off the rest of the house. Closed-off rooms stop driving the AC. Optionally lowers the target when it turns on and restores it when it turns off
+- **Rooms In Use**: A switch per room takes it out of use (zone closed, ignored by the AC) and back, without reconfiguring it. Handy for guest rooms
 - **Per-Room Schedule Targets**: Schedules can set different targets per room (e.g. bedrooms cooler at night)
 - **Comfort Index**: Heat index combining temperature and humidity
 
@@ -169,7 +170,8 @@ logger:
 
 See [Changelog](documentation/CHANGELOG.md) for full version history.
 
-- **v3.3.0** (Current): Night mode temperature drop. Set a drop on the Night Mode options page (for example 2 °C) and turning night mode on lowers the target once; adjust it during the night if you like, and turning night mode off restores the target from before
+- **v3.4.0** (Current): Rooms In Use. Every room gets an In Use switch: turn it off to close the room and leave it out of every AC decision (for example a guest room nobody is using), and back on when it's needed, with no reconfiguring
+- **v3.3.0**: Night mode temperature drop. Set a drop on the Night Mode options page (for example 2 °C) and turning night mode on lowers the target once; adjust it during the night if you like, and turning night mode off restores the target from before
 - **v3.2.2**: Production review fixes. One optimization cycle at a time (no duplicate commands). An unavailable main AC is no longer "switched off" every 30 s with a notification each time, and critical-room protection turns it on the moment it's back. "No Temperature Data" and zone-failure notifications are no longer repeated every cycle. Away mode counts a person in a named zone (e.g. Work) as away. A dead occupancy sensor no longer marks its room vacant. Night mode's retry backoff holds on every pass. Requires Home Assistant 2024.12+ (the Options pages already needed it)
 - **v3.2.1**: Night mode only counts a zone close/reopen as done once the zone accepted it. Rejected commands are retried with backoff (1 min up to 30 min) instead of being dropped
 - **v3.2.0**: Night mode. Pick the rooms to keep conditioned at night (Options > Night Mode) and toggle the new Night Mode switch. Every other room's zone is closed and left out of AC on/off, mode, setpoint and main fan decisions. Critical-room emergencies keep their room open

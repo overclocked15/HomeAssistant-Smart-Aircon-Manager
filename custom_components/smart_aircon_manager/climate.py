@@ -95,7 +95,7 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         temps = [
             state["current_temperature"]
             for state in room_states.values()
-            if state["current_temperature"] is not None and not state.get("night_mode_closed")
+            if state["current_temperature"] is not None and not state.get("closed_off")
         ]
 
         if not temps:

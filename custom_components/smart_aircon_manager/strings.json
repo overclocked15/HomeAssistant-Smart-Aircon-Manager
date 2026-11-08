@@ -328,7 +328,7 @@
         "data_description": {
           "enable_night_mode": "Same as the Night Mode switch. The switch appears once at least one room is selected.",
           "night_mode_rooms": "The rooms to keep comfortable while night mode is on. All other rooms are closed off.",
-          "night_mode_closed_position": "0 closes the zone fully. Use a small opening if your ducting needs a minimum airflow with few zones open.",
+          "night_mode_closed_position": "0 closes the zone fully. Use a small opening if your ducting needs a minimum airflow with few zones open. Also used for rooms switched out of use with their In Use switch.",
           "night_mode_temp_drop": "Applied once each time night mode turns on, so you can still change the target during the night. When night mode turns off, the target goes back to what it was before. 0 turns this off."
         }
       },

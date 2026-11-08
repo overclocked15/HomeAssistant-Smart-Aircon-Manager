@@ -1,5 +1,25 @@
 # Changelog
 
+## v3.4.0 - Rooms In Use
+
+**Release Date**: 2026-11-08
+
+Take a room out of use, and back, without reconfiguring it. For example, a guest room nobody is sleeping in.
+
+- **One switch per room:** `switch.smart_aircon_manager_<room>_in_use`. Off closes the room's zone (to the closed-off position from the Night Mode page) and leaves it out of every AC decision: on/off, mode, setpoint, main fan, averages, balancing. On brings it straight back.
+- **Configuration kept:** the room's sensors, targets and settings stay as they are, and its sensors keep reporting while it's out of use. The setting survives restarts and follows the room when it's renamed.
+- **Safety:** a room in a critical-room emergency is opened and managed until it recovers. The last room in use can't be switched off (Home Assistant shows an error), because closing every zone would leave the AC blowing into closed ducts. If every room ends up out of use anyway (for example after removing rooms), the exclusions are ignored.
+- **Night mode:** only night-mode rooms that are in use are conditioned. If all of them are out of use, night mode stands aside.
+- Built on night mode's closing machinery, so a room switched out or back in moves on that cycle, with the same retries for zones that don't respond.
+- **Coordinator data:** new `closed_off_rooms` and `excluded_rooms`; the per-room flag is now `closed_off`. `night_mode_closed_rooms` now lists only rooms closed by night mode.
+
+### Tests
+
+- New `tests/test_room_in_use.py` (17 tests): closing and ignoring a room, the closed-off position, the climate temperature, unknown rooms, every room out of use, critical emergencies, night mode with rooms out of use, the switch (out and back, the last room refused, a failed save, reopening on the next cycle, naming, one switch per room), and room removal and renaming.
+- Three deliberate bugs (exclusions ignored, no every-room guard, night mode ignoring exclusions) are each caught.
+- With no room out of use and night mode off, the 800-cycle simulation is identical to v3.3.0.
+- Suite: 300 tests (299 passing, 1 skipped).
+
 ## v3.3.0 - Night Mode Temperature Drop
 
 **Release Date**: 2026-11-05

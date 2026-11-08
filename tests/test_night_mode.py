@@ -63,8 +63,8 @@ class TestDampers:
         assert positions["cover.living"] == 0
         assert result["recommendations"]["Living"] == 0
         assert result["night_mode_closed_rooms"] == ["Living"]
-        assert result["room_states"]["Living"]["night_mode_closed"] is True
-        assert result["room_states"]["Bed"]["night_mode_closed"] is False
+        assert result["room_states"]["Living"]["closed_off"] is True
+        assert result["room_states"]["Bed"]["closed_off"] is False
         # Night rooms still get a computed position
         assert result["recommendations"]["Bed"] > 0
 

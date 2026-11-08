@@ -7,12 +7,14 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_ENABLE_BATTERY_MODE,
     CONF_ENABLE_EFFICIENCY_MODE,
     CONF_ENABLE_NIGHT_MODE,
+    CONF_EXCLUDED_ROOMS,
     CONF_NIGHT_MODE_SAVED_TARGET,
     CONF_NIGHT_MODE_TEMP_DROP,
     CONF_TARGET_TEMPERATURE,
@@ -50,6 +52,11 @@ async def async_setup_entry(
     # Night mode needs its rooms (chosen on the Night Mode options page)
     if optimizer.night_mode_rooms:
         entities.append(NightModeSwitch(optimizer, config_entry, data.get("coordinator")))
+
+    # One "In Use" switch per room: off closes the room off and leaves it out
+    # of every AC decision, keeping its configuration
+    for room in optimizer.room_configs:
+        entities.append(RoomInUseSwitch(optimizer, config_entry, room["room_name"], data.get("coordinator")))
 
     async_add_entities(entities)
 
@@ -213,9 +220,12 @@ class NightModeSwitch(OptimizerFeatureSwitch):
         the temperature drop."""
         closed = []
         if self._optimizer.night_mode_active:
-            # The rooms actually closed as of the last cycle (a room in a
-            # critical-room emergency stays open)
-            closed = sorted(self._optimizer._night_mode_applied_closed or [])
+            # The rooms night mode closed as of the last cycle (a room in a
+            # critical-room emergency stays open; rooms switched out of use
+            # are closed anyway and listed on their own switches)
+            closed = sorted(
+                set(self._optimizer._night_mode_applied_closed or []) - set(self._optimizer.excluded_rooms)
+            )
         data = self._config_entry.data
         return {
             "night_mode_rooms": list(self._optimizer.night_mode_rooms),
@@ -257,5 +267,87 @@ class NightModeSwitch(OptimizerFeatureSwitch):
         if self._coordinator is not None:
             # Show the change at once (e.g. the dropped target on the climate
             # card), then run a cycle with it instead of waiting for the poll
+            self._coordinator.async_update_listeners()
+            await self._coordinator.async_request_refresh()
+
+
+class RoomInUseSwitch(SwitchEntity):
+    """Take a room out of use, and back, without reconfiguring it.
+
+    Off: the room's zone closes (to the closed-off position) and the room
+    stops counting toward any AC decision, like a room night mode closes.
+    On: it's managed again straight away. Its sensors keep reporting either
+    way, and a critical-room emergency still opens it.
+    """
+
+    _attr_has_entity_name = True
+
+    def __init__(self, optimizer, config_entry: ConfigEntry, room_name: str, coordinator=None) -> None:
+        """Initialize the switch for one room."""
+        self._optimizer = optimizer
+        self._config_entry = config_entry
+        self._room_name = room_name
+        self._coordinator = coordinator
+        room_id = room_name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_in_use"
+        self._attr_name = f"{room_name} In Use"
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        from . import get_device_info
+        return get_device_info(self._config_entry)
+
+    @property
+    def is_on(self) -> bool:
+        """Return true while the room is in use (managed)."""
+        return self._room_name not in self._optimizer.excluded_rooms
+
+    @property
+    def icon(self) -> str:
+        """Door open while in use, closed while out of use."""
+        return "mdi:door-open" if self.is_on else "mdi:door-closed"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the room and the zone position used while out of use."""
+        return {
+            "room": self._room_name,
+            "closed_position": self._optimizer.night_mode_closed_position,
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Put the room back in use."""
+        await self._set_in_use(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Take the room out of use."""
+        await self._set_in_use(False)
+
+    async def _set_in_use(self, in_use: bool) -> None:
+        excluded = [room for room in self._optimizer.excluded_rooms if room != self._room_name]
+        if not in_use:
+            excluded.append(self._room_name)
+            rooms = {cfg["room_name"] for cfg in self._optimizer.room_configs}
+            if rooms <= set(excluded):
+                # Every zone closed would leave nothing to manage, with the
+                # AC blowing into closed ducts
+                raise HomeAssistantError(
+                    f"Can't take {self._room_name} out of use: at least one room has to stay in use"
+                )
+        if excluded == list(self._optimizer.excluded_rooms):
+            return  # already in that state
+        new_data = {**self._config_entry.data, CONF_EXCLUDED_ROOMS: excluded}
+        try:
+            self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
+        except Exception as err:  # noqa: BLE001 - report and leave the state alone
+            _LOGGER.warning("Could not save %s (%s) - left unchanged", self._attr_name, err)
+            self.async_write_ha_state()
+            return
+        self._optimizer.excluded_rooms = excluded
+        self.async_write_ha_state()
+        _LOGGER.info("%s %s", self._room_name, "back in use" if in_use else "taken out of use")
+        if self._coordinator is not None:
+            # Show it at once, then move the zone on a cycle right away
             self._coordinator.async_update_listeners()
             await self._coordinator.async_request_refresh()
