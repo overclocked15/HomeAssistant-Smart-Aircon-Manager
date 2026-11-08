@@ -21,7 +21,7 @@ A review of the logic and maths behind every decision. Each finding was reproduc
 - **Predictive control ignores sensor noise.** Its adjustment was proportional to the whole predicted error and switched on by the sign of the rate, so a room 3°C over target flipped between 89% and 100% as noise moved the rate across zero. It now moves the zone part of the way (the predictive factor) toward the position for the predicted temperature, and rates under 0.03°C/min count as no trend.
 - **Balancing triggers on the spread between rooms, with hysteresis.** It used a standard deviation, which shrinks as rooms are added: a single room had to be 3.0°C off target in a 4-room house and 3.7°C in a 6-room house. It now starts when the warmest and coolest rooms (each against its own target) are further apart than the target spread, and stops once they're back within two thirds of it. Before, its 15 to 20 point bias switched on and off at the edge.
 - **Minimum airflow means one thing.** No adjustment (balancing, learning, quick actions, humidity weighting, predictive control) takes a room below it, and none lifts a room the overshoot tiers set lower. Balancing or learning used to lift a 5% room to 15%.
-- **Boost keeps the airflow split.** It multiplied every zone by 1.5, which pushed most rooms to 100% and gave the hottest room a smaller share (50% down to 40% in a 3-room example), and it left the AC alone. It now drives the setpoint to full overdrive and the main fan to high while rooms still need conditioning, opens zones in proportion (neediest fully open), and stands down efficient operation.
+- **Boost keeps the airflow split.** It multiplied every zone by 1.5, which pushed most rooms to 100% and gave the hottest room a smaller share (50% down to 40% in a 3-room example), and it left the AC alone. It now drives the setpoint three times as hard (full overdrive from about 0.7°C short) and the main fan to high while rooms still need conditioning, opens zones in proportion (neediest fully open), and stands down efficient operation.
 - **Sleep quietens the blower.** It capped zones at 40%, which raises duct pressure and noise in a ducted system while the blower keeps running, and gave a room 3°C hot the same 40% as one on target. It now holds the main fan at low and leaves the zones alone; a critical-room emergency lifts the cap. The 1°C comfort relaxation is unchanged. Without a main fan entity, sleep only relaxes comfort.
 - Smoothing rounds instead of truncating. It settled 1 point short when approaching from below.
 
@@ -45,12 +45,21 @@ Learning is opt-in. With it on, these estimates fed real adjustments:
 - New coordinator data `main_fan_decision`. The main fan sensors show the figures behind the decision instead of re-deriving it with stale rules. The room temperature variance sensor adds `room_spread`, and its status follows the balancing trigger.
 - ALGORITHM.md, CONFIGURATION.md, SERVICES.md and SENSORS.md corrected: the stale 8-band fan table (it gave a room just outside the deadband less air than one on target), the weather adjustment (stepped, at most 0.2°C at defaults without a trend, not up to 1°C), balancing exclusions that didn't exist, a predictive example that did nothing, the learning data requirements, and a compressor-protection bypass for boost that never existed.
 
+### From the pre-release bug check
+
+- **No setpoint back-off during a critical-room rescue.** A hot server room in an otherwise cold house got a raised cooling setpoint (25°C against a 23°C target), so the unit could stop cooling while the room overheated. Back-off is off while an emergency is active.
+- **No setpoint back-off while drying.** Dry mode runs inside the deadband (and below a relaxed target by design), so back-off raised the setpoint above target, and units that regulate dry mode by setpoint would stop dehumidifying.
+- **Boost doesn't chatter at the target.** Full overdrive switched on at any demand above zero, so a house sitting on its target flipped between 19°C and 23°C setpoints every cycle, and the main fan between high and low. The setpoint gain is now continuous, and the fan goes high once a room is more than the deadband short and stays high until every room reaches its target.
+- **The dry-mode hold ends with the AC.** With the AC off, dry needs the start point again; it used to restart the AC for humidity inside the band.
+- **Learning records the target the room is controlled to**, occupancy setback included, so a vacant room held warmer on purpose isn't learned as running short and given more air.
+- Thermal mass checks the zone positions in force during each window, and the Room Balancing Active sensor adds `current_spread`, the figure its target is compared with.
+
 ### Tests
 
-- New `tests/test_maths_review.py` (58 tests) covering the changeover, dry-mode band and alert throttling, main fan levels and hysteresis, the two-sided and adaptive setpoint, predictive control, each learning estimator and profile migration, balancing, minimum airflow, boost, sleep and smoothing. 49 fail on v3.4.0; the other 9 guard behavior that must not change (no direct reversal, overdrive, the airflow floor).
+- New `tests/test_maths_review.py` (64 tests) covering the changeover, dry-mode band and alert throttling, main fan levels and hysteresis, the two-sided and adaptive setpoint, predictive control, each learning estimator and profile migration, balancing, minimum airflow, boost, sleep and smoothing. 49 of the first 58 fail on v3.4.0, and the other 9 guard behavior that must not change (no direct reversal, overdrive, the airflow floor). The 6 bug-check tests (plus an updated boost test) fail on the first v3.5.0 build.
 - One test updated: emergency rooms skipping quick-action caps now uses vacation, since sleep no longer caps zones.
 - An 800-cycle comparison with v3.4.0 differs only in zone positions (mostly 1 to 2 points from rounding), setpoints during overshoot, and the new `main_fan_decision` data, with no errors.
-- Suite: 376 tests (375 passing, 1 skipped).
+- Suite: 382 tests (381 passing, 1 skipped).
 
 ## v3.4.0 - Rooms In Use
 

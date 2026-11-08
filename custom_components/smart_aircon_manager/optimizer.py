@@ -336,6 +336,8 @@ class AirconOptimizer:
         # figures behind it (reported to the main fan sensors)
         self._main_fan_level_state: str | None = None
         self._main_fan_metrics: dict[str, Any] = {}
+        # Boost is holding the main fan on high (see _cap_main_fan_speed)
+        self._boost_fan_high = False
         self._current_schedule = None
         # Global effective target (schedule + weather, NO per-room weighting).
         # Refreshed each optimization cycle by _async_optimize_impl. Falls back
@@ -1318,11 +1320,16 @@ class AirconOptimizer:
             # once running, holds until humidity is back down to the exit
             # point. A band instead of one switching point: humidity hovering
             # at the threshold used to flip dry/fan_only every few minutes,
-            # with a notification each time.
+            # with a notification each time. The hold ends with the AC: once
+            # it is off, dry needs the start point again.
             humid = (
                 avg_humidity >= self.dry_mode_humidity_threshold
                 or humidity_excess > self.humidity_deadband
-                or (self._dry_mode_active and avg_humidity > self._dry_mode_exit_humidity())
+                or (
+                    self._dry_mode_active
+                    and current_ac_mode != "off"
+                    and avg_humidity > self._dry_mode_exit_humidity()
+                )
             )
 
             # High humidity - use dry mode (cooling/auto-cool only)
@@ -2264,6 +2271,14 @@ class AirconOptimizer:
             return temps
         return [s["current_temperature"] for s in room_states.values() if s["current_temperature"] is not None]
 
+    def _global_target(self, room_states: dict[str, dict[str, Any]]) -> float:
+        """This cycle's global effective target (schedule, weather and comfort
+        relaxation; no per-room weighting), falling back to the average of
+        the per-room targets before a cycle has set it (test paths)."""
+        if self._current_global_effective_target is not None:
+            return self._current_global_effective_target
+        return self._get_house_effective_target(room_states)
+
     def _get_house_effective_target(self, room_states: dict[str, dict[str, Any]]) -> float:
         """Compute the average effective target temperature across all rooms.
 
@@ -2359,11 +2374,7 @@ class AirconOptimizer:
         # override flip the inferred direction (e.g. tip auto-mode into "heat"
         # while the user is actually at/above their global setpoint).
         if room_states:
-            effective_target = (
-                self._current_global_effective_target
-                if self._current_global_effective_target is not None
-                else self._get_house_effective_target(room_states)
-            )
+            effective_target = self._global_target(room_states)
             temps = self._valid_temps(room_states)
             if temps:
                 avg_temp = sum(temps) / len(temps)
@@ -2991,7 +3002,12 @@ class AirconOptimizer:
                     temp_before=previous_temp if previous_temp is not None else current_temp,
                     temp_after=current_temp,
                     fan_speed=fan_speed,
-                    target_temp=state.get("target_temperature", self.target_temperature),
+                    # The target the room is controlled to (occupancy setback
+                    # included), so a vacant room held warmer on purpose isn't
+                    # learned as running short of its target
+                    target_temp=self._get_room_effective_target(
+                        room_name, state.get("target_temperature", self.target_temperature)
+                    ),
                     operating_mode=self._get_effective_operating_mode(active_states),
                     cycle_duration=cycle_interval,
                 )
@@ -3730,6 +3746,7 @@ class AirconOptimizer:
         # Efficient operation drives the unit more gently: a smaller overdrive
         # keeps an inverter compressor at part load, where it is most efficient.
         from .const import (
+            BOOST_SETPOINT_GAIN_FACTOR,
             EFFICIENT_MAX_SETPOINT_OFFSET,
             SETPOINT_GAIN,
             SETPOINT_MAX_BACKOFF,
@@ -3746,10 +3763,20 @@ class AirconOptimizer:
         # turn-off threshold. (The old abs() bug was the opposite mistake: it
         # pushed a heating setpoint above target during an overshoot.)
         gain = SETPOINT_GAIN * self._adaptive_setpoint_gain_factor(room_states, operating_mode)
-        offset = max(-SETPOINT_MAX_BACKOFF, min(max_offset, demand * gain))
         if self._quick_action_mode == "boost" and demand > 0:
-            # Boost: full overdrive until the house reaches its targets
-            offset = max_offset
+            # Boost drives the unit harder while rooms still need it (full
+            # overdrive from about 0.7 °C short). Continuous at zero demand,
+            # so a house sitting on its target can't flip between overdrive
+            # and the target every cycle.
+            gain *= BOOST_SETPOINT_GAIN_FACTOR
+        offset = max(-SETPOINT_MAX_BACKOFF, min(max_offset, demand * gain))
+        if offset < 0 and (self._critical_emergency_direction() is not None or self._dry_mode_active):
+            # No back-off during a critical-room rescue (the rest of the house
+            # can be past its target while the critical room isn't) or while
+            # drying (dry runs inside the deadband, and below a relaxed target
+            # by design; units that regulate dry mode by setpoint would stop
+            # dehumidifying)
+            offset = 0.0
         if operating_mode == "cool":
             return reference_target - offset
         return reference_target + offset
@@ -4563,11 +4590,7 @@ class AirconOptimizer:
         """
         from .const import MAIN_FAN_HYSTERESIS
 
-        global_target = (
-            self._current_global_effective_target
-            if self._current_global_effective_target is not None
-            else self._get_house_effective_target(room_states)
-        )
+        global_target = self._global_target(room_states)
         mode = self._get_effective_operating_mode(room_states)
         excesses = self._room_excesses(room_states, global_target, mode, include_excluded=False)
         if not excesses:
@@ -4644,18 +4667,23 @@ class AirconOptimizer:
     def _cap_main_fan_speed(self, fan_speed: str) -> str:
         """Apply the quick actions and caps to the main fan level (low < medium < high).
 
-        Boost raises it to high while any room still needs conditioning.
+        Boost raises it to high once a room is more than the deadband short,
+        until every room reaches its target.
         Caps: sleep holds it at low (the quiet setting for a ducted system),
         battery-aware mode's saving levels, and low while efficient operation
         rests in fan-only. A critical-room emergency lifts the sleep cap.
         """
         order = ["low", "medium", "high"]
-        if (
-            self._quick_action_mode == "boost"
-            and fan_speed in order
-            and (self._main_fan_metrics.get("worst_room_excess") or 0) > 0
-        ):
-            fan_speed = "high"
+        if self._quick_action_mode == "boost" and fan_speed in order:
+            # High once a room is more than the deadband short, and held until
+            # every room reaches its target, so a room sitting on its threshold
+            # can't flip the fan every cycle
+            worst = self._main_fan_metrics.get("worst_room_excess") or 0.0
+            self._boost_fan_high = worst > self.temperature_deadband or (self._boost_fan_high and worst > 0)
+            if self._boost_fan_high:
+                fan_speed = "high"
+        else:
+            self._boost_fan_high = False
         caps = []
         decision = self._battery_decision
         if self.enable_battery_mode and decision is not None and decision.main_fan_cap in order:
@@ -4729,11 +4757,7 @@ class AirconOptimizer:
 
         # Fall back to weighted avg only if the optimization cycle hasn't
         # populated the cached global target yet (unit-test paths).
-        effective_target = (
-            self._current_global_effective_target
-            if self._current_global_effective_target is not None
-            else self._get_house_effective_target(room_states)
-        )
+        effective_target = self._global_target(room_states)
 
         temps = self._valid_temps(room_states)
         if not temps:

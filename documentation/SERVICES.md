@@ -137,7 +137,7 @@ data:
 
 ### `smart_aircon_manager.boost_mode`
 
-Reach the target as fast as the system can. While rooms still need conditioning, the AC setpoint gets its full overdrive (4°C past the target) and the main fan runs on high. Zones open in proportion: the neediest room fully open and the others scaled by the same factor, so the hottest room (or coldest, when heating) keeps the biggest share of the air.
+Reach the target as fast as the system can. While rooms still need conditioning, the AC setpoint is driven three times as hard (its full 4°C overdrive from about 0.7°C short) and the main fan runs on high once a room is more than the deadband short. Zones open in proportion: the neediest room fully open and the others scaled by the same factor, so the hottest room (or coldest, when heating) keeps the biggest share of the air.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|

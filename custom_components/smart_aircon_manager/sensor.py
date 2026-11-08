@@ -1871,6 +1871,11 @@ class BalancingActiveSensor(AirconManagerSensorBase):
 
         if hasattr(optimizer, '_house_temp_variance') and optimizer._house_temp_variance is not None:
             attrs["current_variance"] = round(optimizer._house_temp_variance, 2)
+        # What target_variance is compared with: warmest minus coolest room,
+        # each against its own target
+        spread = getattr(optimizer, "_house_temp_spread", None)
+        if spread is not None:
+            attrs["current_spread"] = round(spread, 2)
 
         return attrs
 

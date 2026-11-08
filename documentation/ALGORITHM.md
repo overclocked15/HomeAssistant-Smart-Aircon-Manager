@@ -116,7 +116,7 @@ cooling:  setpoint = target - offset
 heating:  setpoint = target + offset
 ```
 
-While the house needs conditioning the unit is driven past the target (overdrive). Once the house is past the target the setpoint moves the other way (back-off), so the unit's own thermostat stops: a unit whose sensor reads 1°C warmer than the rooms settles them about 0.3°C under target instead of 1°C. Boost uses the full overdrive until the rooms reach their targets. With adaptive setpoint learning the gain is ×0.75 for a house that cools easily and ×1.25 for one that struggles; the target itself never shifts. It is refreshed even while every room sits inside the deadband. Values are rounded to the unit's `target_temp_step` (halves round up) and clamped to its `min_temp`/`max_temp`.
+While the house needs conditioning the unit is driven past the target (overdrive). Once the house is past the target the setpoint moves the other way (back-off), so the unit's own thermostat stops: a unit whose sensor reads 1°C warmer than the rooms settles them about 0.3°C under target instead of 1°C. There is no back-off during a critical-room rescue or while drying (dry mode runs inside the deadband, and some units regulate it by setpoint). Boost triples the gain while rooms still need conditioning (full overdrive from about 0.7°C short). With adaptive setpoint learning the gain is ×0.75 for a house that cools easily and ×1.25 for one that struggles; the target itself never shifts. It is refreshed even while every room sits inside the deadband. Values are rounded to the unit's `target_temp_step` (halves round up) and clamped to its `min_temp`/`max_temp`.
 
 ### Main Fan Speed
 
@@ -126,7 +126,7 @@ The main fan level comes from the same per-room distances, so a room kept warmer
 - **Medium**: the house on average `main_fan_medium_threshold` (default 1°C) short, or rooms 2°C apart
 - **Low**: otherwise
 
-A room past its target counts as at most one deadband past it, since more blower air can't help it. A level changes only once a threshold is passed by 0.2°C, so the fan doesn't flip at a boundary. Sleep holds it at low, boost raises it to high while rooms still need conditioning, and battery-aware saving levels cap it.
+A room past its target counts as at most one deadband past it, since more blower air can't help it. A level changes only once a threshold is passed by 0.2°C, so the fan doesn't flip at a boundary. Sleep holds it at low, boost raises it to high once a room is more than the deadband short (until every room reaches its target), and battery-aware saving levels cap it.
 
 The speed is mapped onto the fan modes the unit actually offers: `mid`/`med` spellings, numbered speeds such as Daikin's 1–5, or quiet modes. A command is only sent when the mode changes. A fan mode picked on the manager's climate card holds until "auto" is picked again.
 
@@ -242,7 +242,7 @@ Quick actions temporarily override normal behavior:
 | Mode | What it does | Duration | Notes |
 |------|-----------------|----------|-------|
 | **Vacation** | Zones at 30% of computed position (never below minimum airflow) | Manual on/off | Widens deadband to 2.0°C; survives restarts |
-| **Boost** | Full setpoint overdrive and main fan on high while rooms still need conditioning; zones opened in proportion, neediest fully open | 30 min default | Suspends comfort relaxation, battery saving and efficient operation |
+| **Boost** | Setpoint driven three times as hard (full overdrive from about 0.7°C short) and main fan on high while rooms still need conditioning; zones opened in proportion, neediest fully open | 30 min default | Suspends comfort relaxation, battery saving and efficient operation |
 | **Sleep** | Main fan held at low; comfort relaxed by 1°C (warmer while cooling, cooler while heating) | 8 hours default | Zones keep their positions: closing them with the blower running makes a ducted system louder, not quieter |
 | **Party** | Every zone at the same opening (the median, at least 60%) | 2 hours default | Equal airflow to every room; suspends comfort relaxation |
 

@@ -153,7 +153,7 @@ vacation_mode:
 
 boost_mode:
   name: Boost Mode
-  description: "Reach the target fast: full setpoint overdrive, main fan on high and zones opened in proportion until the rooms get there"
+  description: "Reach the target fast: setpoint driven three times as hard, main fan on high and zones opened in proportion until the rooms get there"
   fields:
     config_entry_id:
       name: Config Entry ID

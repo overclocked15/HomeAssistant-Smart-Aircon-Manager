@@ -267,6 +267,8 @@ EFFICIENT_MAX_SETPOINT_OFFSET = 2.0
 SETPOINT_GAIN = 2.0
 SETPOINT_MAX_OVERDRIVE = 4.0
 SETPOINT_MAX_BACKOFF = 2.0
+# Boost multiplies the setpoint gain by this while rooms still need conditioning
+BOOST_SETPOINT_GAIN_FACTOR = 3.0
 # What efficient operation does once every room is satisfied:
 #   auto     - rest in fan-only while cooling (moving air feels cooler and keeps
 #              rooms mixed), switch off while heating (fan-only feels like a draft)

@@ -210,7 +210,8 @@ class PerformanceTracker:
 
         Median rate of change over 10-pass windows in which the room was being
         actively conditioned: further than ACTIVE_ERROR_C from its target
-        throughout, damper steady (within 10 points) and at least half open.
+        throughout, and the damper positions in force during the window steady
+        (within 10 points) and at least half open.
 
             thermal_mass = clamp(1 − median rate / THERMAL_RATE_SCALE, 0, 1)
 
@@ -223,9 +224,11 @@ class PerformanceTracker:
             return None
 
         rates = []
-        for end in range(10, len(points) + 1):
+        for end in range(11, len(points) + 1):
             window = points[end - 10:end]
-            fans = [p.get("fan_speed", 0) for p in window]
+            # Each change in the window ran under the position stored on the
+            # point before it (positions are stored after each measurement)
+            fans = [p.get("fan_speed", 0) for p in points[end - 11:end - 1]]
             if max(fans) - min(fans) > 10 or min(fans) < 50:
                 continue
             if any(abs(p.get("temp_diff_from_target", 0.0)) <= ACTIVE_ERROR_C for p in window):

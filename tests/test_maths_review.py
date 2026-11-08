@@ -614,12 +614,29 @@ class TestQuickActions:
         opt, _, _ = make_cycle_optimizer()
         opt._quick_action_mode = "boost"
         opt._current_global_effective_target = 23.0
-        assert opt._calculate_ac_temperature(house(23.3), 23.0) == pytest.approx(19.0)   # full overdrive
+        assert opt._calculate_ac_temperature(house(23.7), 23.0) == pytest.approx(19.0)   # full overdrive
+        assert opt._calculate_ac_temperature(house(23.3), 23.0) == pytest.approx(21.2)   # 3x the gain
         assert opt._calculate_ac_temperature(house(22.5), 23.0) == pytest.approx(24.0)   # satisfied: normal
-        opt._main_fan_metrics = {"worst_room_excess": 0.3}
-        assert opt._cap_main_fan_speed("low") == "high"
-        opt._main_fan_metrics = {"worst_room_excess": -0.2}
-        assert opt._cap_main_fan_speed("low") == "low"
+        fan = []
+        for worst in (0.8, 0.3, -0.1, 0.3):
+            opt._main_fan_metrics = {"worst_room_excess": worst}
+            fan.append(opt._cap_main_fan_speed("low"))
+        assert fan == ["high", "high", "low", "low"]    # on past the deadband, off at the target
+
+    def test_boost_does_not_chatter_at_the_target(self):
+        opt, _, _ = make_cycle_optimizer()
+        opt._quick_action_mode = "boost"
+        opt._current_global_effective_target = 23.0
+        setpoints = {
+            opt._fit_setpoint_to_entity(opt._calculate_ac_temperature(house(t), 23.0), {"target_temp_step": 1})
+            for t in (23.05, 22.95, 23.05, 22.95)
+        }
+        assert setpoints == {23.0}                       # first build: 19, 23, 19, 23
+        fan = set()
+        for worst in (0.05, -0.05, 0.05, -0.05):
+            opt._main_fan_metrics = {"worst_room_excess": worst}
+            fan.add(opt._cap_main_fan_speed("low"))
+        assert fan == {"low"}                            # first build: high, low, high, low
 
     def test_boost_suspends_efficient_operation(self):
         opt, _, _ = make_cycle_optimizer(enable_efficiency_mode=True)
@@ -649,3 +666,60 @@ class TestSmoothing:
         opt._last_fan_speeds["Bed"] = 50
         seq = [opt._smooth_fan_speed("Bed", 60) for _ in range(5)]
         assert seq[-1] == 60                       # v3.4.0: stuck at 59
+
+
+class TestBugCheck:
+    """Found by the pre-release bug check of the first v3.5.0 build."""
+
+    def test_no_setpoint_back_off_during_a_critical_rescue(self):
+        from unittest.mock import MagicMock
+
+        opt, _, _ = make_cycle_optimizer(hvac_mode="cool")
+        monitor = MagicMock()
+        monitor.get_all_statuses.return_value = {"Server": {"status": "critical", "direction": "hot"}}
+        opt._get_critical_monitor = lambda: monitor
+        opt._current_global_effective_target = 23.0
+        rooms = {"Server": {"current_temperature": 30.0, "target_temperature": 23.0}}
+        rooms.update(house(19.0, rooms=("Bed", "Living", "Kids")))
+        assert opt._calculate_ac_temperature(rooms, 23.0) == pytest.approx(23.0)    # first build: 25.0
+
+    def test_no_setpoint_back_off_while_drying(self):
+        opt, _, _ = make_cycle_optimizer(enable_humidity_control=True)
+        opt._current_global_effective_target = 23.0
+        opt._dry_mode_active = True
+        assert opt._calculate_ac_temperature(house(22.6), 23.0) == pytest.approx(23.0)  # first build: 23.8
+        opt._dry_mode_active = False
+        assert opt._calculate_ac_temperature(house(22.6), 23.0) == pytest.approx(23.8)
+
+    def test_dry_hold_ends_when_the_ac_is_off(self):
+        from test_battery_mode import make_humid_optimizer
+
+        opt, calls, states = make_humid_optimizer(rh=62, ac_state="off")
+        opt._dry_mode_active = True
+        opt._ac_last_turned_off = time.time() - 3600
+        run_cycle(opt)
+        assert hvac_commands(calls) == []                # first build: restarted in dry
+
+    def test_learning_records_the_target_the_room_is_controlled_to(self):
+        import tempfile
+        from custom_components.smart_aircon_manager.learning import LearningManager
+
+        opt, calls, states = make_cycle_optimizer(
+            rooms=(("Bed", 25.5, None), ("Living", 24.5, None)),
+            enable_occupancy_control=True, occupancy_sensors={"Bed": "binary_sensor.bed_motion"},
+        )
+        opt._room_occupancy_state = {"Bed": {"occupied": False, "last_seen": None}}
+        manager = LearningManager(opt.hass, "t", Path(tempfile.mkdtemp()))
+        manager.enabled = True
+        opt.learning_manager = manager
+        run_cycle(opt)
+        assert manager.tracker._data_points["Bed"][-1]["target_temp"] == pytest.approx(25.0)   # 23 + setback
+        assert manager.tracker._data_points["Living"][-1]["target_temp"] == pytest.approx(23.0)
+
+    def test_thermal_mass_uses_the_positions_in_force(self):
+        tracker = tracker_with({"Room": (27.0, -0.1)}, minutes=30, fan=20)
+        for point in tracker._data_points["Room"][46:]:
+            point["fan_speed"] = 80
+        # The first window that looks steady at 80% began with an interval
+        # that ran at 20%; without it there are too few windows
+        assert tracker.estimate_thermal_mass("Room") is None          # first build: an estimate

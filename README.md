@@ -102,7 +102,7 @@ Uses smart logic-based algorithms to achieve precise temperature control across 
 | `set_room_override` | Enable/disable control for a specific room |
 | `reset_error_count` | Reset error counter |
 | `vacation_mode` | Low-energy mode for extended absences |
-| `boost_mode` | Reach the target fast: full setpoint overdrive and main fan on high (30 min default) |
+| `boost_mode` | Reach the target fast: setpoint driven harder and main fan on high (30 min default) |
 | `sleep_mode` | Quiet main fan and 1°C comfort relaxation (8 hour default) |
 | `party_mode` | Equal airflow to every room (2 hour default) |
 | `enable_learning` | Start adaptive learning |
