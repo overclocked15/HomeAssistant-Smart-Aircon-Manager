@@ -202,7 +202,7 @@
           "enable_learning": "Enable 100% local, logic-based adaptive learning to optimize performance over time",
           "learning_mode": "Passive mode collects data only. Active mode applies learned optimizations when confidence is high enough.",
           "learning_confidence_threshold": "Minimum confidence score (0.5-0.95) required before applying learned adjustments in active mode. Default: 0.7 (70%)",
-          "learning_max_adjustment": "Maximum allowed adjustment to parameters (0.05-0.30) for safety. Prevents aggressive changes. Default: 0.10 (10%)",
+          "learning_max_adjustment": "How far one hourly learning update may move a learned value (0.05-0.30), so learning stays gradual. Thermal mass and cooling efficiency use a 0 to 1 scale. Default: 0.10",
           "smoothing_factor": "Controls how smoothly fan speeds transition (0.5-0.95). Higher values = smoother but slower response. Default: 0.7"
         }
       },
@@ -217,9 +217,9 @@
         },
         "data_description": {
           "enable_room_balancing": "Enable automatic balancing to equalize room temperatures. Works with both cooling and heating.",
-          "target_room_variance": "Maximum acceptable temperature variance (standard deviation) between rooms in °C. Default: 1.5°C",
+          "target_room_variance": "Balancing starts when the warmest and coolest rooms, each measured against its own target, are further apart than this (°C), and stops once they are back within two thirds of it. Default: 1.5°C",
           "balancing_aggressiveness": "How aggressively to balance (0.0-0.5). Higher = faster equalization. Default: 0.2",
-          "min_airflow_percent": "Minimum airflow percentage to any room (5-50%). Ensures circulation even when balancing. Default: 15%"
+          "min_airflow_percent": "Lowest zone position (5-50%) that balancing, learning, quick actions and other adjustments can push a room to. The overshoot tiers can still go lower on purpose. Default: 15%"
         }
       },
       "critical_rooms": {
@@ -291,7 +291,7 @@
         "data": {
           "enable_predictive_control": "Enable predictive control",
           "predictive_lookahead_minutes": "Prediction lookahead (minutes)",
-          "predictive_boost_factor": "Predictive boost factor (0-1)",
+          "predictive_boost_factor": "Predictive weight (0-1): how far to move toward the zone position for the predicted temperature",
           "enable_open_window_detection": "Enable open window/door detection",
           "open_window_rate_threshold": "Runaway rate threshold (°C/min)",
           "open_window_pause_minutes": "Pause duration after detection (minutes)"

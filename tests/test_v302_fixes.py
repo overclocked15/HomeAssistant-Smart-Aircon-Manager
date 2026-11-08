@@ -414,9 +414,16 @@ class TestCriticalEmergencyInteplay:
     def test_quick_action_caps_skip_emergency_rooms(self):
         opt, calls, states = make_cycle_optimizer()
         self._with_emergency(opt, "hot", room="Bed")
-        opt._quick_action_mode = "sleep"
+        opt._quick_action_mode = "vacation"
         adjusted = opt._apply_quick_action_adjustments({"Bed": 90, "Living": 90}, {})
-        assert adjusted == {"Bed": 90, "Living": 40}
+        assert adjusted == {"Bed": 90, "Living": 27}
+
+    def test_sleep_main_fan_cap_lifted_during_emergency(self):
+        opt, calls, states = make_cycle_optimizer()
+        opt._quick_action_mode = "sleep"
+        assert opt._cap_main_fan_speed("high") == "low"
+        self._with_emergency(opt, "hot", room="Bed")
+        assert opt._cap_main_fan_speed("high") == "high"
 
     def test_relaxation_suspended_during_emergency(self):
         opt, calls, states = make_cycle_optimizer()

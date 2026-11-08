@@ -102,9 +102,9 @@ Uses smart logic-based algorithms to achieve precise temperature control across 
 | `set_room_override` | Enable/disable control for a specific room |
 | `reset_error_count` | Reset error counter |
 | `vacation_mode` | Low-energy mode for extended absences |
-| `boost_mode` | Aggressive cooling/heating (30 min default) |
-| `sleep_mode` | Quiet operation (8 hour default) |
-| `party_mode` | Equalize all rooms (2 hour default) |
+| `boost_mode` | Reach the target fast: setpoint driven harder and main fan on high (30 min default) |
+| `sleep_mode` | Quiet main fan and 1°C comfort relaxation (8 hour default) |
+| `party_mode` | Equal airflow to every room (2 hour default) |
 | `enable_learning` | Start adaptive learning |
 | `disable_learning` | Stop adaptive learning |
 | `analyze_learning` | Force learning analysis |
@@ -170,7 +170,8 @@ logger:
 
 See [Changelog](documentation/CHANGELOG.md) for full version history.
 
-- **v3.4.0** (Current): Rooms In Use. Every room gets an In Use switch: turn it off to close the room and leave it out of every AC decision (for example a guest room nobody is using), and back on when it's needed, with no reconfiguring
+- **v3.5.0** (Current): Logic and maths review. Auto mode changes between cooling and heating 1°C past target instead of 2°C. Dry mode runs until humidity is back to the target, so it no longer flaps (with an alert each time). The main fan judges rooms against their own targets, with hysteresis. The AC setpoint backs off once the house is past target, so a warm-reading unit sensor no longer overcools the house. Predictive control ignores sensor noise, balancing triggers on the spread between rooms, boost and sleep were reworked (boost drives the AC, sleep quietens the blower), and the learning estimators were rebuilt
+- **v3.4.0**: Rooms In Use. Every room gets an In Use switch: turn it off to close the room and leave it out of every AC decision (for example a guest room nobody is using), and back on when it's needed, with no reconfiguring
 - **v3.3.0**: Night mode temperature drop. Set a drop on the Night Mode options page (for example 2 °C) and turning night mode on lowers the target once; adjust it during the night if you like, and turning night mode off restores the target from before
 - **v3.2.2**: Production review fixes. One optimization cycle at a time (no duplicate commands). An unavailable main AC is no longer "switched off" every 30 s with a notification each time, and critical-room protection turns it on the moment it's back. "No Temperature Data" and zone-failure notifications are no longer repeated every cycle. Away mode counts a person in a named zone (e.g. Work) as away. A dead occupancy sensor no longer marks its room vacant. Night mode's retry backoff holds on every pass. Requires Home Assistant 2024.12+ (the Options pages already needed it)
 - **v3.2.1**: Night mode only counts a zone close/reopen as done once the zone accepted it. Rejected commands are retried with backoff (1 min up to 30 min) instead of being dropped

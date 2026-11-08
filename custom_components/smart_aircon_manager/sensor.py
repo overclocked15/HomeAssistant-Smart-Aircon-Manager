@@ -20,6 +20,31 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+# How the optimizer picks the main fan level (AirconOptimizer._main_fan_level).
+# Each room is measured against its own satisfaction threshold in the
+# direction being conditioned; a room past it counts as at most one deadband
+# past it.
+MAIN_FAN_LOGIC = (
+    "Low: rooms within 1°C of each other and the house within 0.5°C of its targets\n"
+    "High: house on average short of its targets by the high threshold, or one room 3°C short with rooms 2°C apart\n"
+    "Medium: house on average short by the medium threshold, or rooms 2°C apart\n"
+    "Low: otherwise. A level changes only 0.2°C past its threshold"
+)
+
+
+def _main_fan_decision_attributes(data: dict[str, Any] | None) -> dict[str, Any]:
+    """The figures behind the optimizer's last main fan decision."""
+    decision = (data or {}).get("main_fan_decision") or {}
+    if not decision:
+        return {}
+    return {
+        "decided_level": decision.get("level"),
+        "house_demand": decision.get("demand"),
+        "worst_room_excess": decision.get("worst_room_excess"),
+        "room_spread": decision.get("spread"),
+        "conditioning_direction": decision.get("direction"),
+    }
+
 
 class AirconManagerSensorBase(CoordinatorEntity, SensorEntity):
     """Base class for Smart Aircon Manager sensors with device info."""
@@ -554,15 +579,13 @@ class MainFanSpeedSensor(AirconManagerSensorBase):
         target_temp = sum(targets) / len(targets) if targets else None
         avg_deviation = abs(avg_temp - target_temp) if target_temp else None
 
-        return {
+        attributes = {
             "temperature_variance": round(temp_variance, 1),
             "average_deviation_from_target": round(avg_deviation, 1) if avg_deviation else None,
-            "logic": (
-                "Low: variance ≤1°C and deviation ≤0.5°C (maintaining)\n"
-                "High: max deviation ≥3°C or variance ≥3°C (aggressive cooling)\n"
-                "Medium: All other cases (moderate cooling/equalizing)"
-            ),
+            "logic": MAIN_FAN_LOGIC,
         }
+        attributes.update(_main_fan_decision_attributes(self.coordinator.data))
+        return attributes
 
 
 class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
@@ -581,88 +604,13 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         if not self.coordinator.data:
             return "unknown"
 
-        # First check if optimizer calculated it
+        # What the optimizer applied, else the level its main fan logic last
+        # picked (it runs every full pass, with or without a main fan entity)
         main_fan_speed = self.coordinator.data.get("main_fan_speed")
         if main_fan_speed:
             return main_fan_speed
-
-        # Otherwise calculate it ourselves for debug purposes
-        room_states = self.coordinator.data.get("room_states", {})
-
-        if not room_states:
-            return "no_room_data"
-
-        # Use .get() to safely access current_temperature
-        temps = [
-            state.get("current_temperature")
-            for state in room_states.values()
-            if state.get("current_temperature") is not None
-        ]
-
-        if not temps:
-            return "no_valid_temps"
-
-        # Average target across all rooms (rooms may have different per-room targets)
-        room_targets = [
-            s.get("target_temperature")
-            for s in room_states.values()
-            if s.get("target_temperature") is not None
-        ]
-        if not room_targets:
-            return "no_target_temp"
-
-        target_temp = sum(room_targets) / len(room_targets)
-
-        # Get HVAC mode from climate state
-        main_climate_state = self.coordinator.data.get("main_climate_state", {})
-        hvac_mode = main_climate_state.get("hvac_mode", "cool") if main_climate_state else "cool"
-
-        # Use the optimizer's configured fan-speed thresholds so this debug
-        # sensor matches the actual main-fan logic in _determine_and_set_main_fan_speed
-        high_threshold = (
-            getattr(self._optimizer, "main_fan_high_threshold", 3.0)
-            if self._optimizer is not None else 3.0
-        )
-        medium_threshold = (
-            getattr(self._optimizer, "main_fan_medium_threshold", 1.0)
-            if self._optimizer is not None else 1.0
-        )
-
-        # Calculate fan speed using same logic as optimizer
-        avg_temp = sum(temps) / len(temps)
-        max_temp = max(temps)
-        min_temp = min(temps)
-        temp_variance = max_temp - min_temp
-        avg_temp_diff = avg_temp - target_temp  # Positive = too hot, Negative = too cold
-        avg_deviation = abs(avg_temp_diff)
-        max_temp_diff = max(temp - target_temp for temp in temps)
-        min_temp_diff = min(temp - target_temp for temp in temps)
-
-        # Check if at target (maintaining)
-        if temp_variance <= 1.0 and avg_deviation <= 0.5:
-            return "low"
-        # Mode-aware fan speed logic (mirrors _determine_and_set_main_fan_speed)
-        elif hvac_mode == "cool":
-            if avg_temp_diff >= high_threshold or (max_temp_diff >= 3.0 and temp_variance >= 2.0):
-                return "high"
-            elif avg_temp_diff >= medium_threshold or temp_variance >= 2.0:
-                return "medium"
-            else:
-                return "low"
-        elif hvac_mode == "heat":
-            if avg_temp_diff <= -high_threshold or (min_temp_diff <= -3.0 and temp_variance >= 2.0):
-                return "high"
-            elif avg_temp_diff <= -medium_threshold or temp_variance >= 2.0:
-                return "medium"
-            else:
-                return "low"
-        else:
-            # Auto mode or unknown - use deviation magnitude
-            max_deviation = max(abs(max_temp_diff), abs(min_temp_diff))
-            if max_deviation >= high_threshold or temp_variance >= 3.0:
-                return "high"
-            else:
-                return "medium"
+        decision = self.coordinator.data.get("main_fan_decision") or {}
+        return decision.get("level") or "unknown"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -696,38 +644,13 @@ class MainFanSpeedRecommendationSensor(AirconManagerSensorBase):
         min_temp = min(temps)
         temp_variance = max_temp - min_temp
 
-        first_room = next(iter(room_states.values()), None)
-        target_temp = first_room.get("target_temperature") if first_room else None
-        avg_deviation = abs(avg_temp - target_temp) if target_temp else None
-        max_deviation = max(abs(temp - target_temp) for temp in temps) if target_temp else None
-
-        return {
+        attributes = {
             "average_temperature": round(avg_temp, 1),
             "temperature_variance": round(temp_variance, 1),
-            "average_deviation": round(avg_deviation, 1) if avg_deviation else None,
-            "max_deviation": round(max_deviation, 1) if max_deviation else None,
-            "decision_criteria": {
-                "low": "variance ≤1°C AND avg_deviation ≤0.5°C",
-                "high": "max_deviation ≥3°C OR variance ≥3°C",
-                "medium": "all other cases",
-            },
-            "current_values_meet": self._evaluate_criteria(temp_variance, avg_deviation, max_deviation),
+            "decision_criteria": MAIN_FAN_LOGIC,
         }
-
-    def _evaluate_criteria(self, variance, avg_dev, max_dev):
-        """Evaluate which criteria are met."""
-        if avg_dev is None or max_dev is None:
-            return "no_data"
-
-        criteria = []
-        if variance <= 1.0 and avg_dev <= 0.5:
-            criteria.append("low_criteria")
-        if max_dev >= 3.0 or variance >= 3.0:
-            criteria.append("high_criteria")
-        if not criteria:
-            criteria.append("medium_criteria")
-
-        return ", ".join(criteria)
+        attributes.update(_main_fan_decision_attributes(self.coordinator.data))
+        return attributes
 
 
 class SystemStatusDebugSensor(AirconManagerSensorBase):
@@ -1880,16 +1803,20 @@ class RoomTemperatureVarianceSensor(AirconManagerSensorBase):
         if not optimizer:
             return {}
 
-        variance = optimizer._house_temp_variance if hasattr(optimizer, '_house_temp_variance') else None
+        # Balancing compares the spread (warmest minus coolest room, each
+        # against its own target) with the target; the state above is the
+        # standard deviation of the same deviations
+        spread = getattr(optimizer, "_house_temp_spread", None)
         target = optimizer.target_room_variance
 
         return {
             "target_variance": target,
+            "room_spread": round(spread, 2) if spread is not None else None,
             "variance_status": (
-                "excellent" if variance and variance < target * 0.5
-                else "good" if variance and variance < target
-                else "needs_balancing" if variance and variance >= target
-                else "unknown"
+                "unknown" if spread is None
+                else "excellent" if spread < target * 0.5
+                else "good" if spread <= target
+                else "needs_balancing"
             ),
             "balancing_enabled": optimizer.enable_room_balancing,
         }
@@ -1944,6 +1871,11 @@ class BalancingActiveSensor(AirconManagerSensorBase):
 
         if hasattr(optimizer, '_house_temp_variance') and optimizer._house_temp_variance is not None:
             attrs["current_variance"] = round(optimizer._house_temp_variance, 2)
+        # What target_variance is compared with: warmest minus coolest room,
+        # each against its own target
+        spread = getattr(optimizer, "_house_temp_spread", None)
+        if spread is not None:
+            attrs["current_spread"] = round(spread, 2)
 
         return attrs
 

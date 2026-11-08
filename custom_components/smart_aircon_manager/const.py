@@ -167,7 +167,10 @@ CONF_PREDICTIVE_LOOKAHEAD_MINUTES = "predictive_lookahead_minutes"
 CONF_PREDICTIVE_BOOST_FACTOR = "predictive_boost_factor"
 DEFAULT_ENABLE_PREDICTIVE_CONTROL = False  # Opt-in feature
 DEFAULT_PREDICTIVE_LOOKAHEAD_MINUTES = 5.0  # Minutes to project temperature ahead
-DEFAULT_PREDICTIVE_BOOST_FACTOR = 0.3  # How much to boost/reduce fan speed based on prediction (0.0-1.0)
+DEFAULT_PREDICTIVE_BOOST_FACTOR = 0.3  # How far (0.0-1.0) to move toward the damper position for the predicted temperature
+# Rates below this (°C/min) count as no trend for predictive control: a single
+# 0.1 °C sensor step reads as about 0.01 to 0.02 °C/min
+PREDICTIVE_RATE_DEADBAND = 0.03
 
 # Compressor protection
 CONF_ENABLE_COMPRESSOR_PROTECTION = "enable_compressor_protection"
@@ -240,6 +243,10 @@ DEFAULT_AWAY_MODE_DELAY_MINUTES = 30  # everyone away this long -> vacation mode
 CONF_FILTER_RUNTIME_THRESHOLD_HOURS = "filter_runtime_threshold_hours"
 DEFAULT_FILTER_RUNTIME_THRESHOLD_HOURS = 300
 
+# Main fan levels: a threshold must be passed by this much (°C) to change
+# level, so a house sitting on a threshold can't flip levels every cycle
+MAIN_FAN_HYSTERESIS = 0.2
+
 # Comfort relaxation applied by the sleep quick action (°C, in the
 # energy-saving direction: warmer while cooling, cooler while heating)
 SLEEP_COMFORT_RELAXATION = 1.0
@@ -254,6 +261,14 @@ DEFAULT_ENABLE_EFFICIENCY_MODE = False
 EFFICIENT_OFF_DWELL_SECONDS = 300
 EFFICIENT_FAN_ONLY_IDLE_MINUTES = 10
 EFFICIENT_MAX_SETPOINT_OFFSET = 2.0
+# AC setpoint: target ∓ SETPOINT_GAIN × house demand (°C), up to
+# SETPOINT_MAX_OVERDRIVE past the target while the house needs conditioning
+# and SETPOINT_MAX_BACKOFF the other way once it is past the target
+SETPOINT_GAIN = 2.0
+SETPOINT_MAX_OVERDRIVE = 4.0
+SETPOINT_MAX_BACKOFF = 2.0
+# Boost multiplies the setpoint gain by this while rooms still need conditioning
+BOOST_SETPOINT_GAIN_FACTOR = 3.0
 # What efficient operation does once every room is satisfied:
 #   auto     - rest in fan-only while cooling (moving air feels cooler and keeps
 #              rooms mixed), switch off while heating (fan-only feels like a draft)
