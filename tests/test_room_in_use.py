@@ -281,3 +281,120 @@ class TestBugCheckFixes:
         switch = NightModeSwitch(opt, FakeEntry(entry_data(enable_night_mode=True)))
         run_cycle(opt)
         assert switch.extra_state_attributes["closed_rooms"] == ["Living"]
+
+
+def _configs(rooms=("Bed", "Guest", "Living")):
+    return [
+        {"room_name": r, "temperature_sensor": f"sensor.{r.lower()}", "cover_entity": f"cover.{r.lower()}"}
+        for r in rooms
+    ]
+
+
+class TestCodexReviewFixes:
+    """Findings from the Codex review of #6."""
+
+    # -- the drop follows whether night mode has a room in use --------------
+
+    def test_helper_undoes_and_reapplies_the_drop(self):
+        from custom_components.smart_aircon_manager.night_mode import night_mode_follow_rooms
+
+        night = entry_data(
+            enable_night_mode=True, night_mode_rooms=["Guest"], room_configs=_configs(),
+            target_temperature=21.0, night_mode_saved_target=23.0, excluded_rooms=[],
+        )
+        out = night_mode_follow_rooms(night, {**night, "excluded_rooms": ["Guest"]})
+        assert out["target_temperature"] == 23.0
+        assert "night_mode_saved_target" not in out
+        back = night_mode_follow_rooms(out, {**out, "excluded_rooms": []})
+        assert back["target_temperature"] == 21.0
+        assert back["night_mode_saved_target"] == 23.0
+
+    def test_helper_leaves_other_changes_alone(self):
+        from custom_components.smart_aircon_manager.night_mode import night_mode_follow_rooms
+
+        night = entry_data(
+            enable_night_mode=True, night_mode_rooms=["Bed", "Guest"], room_configs=_configs(),
+            target_temperature=22.0, night_mode_saved_target=23.0, excluded_rooms=[],
+        )
+        # A night room goes but another stays in use: a manual 22 stands
+        still = night_mode_follow_rooms(night, {**night, "excluded_rooms": ["Guest"]})
+        assert still["target_temperature"] == 22.0
+        assert still["night_mode_saved_target"] == 23.0
+        # Night mode off: nothing to follow
+        off = {**night, "enable_night_mode": False}
+        assert night_mode_follow_rooms(off, {**off, "excluded_rooms": ["Bed", "Guest"]})["target_temperature"] == 22.0
+
+    @staticmethod
+    def _night_switch_room(room, data):
+        from custom_components.smart_aircon_manager.switch import RoomInUseSwitch
+
+        opt, _, _ = make_cycle_optimizer(
+            rooms=ROOMS, target=float(data["target_temperature"]),
+            excluded_rooms=data.get("excluded_rooms", []),
+            enable_night_mode=True, night_mode_rooms=data["night_mode_rooms"],
+        )
+        entry = FakeEntry(data)
+        switch = RoomInUseSwitch(opt, entry, room)
+        switch.hass = fake_hass(entry)
+        switch.async_write_ha_state = MagicMock()
+        return switch, opt, entry
+
+    def test_switching_out_the_last_night_room_restores_the_target(self):
+        switch, opt, entry = self._night_switch_room("Guest", entry_data(
+            enable_night_mode=True, night_mode_rooms=["Guest"], room_configs=_configs(),
+            target_temperature=21.0, night_mode_saved_target=23.0, excluded_rooms=[],
+        ))
+        asyncio.run(switch.async_turn_off())
+        assert opt.target_temperature == 23.0
+        assert run_cycle(opt)["night_mode_active"] is False
+        assert "night_mode_saved_target" not in entry.data
+        asyncio.run(switch.async_turn_on())                 # guest arrives after bedtime
+        assert opt.target_temperature == 21.0
+        assert entry.data["night_mode_saved_target"] == 23.0
+        assert run_cycle(opt)["night_mode_active"] is True
+
+    def test_removing_the_last_night_room_in_use_restores_the_target(self):
+        flow, entry = TestRoomChanges._flow(entry_data(
+            enable_night_mode=True, night_mode_rooms=["Bed", "Guest"], room_configs=_configs(),
+            excluded_rooms=["Guest"], target_temperature=21.0, night_mode_saved_target=23.0,
+        ))
+        asyncio.run(flow.async_step_remove_room({"room_to_remove": "Bed"}))
+        assert entry.data["enable_night_mode"] is True        # Guest is still a night room
+        assert entry.data["target_temperature"] == 23.0
+        assert "night_mode_saved_target" not in entry.data
+
+    def test_reselecting_night_rooms_follows_rooms_in_use(self):
+        base = dict(enable_night_mode=True, room_configs=_configs(), excluded_rooms=["Guest"])
+        # Drop applied for Bed; now only Guest (out of use) is selected
+        flow, entry = TestRoomChanges._flow(entry_data(
+            **base, night_mode_rooms=["Bed"], target_temperature=21.0, night_mode_saved_target=23.0,
+        ))
+        asyncio.run(flow.async_step_night_mode({
+            "enable_night_mode": True, "night_mode_rooms": ["Guest"], "night_mode_closed_position": 0,
+            "night_mode_temp_drop": 2.0,
+        }))
+        assert entry.data["target_temperature"] == 23.0
+        # And back to a room in use: the drop applies again
+        flow, entry = TestRoomChanges._flow(dict(entry.data))
+        asyncio.run(flow.async_step_night_mode({
+            "enable_night_mode": True, "night_mode_rooms": ["Bed"], "night_mode_closed_position": 0,
+            "night_mode_temp_drop": 2.0,
+        }))
+        assert entry.data["target_temperature"] == 21.0
+        assert entry.data["night_mode_saved_target"] == 23.0
+
+    # -- reporting uses the exclusions in effect ---------------------------
+
+    def test_night_closures_reported_when_exclusions_are_ignored(self):
+        from custom_components.smart_aircon_manager.switch import NightModeSwitch
+
+        opt, _, _ = make_cycle_optimizer(
+            rooms=ROOMS, excluded_rooms=["Bed", "Guest", "Living"],
+            enable_night_mode=True, night_mode_rooms=["Bed"],
+        )
+        result = run_cycle(opt)
+        assert result["closed_off_rooms"] == ["Guest", "Living"]
+        assert result["night_mode_closed_rooms"] == ["Guest", "Living"]
+        assert result["excluded_rooms"] == []                 # none in effect
+        switch = NightModeSwitch(opt, FakeEntry(entry_data(enable_night_mode=True)))
+        assert switch.extra_state_attributes["closed_rooms"] == ["Guest", "Living"]

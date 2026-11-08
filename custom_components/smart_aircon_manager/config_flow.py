@@ -173,7 +173,7 @@ from .const import (
     MAX_TARGET_TEMPERATURE,
     CONF_EXCLUDED_ROOMS,
 )
-from .night_mode import night_mode_entry_data
+from .night_mode import night_mode_entry_data, night_mode_follow_rooms
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
 _LOGGER = logging.getLogger(__name__)
@@ -697,6 +697,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 excluded = []
             if excluded != list(new_data.get(CONF_EXCLUDED_ROOMS, [])):
                 new_data[CONF_EXCLUDED_ROOMS] = excluded
+
+            # Night mode's drop follows whether night mode still has a room
+            # in use to focus on
+            new_data = night_mode_follow_rooms(self.config_entry.data, new_data)
 
             # Drop the room from any schedule's per-room targets
             schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
@@ -1446,6 +1450,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     )),
                 }
                 new_data = night_mode_entry_data(settings, enabled)
+                # Staying on with a different room selection can give night
+                # mode (or take away) a room in use to focus on
+                new_data = night_mode_follow_rooms(self.config_entry.data, new_data)
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
                 await self.hass.config_entries.async_reload(self.config_entry.entry_id)
                 return self.async_create_entry(title="", data={})

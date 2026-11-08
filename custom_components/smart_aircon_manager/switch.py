@@ -21,7 +21,7 @@ from .const import (
     DEFAULT_NIGHT_MODE_TEMP_DROP,
     DOMAIN,
 )
-from .night_mode import night_mode_entry_data
+from .night_mode import night_mode_entry_data, night_mode_follow_rooms
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ class NightModeSwitch(OptimizerFeatureSwitch):
             # critical-room emergency stays open; rooms switched out of use
             # are closed anyway and listed on their own switches)
             closed = sorted(
-                set(self._optimizer._night_mode_applied_closed or []) - set(self._optimizer.excluded_rooms)
+                set(self._optimizer._night_mode_applied_closed or []) - self._optimizer._excluded_rooms_now()
             )
         data = self._config_entry.data
         return {
@@ -343,8 +343,21 @@ class RoomInUseSwitch(OptimizerFeatureSwitch):
                 raise HomeAssistantError(
                     f"Can't take {self._room_name} out of use: at least one room has to stay in use"
                 )
-        return {**self._config_entry.data, CONF_EXCLUDED_ROOMS: excluded}
+        data = self._config_entry.data
+        # Night mode's temperature drop follows whether night mode still has
+        # a room in use to focus on
+        return night_mode_follow_rooms(
+            data, {**data, CONF_EXCLUDED_ROOMS: excluded}, self._optimizer.target_temperature
+        )
 
     def _apply(self, enabled: bool, new_data: dict[str, Any]) -> None:
-        """Switch the optimizer over to the saved list."""
+        """Switch the optimizer over to the saved list (and any target change)."""
         self._optimizer.excluded_rooms = list(new_data[CONF_EXCLUDED_ROOMS])
+        new_target = new_data.get(CONF_TARGET_TEMPERATURE)
+        if new_target is not None and float(new_target) != self._optimizer.target_temperature:
+            _LOGGER.info(
+                "Night mode %s - target %.1f -> %.1f °C",
+                "focus room back in use" if self._optimizer.night_mode_active else "standing aside",
+                self._optimizer.target_temperature, float(new_target),
+            )
+            self._optimizer.target_temperature = float(new_target)
