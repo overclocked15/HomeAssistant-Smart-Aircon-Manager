@@ -301,6 +301,10 @@ CONF_NIGHT_MODE_TEMP_DROP = "night_mode_temp_drop"
 CONF_NIGHT_MODE_SAVED_TARGET = "night_mode_saved_target"  # internal
 DEFAULT_NIGHT_MODE_TEMP_DROP = 0.0  # °C, 0 = off
 NIGHT_MODE_TEMP_DROP_MAX = 5.0
+# Rooms switched out of use with their "In Use" switch: zone closed (to the
+# closed-off position) and left out of every AC decision, configuration kept
+CONF_EXCLUDED_ROOMS = "excluded_rooms"
+
 # Bounds for every target temperature (climate entity, optimizer, options
 # pages, night mode's drop)
 MIN_TARGET_TEMPERATURE = 10.0

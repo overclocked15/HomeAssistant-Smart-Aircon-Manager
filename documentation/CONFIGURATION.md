@@ -32,7 +32,7 @@ Each room requires:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `room_name` | string | Yes | Display name (e.g., "Living Room") |
+| `room_name` | string | Yes | Display name (e.g., "Living Room"). Must differ from every other room's name in more than capitals, spaces or underscores ("Guest Room" and "guest_room" count as the same) |
 | `temperature_sensor` | entity | Yes | Temperature sensor entity (e.g., `sensor.living_room_temperature`) |
 | `cover_entity` | entity | Yes | Zone fan damper control (e.g., `cover.living_room_zone`) |
 | `humidity_sensor` | entity | No | Humidity sensor for the room |
@@ -209,6 +209,23 @@ automation:
         target:
           entity_id: switch.smart_aircon_manager_night_mode
 ```
+
+## Rooms In Use
+
+Every room has an **In Use** switch, `switch.smart_aircon_manager_<room>_in_use`. Turn it off to take a room out of use, for example a guest room nobody is sleeping in, without touching its configuration. Turn it back on when a guest is coming.
+
+While a room is out of use:
+- **Its zone closes** to the closed-off position (the **Closed-off room zone position** on the Night Mode page, default 0%).
+- **It stops counting.** It takes no part in any AC decision: on/off, mode, setpoint, main fan speed, averages, balancing.
+- **Readings continue:** its temperature and per-room sensors keep reporting. The climate entity's current temperature leaves it out.
+- **Critical rooms win:** a room in a critical-room emergency is opened and managed again until it recovers.
+
+Turning the switch back on reopens the zone straight away; you don't have to wait for the next optimization. The setting survives restarts, and it follows the room if you rename it.
+
+- **At least one room has to stay in use.** Turning off the last room in use is refused with an error, because closing every zone would leave nothing to manage with the AC blowing into closed ducts.
+- **With night mode on,** only night-mode rooms that are in use are conditioned. If every night-mode room is out of use, night mode has nothing to focus on and the rooms in use are managed as usual. Night mode's temperature drop only applies while night mode has a room in use to focus on. If the last night-mode room in use is switched out (or removed, or deselected) during the night, the target from before night mode is restored. If a night-mode room comes back in use while night mode is on, the drop is applied again, from the target at that moment.
+
+**In Use or Room Overrides?** A room disabled under **Room Overrides** (or with `set_room_override`) still counts toward every AC decision; the manager just stops moving its zone, so you can set it by hand. A room out of use is closed and ignored.
 
 ## Battery & Efficiency
 

@@ -171,8 +171,9 @@ from .const import (
     NIGHT_MODE_TEMP_DROP_MAX,
     MIN_TARGET_TEMPERATURE,
     MAX_TARGET_TEMPERATURE,
+    CONF_EXCLUDED_ROOMS,
 )
-from .night_mode import night_mode_entry_data
+from .night_mode import night_mode_entry_data, night_mode_follow_rooms
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
 _LOGGER = logging.getLogger(__name__)
@@ -193,6 +194,13 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ),
     }
 )
+
+
+def _room_key(name: str) -> str:
+    """How per-room entities tell rooms apart: case, surrounding spaces and
+    spaces vs underscores don't count ("Guest Room" and "guest_room" are the
+    same room), so names that differ only in those are rejected."""
+    return name.strip().lower().replace(" ", "_")
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -231,8 +239,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Check for duplicate room name
             new_name = user_input[CONF_ROOM_NAME].strip()
-            existing_names = [r[CONF_ROOM_NAME].lower() for r in self._rooms]
-            if new_name.lower() in existing_names:
+            existing_keys = {_room_key(r[CONF_ROOM_NAME]) for r in self._rooms}
+            if _room_key(new_name) in existing_keys:
                 errors["base"] = "duplicate_room_name"
 
             # Validate entities
@@ -570,8 +578,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             # Check for duplicate room name
             current_rooms = list(self.config_entry.data.get(CONF_ROOM_CONFIGS, []))
-            existing_names = [room[CONF_ROOM_NAME].lower() for room in current_rooms]
-            if user_input[CONF_ROOM_NAME].strip().lower() in existing_names:
+            existing_keys = {_room_key(room[CONF_ROOM_NAME]) for room in current_rooms}
+            if _room_key(user_input[CONF_ROOM_NAME]) in existing_keys:
                 errors["room_name"] = "duplicate_room_name"
 
             # Validate entities
@@ -689,6 +697,18 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     # away: turn it off so a lowered target is restored
                     new_data = night_mode_entry_data(new_data, False)
 
+            excluded = [room for room in new_data.get(CONF_EXCLUDED_ROOMS, []) if room != room_to_remove]
+            if updated_rooms and {r[CONF_ROOM_NAME] for r in updated_rooms} <= set(excluded):
+                # Every remaining room was out of use: put them back, at
+                # least one room has to stay in use
+                excluded = []
+            if excluded != list(new_data.get(CONF_EXCLUDED_ROOMS, [])):
+                new_data[CONF_EXCLUDED_ROOMS] = excluded
+
+            # Night mode's drop follows whether night mode still has a room
+            # in use to focus on
+            new_data = night_mode_follow_rooms(self.config_entry.data, new_data)
+
             # Drop the room from any schedule's per-room targets
             schedules = [dict(s) for s in new_data.get(CONF_SCHEDULES, [])]
             for schedule in schedules:
@@ -783,9 +803,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             # Check for duplicate room name (allow keeping the same name)
             new_name = user_input[CONF_ROOM_NAME].strip()
-            if new_name.lower() != room_to_edit_name.lower():
-                existing_names = [room[CONF_ROOM_NAME].lower() for room in current_rooms]
-                if new_name.lower() in existing_names:
+            if _room_key(new_name) != _room_key(room_to_edit_name):
+                existing_keys = {_room_key(room[CONF_ROOM_NAME]) for room in current_rooms}
+                if _room_key(new_name) in existing_keys:
                     errors["room_name"] = "duplicate_room_name"
 
             # Validate entities
@@ -860,6 +880,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     if room_to_edit_name in night_rooms:
                         new_data[CONF_NIGHT_MODE_ROOMS] = [
                             new_name if name == room_to_edit_name else name for name in night_rooms
+                        ]
+
+                    # Migrate rooms switched out of use (room names)
+                    excluded = list(new_data.get(CONF_EXCLUDED_ROOMS, []))
+                    if room_to_edit_name in excluded:
+                        new_data[CONF_EXCLUDED_ROOMS] = [
+                            new_name if name == room_to_edit_name else name for name in excluded
                         ]
 
                     # Migrate per-room schedule targets (keyed by room name)
@@ -1430,6 +1457,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     )),
                 }
                 new_data = night_mode_entry_data(settings, enabled)
+                # Staying on with a different room selection can give night
+                # mode (or take away) a room in use to focus on
+                new_data = night_mode_follow_rooms(self.config_entry.data, new_data)
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
                 await self.hass.config_entries.async_reload(self.config_entry.entry_id)
                 return self.async_create_entry(title="", data={})

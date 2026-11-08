@@ -73,6 +73,15 @@ Turns night mode on or off at runtime: only the night-mode rooms are conditioned
 | `temperature_drop` | °C the target is lowered by when night mode turns on (`0` = off) |
 | `restores_target` | The target that comes back when night mode turns off (empty when no drop was applied) |
 
+### `switch.smart_aircon_manager_<room>_in_use` (one per room)
+
+On: the room is in use and managed as usual. Off: it's out of use, so its zone is closed to the closed-off position and it's left out of every AC decision, with its configuration kept. The icon shows an open or closed door. The last room in use can't be switched off.
+
+| Attribute | Description |
+|-----------|-------------|
+| `room` | The room's name |
+| `closed_position` | Zone position (%) used while the room is out of use |
+
 ## Binary Sensor
 
 ### `binary_sensor.smart_aircon_manager_main_aircon_running`

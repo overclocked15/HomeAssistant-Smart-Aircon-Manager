@@ -84,6 +84,7 @@ from .const import (
     CONF_ENABLE_NIGHT_MODE,
     CONF_NIGHT_MODE_ROOMS,
     CONF_NIGHT_MODE_CLOSED_POSITION,
+    CONF_EXCLUDED_ROOMS,
     DEFAULT_ENABLE_NIGHT_MODE,
     DEFAULT_NIGHT_MODE_CLOSED_POSITION,
     CONF_BATTERY_SOLAR_OFFSET_HOURS,
@@ -280,6 +281,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         enable_night_mode=entry.data.get(CONF_ENABLE_NIGHT_MODE, DEFAULT_ENABLE_NIGHT_MODE),
         night_mode_rooms=entry.data.get(CONF_NIGHT_MODE_ROOMS, []),
         night_mode_closed_position=entry.data.get(CONF_NIGHT_MODE_CLOSED_POSITION, DEFAULT_NIGHT_MODE_CLOSED_POSITION),
+        excluded_rooms=entry.data.get(CONF_EXCLUDED_ROOMS, []),
     )
 
     # Get update interval from config

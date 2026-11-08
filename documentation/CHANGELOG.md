@@ -1,5 +1,39 @@
 # Changelog
 
+## v3.4.0 - Rooms In Use
+
+**Release Date**: 2026-11-08
+
+Take a room out of use, and back, without reconfiguring it. For example, a guest room nobody is sleeping in.
+
+- **One switch per room:** `switch.smart_aircon_manager_<room>_in_use`. Off closes the room's zone (to the closed-off position from the Night Mode page) and leaves it out of every AC decision: on/off, mode, setpoint, main fan, averages, balancing. On brings it straight back.
+- **Configuration kept:** the room's sensors, targets and settings stay as they are, and its sensors keep reporting while it's out of use. The setting survives restarts and follows the room when it's renamed.
+- **Safety:** a room in a critical-room emergency is opened and managed until it recovers. The last room in use can't be switched off (Home Assistant shows an error), because closing every zone would leave the AC blowing into closed ducts. If every room ends up out of use anyway (for example after removing rooms), the exclusions are ignored.
+- **Night mode:** only night-mode rooms that are in use are conditioned. If all of them are out of use, night mode stands aside.
+- Built on night mode's closing machinery, so a room switched out or back in moves on that cycle, with the same retries for zones that don't respond.
+- **Coordinator data:** new `closed_off_rooms` and `excluded_rooms`; the per-room flag is now `closed_off`. `night_mode_closed_rooms` now lists only rooms closed by night mode.
+
+### From the pre-release bug check
+
+- **No night temperature drop when night mode has nothing to focus on.** If every night-mode room is out of use when night mode turns on, the drop isn't applied. Otherwise the rest of the house, now managed as usual, would be cooled to the night target.
+- **Switching off a room that's already out of use does nothing.** Before, it could rewrite the settings and force a cycle.
+- **Each cycle reports the exclusions it actually applied,** even if a switch is flipped while the cycle is running.
+- **The switches show what's actually happening:** if every room is out of use (and the exclusions are therefore ignored), the switches show every room as in use.
+- The In Use switches share the other switches' save-then-apply path.
+
+### From the Codex review
+
+- **The night drop follows whether night mode has a room to focus on.** If the last night-mode room in use is switched out during the night (or removed, or deselected on the Night Mode page), the target from before night mode is restored, instead of the rest of the house staying at the night target. If a night-mode room comes back in use while night mode is on, the drop is applied again.
+- **Room switch IDs can't collide.** Each In Use switch's ID uses the exact room name. Rooms whose names differ only in capitals, spaces or underscores ("Guest Room" and "Guest_Room") are now rejected when adding or renaming a room, because per-room entities can't tell them apart.
+- **Night-mode closures are reported correctly when every room is out of use** (and the exclusions are therefore ignored): the cycle's `night_mode_closed_rooms` and the Night Mode switch's `closed_rooms` now subtract only the exclusions in effect.
+
+### Tests
+
+- New `tests/test_room_in_use.py` (34 tests): closing and ignoring a room, the closed-off position, the climate temperature, unknown rooms, every room out of use, critical emergencies, night mode with rooms out of use (including the drop), the switch (out and back, the last room refused, a failed save, a repeated switch-off, reopening on the next cycle, naming, one switch per room), the reported exclusions, room removal and renaming, the drop following night-mode rooms in and out of use (switch, room removal, Night Mode page), and room names that would collide (switch IDs, adding, renaming, initial setup).
+- Three deliberate bugs (exclusions ignored, no every-room guard, night mode ignoring exclusions) are each caught. 4 of the bug-check tests fail on the first v3.4.0 build, and the 10 Codex-review tests fail on the builds it reviewed.
+- With no room out of use and night mode off, the 800-cycle simulation is identical to v3.3.0.
+- Suite: 317 tests (316 passing, 1 skipped).
+
 ## v3.3.0 - Night Mode Temperature Drop
 
 **Release Date**: 2026-11-05

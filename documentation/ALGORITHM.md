@@ -287,6 +287,8 @@ When night mode is on, each cycle splits the rooms in two:
 
 A change in which rooms are closed (the switch, or a critical emergency starting or ending) forces a full pass on that cycle, even when every room is inside the deadband. A zone that was moving, unavailable or unknown during that pass is retried each cycle and sent a single command once it's ready. A room only settles once its command went through: a rejected command is retried with backoff (1, 2, 4 ... minutes, up to 30), which every pass respects: an optimization pass inside the backoff leaves that zone's command for later. Rooms changing state drop their smoothing history, learning baseline and any open-window pause, so a reopened room isn't smoothed from a speed set hours earlier and the night isn't learned as one long conditioning cycle. Closed rooms are also left out of the adaptive deadband's rate-of-change average.
 
+Rooms switched out of use with their **In Use** switch join the closed-off set at any time of day, with the same machinery: closed zone, no part in any decision, the same retries and reopening, and critical-room emergencies still winning. With night mode on, the closed-off set is every room out of use plus every room that isn't a night-mode room. If every night-mode room is out of use, night mode stands aside. If every room is out of use, the exclusions are ignored, because there would be nothing left to manage.
+
 Night mode is a hard version of battery-aware night zoning: battery zoning keeps air flowing to non-priority rooms and only stops them driving the AC, while night mode closes them. They compose: battery-aware mode sees only the night-mode rooms.
 
 ## Critical Room Protection
