@@ -7,8 +7,12 @@ from typing import Any
 
 from .const import (
     CONF_ENABLE_NIGHT_MODE,
+    CONF_EXCLUDED_ROOMS,
+    CONF_NIGHT_MODE_ROOMS,
     CONF_NIGHT_MODE_SAVED_TARGET,
     CONF_NIGHT_MODE_TEMP_DROP,
+    CONF_ROOM_CONFIGS,
+    CONF_ROOM_NAME,
     CONF_TARGET_TEMPERATURE,
     DEFAULT_TARGET_TEMPERATURE,
     MIN_TARGET_TEMPERATURE,
@@ -20,6 +24,21 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _night_mode_has_room_in_use(data: Mapping[str, Any]) -> bool:
+    """Whether night mode would have a room to focus on.
+
+    Mirrors the optimizer: rooms switched out of use don't count, unless
+    every room is out of use (then the exclusions are ignored).
+    """
+    configured = {
+        room.get(CONF_ROOM_NAME) for room in data.get(CONF_ROOM_CONFIGS) or [] if isinstance(room, Mapping)
+    }
+    excluded = set(data.get(CONF_EXCLUDED_ROOMS) or []) & configured
+    if configured and excluded == configured:
+        excluded = set()
+    return bool((set(data.get(CONF_NIGHT_MODE_ROOMS) or []) & configured) - excluded)
 
 
 def night_mode_entry_data(
@@ -43,7 +62,10 @@ def night_mode_entry_data(
     if enable and not was_on:
         new.pop(CONF_NIGHT_MODE_SAVED_TARGET, None)
         drop = _as_float(data.get(CONF_NIGHT_MODE_TEMP_DROP)) or 0.0
-        if drop > 0:
+        # With every night-mode room out of use night mode stands aside and
+        # the whole house stays managed; lowering its target would cool all
+        # of it to the night target
+        if drop > 0 and _night_mode_has_room_in_use(data):
             target = current_target
             if target is None:
                 target = _as_float(data.get(CONF_TARGET_TEMPERATURE))

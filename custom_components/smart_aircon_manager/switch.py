@@ -141,6 +141,8 @@ class OptimizerFeatureSwitch(SwitchEntity):
         self._attr_name = name
         self._attr_icon = icon
         self._attr_unique_id = f"{config_entry.entry_id}_{conf_key}"
+        # Set by switches whose change should take effect at once
+        self._coordinator = None
 
     @property
     def device_info(self):
@@ -185,6 +187,13 @@ class OptimizerFeatureSwitch(SwitchEntity):
     def _apply(self, enabled: bool, new_data: dict[str, Any]) -> None:
         """Apply a saved change to the running optimizer."""
         setattr(self._optimizer, self._attribute, enabled)
+
+    async def _refresh(self) -> None:
+        """Show a change at once (e.g. the target on the climate card), then
+        run a cycle with it instead of waiting for the next poll."""
+        if self._coordinator is not None:
+            self._coordinator.async_update_listeners()
+            await self._coordinator.async_request_refresh()
 
 
 class NightModeSwitch(OptimizerFeatureSwitch):
@@ -263,15 +272,8 @@ class NightModeSwitch(OptimizerFeatureSwitch):
         self._set(False)
         await self._refresh()
 
-    async def _refresh(self) -> None:
-        if self._coordinator is not None:
-            # Show the change at once (e.g. the dropped target on the climate
-            # card), then run a cycle with it instead of waiting for the poll
-            self._coordinator.async_update_listeners()
-            await self._coordinator.async_request_refresh()
 
-
-class RoomInUseSwitch(SwitchEntity):
+class RoomInUseSwitch(OptimizerFeatureSwitch):
     """Take a room out of use, and back, without reconfiguring it.
 
     Off: the room's zone closes (to the closed-off position) and the room
@@ -284,24 +286,23 @@ class RoomInUseSwitch(SwitchEntity):
 
     def __init__(self, optimizer, config_entry: ConfigEntry, room_name: str, coordinator=None) -> None:
         """Initialize the switch for one room."""
-        self._optimizer = optimizer
-        self._config_entry = config_entry
+        super().__init__(
+            optimizer, config_entry, "excluded_rooms", CONF_EXCLUDED_ROOMS,
+            f"{room_name} In Use", "mdi:door-open",
+        )
         self._room_name = room_name
         self._coordinator = coordinator
         room_id = room_name.lower().replace(" ", "_")
         self._attr_unique_id = f"{config_entry.entry_id}_{room_id}_in_use"
-        self._attr_name = f"{room_name} In Use"
-
-    @property
-    def device_info(self):
-        """Return device info."""
-        from . import get_device_info
-        return get_device_info(self._config_entry)
 
     @property
     def is_on(self) -> bool:
-        """Return true while the room is in use (managed)."""
-        return self._room_name not in self._optimizer.excluded_rooms
+        """Return true while the room is managed.
+
+        Reflects what the optimizer does: if every room were out of use the
+        exclusions are ignored, and the switches then show every room on.
+        """
+        return self._room_name not in self._optimizer._excluded_rooms_now()
 
     @property
     def icon(self) -> str:
@@ -325,8 +326,15 @@ class RoomInUseSwitch(SwitchEntity):
         await self._set_in_use(False)
 
     async def _set_in_use(self, in_use: bool) -> None:
+        if in_use == (self._room_name not in self._optimizer.excluded_rooms):
+            return  # already stored that way
+        self._set(in_use)
+        await self._refresh()
+
+    def _new_entry_data(self, enabled: bool) -> dict[str, Any]:
+        """Entry data with this room in or out of use."""
         excluded = [room for room in self._optimizer.excluded_rooms if room != self._room_name]
-        if not in_use:
+        if not enabled:
             excluded.append(self._room_name)
             rooms = {cfg["room_name"] for cfg in self._optimizer.room_configs}
             if rooms <= set(excluded):
@@ -335,19 +343,8 @@ class RoomInUseSwitch(SwitchEntity):
                 raise HomeAssistantError(
                     f"Can't take {self._room_name} out of use: at least one room has to stay in use"
                 )
-        if excluded == list(self._optimizer.excluded_rooms):
-            return  # already in that state
-        new_data = {**self._config_entry.data, CONF_EXCLUDED_ROOMS: excluded}
-        try:
-            self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
-        except Exception as err:  # noqa: BLE001 - report and leave the state alone
-            _LOGGER.warning("Could not save %s (%s) - left unchanged", self._attr_name, err)
-            self.async_write_ha_state()
-            return
-        self._optimizer.excluded_rooms = excluded
-        self.async_write_ha_state()
-        _LOGGER.info("%s %s", self._room_name, "back in use" if in_use else "taken out of use")
-        if self._coordinator is not None:
-            # Show it at once, then move the zone on a cycle right away
-            self._coordinator.async_update_listeners()
-            await self._coordinator.async_request_refresh()
+        return {**self._config_entry.data, CONF_EXCLUDED_ROOMS: excluded}
+
+    def _apply(self, enabled: bool, new_data: dict[str, Any]) -> None:
+        """Switch the optimizer over to the saved list."""
+        self._optimizer.excluded_rooms = list(new_data[CONF_EXCLUDED_ROOMS])

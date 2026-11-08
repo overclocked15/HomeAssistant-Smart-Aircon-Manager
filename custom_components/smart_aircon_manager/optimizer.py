@@ -2557,6 +2557,9 @@ class AirconOptimizer:
         # shared, so target adjustments made through active_states show up in
         # room_states too.
         closed_off = frozenset(self._closed_off_rooms(room_states))
+        # Reported with this cycle's result: an In Use switch may change the
+        # live list while the cycle awaits service calls
+        excluded_this_cycle = frozenset(self.excluded_rooms)
         if closed_off != (self._night_mode_applied_closed or frozenset()):
             self._on_night_mode_change(closed_off)
             self._night_mode_applied_closed = closed_off
@@ -2984,10 +2987,10 @@ class AirconOptimizer:
             "conditioning_direction": direction,
             # Closed-off rooms: switched out of use, or closed by night mode
             "closed_off_rooms": sorted(closed_off),
-            "excluded_rooms": sorted(self.excluded_rooms),
+            "excluded_rooms": sorted(excluded_this_cycle),
             "night_mode_active": self.night_mode_active,
             "night_mode_rooms": list(self.night_mode_rooms),
-            "night_mode_closed_rooms": sorted(closed_off - set(self.excluded_rooms)),
+            "night_mode_closed_rooms": sorted(closed_off - excluded_this_cycle),
             "efficiency_active": self._efficiency_active(),
             "efficient_fan_idle": self._efficient_fan_idle,
             "battery": self.battery_summary(),

@@ -223,7 +223,7 @@ While a room is out of use:
 Turning the switch back on reopens the zone straight away; you don't have to wait for the next optimization. The setting survives restarts, and it follows the room if you rename it.
 
 - **At least one room has to stay in use.** Turning off the last room in use is refused with an error, because closing every zone would leave nothing to manage with the AC blowing into closed ducts.
-- **With night mode on,** only night-mode rooms that are in use are conditioned. If every night-mode room is out of use, night mode has nothing to focus on and the rooms in use are managed as usual.
+- **With night mode on,** only night-mode rooms that are in use are conditioned. If every night-mode room is out of use, night mode has nothing to focus on and the rooms in use are managed as usual. Night mode's temperature drop isn't applied in that case, so the rest of the house isn't cooled to the night target.
 
 **In Use or Room Overrides?** A room disabled under **Room Overrides** (or with `set_room_override`) still counts toward every AC decision; the manager just stops moving its zone, so you can set it by hand. A room out of use is closed and ignored.
 

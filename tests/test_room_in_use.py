@@ -215,3 +215,69 @@ class TestRoomChanges:
             "room_name": "Spare Room", "temperature_sensor": "sensor.guest", "cover_entity": "cover.guest",
         }))
         assert entry.data["excluded_rooms"] == ["Spare Room"]
+
+
+class TestBugCheckFixes:
+    """Fixes from the v3.4.0 pre-release bug check."""
+
+    def test_no_night_drop_when_every_night_room_is_out_of_use(self):
+        from custom_components.smart_aircon_manager.night_mode import night_mode_entry_data
+
+        data = entry_data(night_mode_rooms=["Guest"], excluded_rooms=["Guest"])
+        on = night_mode_entry_data(data, True)
+        assert on["enable_night_mode"] is True
+        assert on["target_temperature"] == 23.0          # house-wide target left alone
+        assert "night_mode_saved_target" not in on
+        assert night_mode_entry_data(on, False)["target_temperature"] == 23.0
+
+    def test_night_drop_applies_with_a_night_room_in_use(self):
+        from custom_components.smart_aircon_manager.night_mode import night_mode_entry_data
+
+        data = entry_data(night_mode_rooms=["Bed", "Guest"], excluded_rooms=["Guest"])
+        assert night_mode_entry_data(data, True)["target_temperature"] == 21.0
+
+    def test_night_drop_applies_when_exclusions_are_ignored(self):
+        from custom_components.smart_aircon_manager.night_mode import night_mode_entry_data
+
+        # Every room out of use: exclusions are ignored, so night mode is active
+        data = entry_data(night_mode_rooms=["Bed"], excluded_rooms=["Bed", "Living"])
+        assert night_mode_entry_data(data, True)["target_temperature"] == 21.0
+
+    def test_turning_off_an_out_of_use_room_again_is_a_no_op(self):
+        coordinator = MagicMock()
+        coordinator.async_request_refresh = AsyncMock()
+        switch, opt, entry, _, _ = TestSwitch._switch(room="Guest", excluded=("Guest", "Bed"), coordinator=coordinator)
+        asyncio.run(switch.async_turn_off())
+        switch.hass.config_entries.async_update_entry.assert_not_called()
+        coordinator.async_request_refresh.assert_not_awaited()
+        assert opt.excluded_rooms == ["Guest", "Bed"]
+
+    def test_result_reports_the_exclusions_the_cycle_applied(self):
+        opt, calls, _ = make_cycle_optimizer(rooms=ROOMS, excluded_rooms=["Guest"])
+        record = opt.hass.services.async_call
+
+        async def user_toggles_mid_cycle(domain, service, data, blocking=False):
+            await record(domain, service, data, blocking)
+            if domain == "cover":
+                opt.excluded_rooms = ["Guest", "Living"]   # In Use switch flipped during the cycle
+
+        opt.hass.services.async_call = user_toggles_mid_cycle
+        result = run_cycle(opt)
+        assert result["closed_off_rooms"] == ["Guest"]
+        assert result["excluded_rooms"] == ["Guest"]
+        assert result["night_mode_closed_rooms"] == []
+
+    def test_switches_show_rooms_managed_when_exclusions_are_ignored(self):
+        switch, opt, _, _, _ = TestSwitch._switch(room="Guest", excluded=("Bed", "Guest", "Living"))
+        assert switch.is_on is True                       # every room is actually managed
+        assert opt.excluded_rooms == ["Bed", "Guest", "Living"]
+
+    def test_night_switch_lists_only_night_closures(self):
+        from custom_components.smart_aircon_manager.switch import NightModeSwitch
+
+        opt, _, _ = make_cycle_optimizer(
+            rooms=ROOMS, excluded_rooms=["Guest"], enable_night_mode=True, night_mode_rooms=["Bed"],
+        )
+        switch = NightModeSwitch(opt, FakeEntry(entry_data(enable_night_mode=True)))
+        run_cycle(opt)
+        assert switch.extra_state_attributes["closed_rooms"] == ["Living"]
