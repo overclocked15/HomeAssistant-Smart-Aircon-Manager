@@ -691,6 +691,19 @@ class TestBugCheck:
         opt._dry_mode_active = False
         assert opt._calculate_ac_temperature(house(22.6), 23.0) == pytest.approx(23.8)
 
+    def test_unit_already_drying_holds_after_a_restart(self):
+        """Codex review of #7: the hold must cover a unit found drying (the
+        optimizer's own flag starts False after a restart)."""
+        from test_battery_mode import make_humid_optimizer
+
+        opt, calls, states = make_humid_optimizer(rh=63, ac_state="dry")
+        assert opt._dry_mode_active is False
+        run_cycle(opt)
+        assert hvac_commands(calls) == []                # reviewed build: fan_only
+        states["sensor.bed_humidity"].state = states["sensor.living_humidity"].state = "59.5"
+        run_cycle(opt)
+        assert hvac_commands(calls) == ["fan_only"]      # still stops at the target
+
     def test_dry_hold_ends_when_the_ac_is_off(self):
         from test_battery_mode import make_humid_optimizer
 

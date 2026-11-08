@@ -54,12 +54,16 @@ Learning is opt-in. With it on, these estimates fed real adjustments:
 - **Learning records the target the room is controlled to**, occupancy setback included, so a vacant room held warmer on purpose isn't learned as running short and given more air.
 - Thermal mass checks the zone positions in force during each window, and the Room Balancing Active sensor adds `current_spread`, the figure its target is compared with.
 
+### From the Codex review
+
+- **A unit already drying keeps drying to the target.** After a restart (or with the unit switched to dry by hand) the optimizer didn't know a dry run was under way, so humidity between the target and the start point switched it straight to fan-only.
+
 ### Tests
 
-- New `tests/test_maths_review.py` (64 tests) covering the changeover, dry-mode band and alert throttling, main fan levels and hysteresis, the two-sided and adaptive setpoint, predictive control, each learning estimator and profile migration, balancing, minimum airflow, boost, sleep and smoothing. 49 of the first 58 fail on v3.4.0, and the other 9 guard behavior that must not change (no direct reversal, overdrive, the airflow floor). The 6 bug-check tests (plus an updated boost test) fail on the first v3.5.0 build.
+- New `tests/test_maths_review.py` (65 tests) covering the changeover, dry-mode band and alert throttling, main fan levels and hysteresis, the two-sided and adaptive setpoint, predictive control, each learning estimator and profile migration, balancing, minimum airflow, boost, sleep and smoothing. 49 of the first 58 fail on v3.4.0, and the other 9 guard behavior that must not change (no direct reversal, overdrive, the airflow floor). The 6 bug-check tests (plus an updated boost test) fail on the first v3.5.0 build, and the Codex-review test on the build it reviewed.
 - One test updated: emergency rooms skipping quick-action caps now uses vacation, since sleep no longer caps zones.
 - An 800-cycle comparison with v3.4.0 differs only in zone positions (mostly 1 to 2 points from rounding), setpoints during overshoot, and the new `main_fan_decision` data, with no errors.
-- Suite: 382 tests (381 passing, 1 skipped).
+- Suite: 383 tests (382 passing, 1 skipped).
 
 ## v3.4.0 - Rooms In Use
 

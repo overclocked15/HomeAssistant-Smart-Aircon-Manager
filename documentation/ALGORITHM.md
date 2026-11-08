@@ -174,7 +174,7 @@ When humidity control is enabled, the system dynamically switches between modes:
 2. **Humidity**: If temperature is OK but humidity is high > dry mode
 3. **Both OK**: If temperature and humidity are within targets > fan_only mode
 
-**Dry mode band**: dry mode starts when humidity reaches `dry_mode_humidity_threshold` (default 65%) or the target plus the humidity deadband, and keeps running until humidity is back down to `target_humidity` (default 60%). With a single switching point, humidity hovering at the threshold used to flip dry and fan-only every few minutes.
+**Dry mode band**: dry mode starts when humidity reaches `dry_mode_humidity_threshold` (default 65%) or the target plus the humidity deadband, and keeps running until humidity is back down to `target_humidity` (default 60%). A unit found already drying (after a restart) continues the same way; once the AC is off, dry needs the start point again. With a single switching point, humidity hovering at the threshold used to flip dry and fan-only every few minutes.
 
 **Hysteresis**: Mode changes are throttled:
 - Minimum time between changes: 300 seconds (default)

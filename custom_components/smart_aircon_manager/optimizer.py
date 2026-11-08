@@ -1320,13 +1320,14 @@ class AirconOptimizer:
             # once running, holds until humidity is back down to the exit
             # point. A band instead of one switching point: humidity hovering
             # at the threshold used to flip dry/fan_only every few minutes,
-            # with a notification each time. The hold ends with the AC: once
-            # it is off, dry needs the start point again.
+            # with a notification each time. A unit already drying holds too
+            # (after a restart, or switched to dry by hand). The hold ends with
+            # the AC: once it is off, dry needs the start point again.
             humid = (
                 avg_humidity >= self.dry_mode_humidity_threshold
                 or humidity_excess > self.humidity_deadband
                 or (
-                    self._dry_mode_active
+                    (self._dry_mode_active or current_ac_mode == "dry")
                     and current_ac_mode != "off"
                     and avg_humidity > self._dry_mode_exit_humidity()
                 )
