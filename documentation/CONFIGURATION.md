@@ -45,7 +45,7 @@ Each room requires:
 | `auto_control_main_ac` | bool | `false` | Automatically turn AC on/off based on temperature |
 | `auto_control_ac_temperature` | bool | `false` | Automatically adjust AC temperature setpoint |
 | `ac_turn_on_threshold` | float | `1.0` | °C above target to turn AC on |
-| `ac_turn_off_threshold` | float | `2.0` | °C below target to turn AC off |
+| `ac_turn_off_threshold` | float | `2.0` | °C past target (with every room satisfied) to turn AC off. In auto mode a run also ends once the house needs the other direction by `ac_turn_on_threshold` |
 | `enable_notifications` | bool | `true` | Send notifications for important events |
 | `notify_services` | list | `[]` | Notification service targets (empty = persistent_notification only) |
 
@@ -90,9 +90,9 @@ Each schedule contains:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enable_room_balancing` | bool | `true` | Equalize temperatures across rooms |
-| `target_room_variance` | float | `1.5` | Target max temperature variance between rooms (°C) |
+| `target_room_variance` | float | `1.5` | Spread between the warmest and coolest room, each against its own target, that starts balancing (°C). Balancing stops once the spread is back within two thirds of it |
 | `balancing_aggressiveness` | float | `0.2` | How aggressively to balance (0.0-0.5) |
-| `min_airflow_percent` | int | `15` | Minimum airflow to any room (%) |
+| `min_airflow_percent` | int | `15` | Lowest zone position (%) that adjustments (balancing, learning, quick actions, humidity weighting, predictive) can push a room to. The overshoot tiers (12%, 5%) can still go lower on purpose |
 
 ## Fan Speed Smoothing
 
@@ -102,7 +102,7 @@ Each schedule contains:
 | `smoothing_factor` | float | `0.7` | Weight for new speed (0.7 = 70% new, 30% old) |
 | `smoothing_threshold` | int | `10` | Only smooth changes smaller than this (percentage points) |
 
-Large changes (above threshold) are applied immediately for fast response. Small changes are smoothed to prevent fan speed oscillation.
+Large changes (above threshold) are applied immediately for fast response. Small changes are smoothed (and rounded) to prevent fan speed oscillation.
 
 ## Humidity Control
 
@@ -111,7 +111,7 @@ Large changes (above threshold) are applied immediately for fast response. Small
 | `enable_humidity_control` | bool | `false` | Enable HVAC mode switching based on humidity |
 | `target_humidity` | float | `60` | Target relative humidity (%) |
 | `humidity_deadband` | float | `5` | Acceptable humidity range (±%) |
-| `dry_mode_humidity_threshold` | float | `65` | Humidity % to activate dry mode |
+| `dry_mode_humidity_threshold` | float | `65` | Humidity % that starts dry mode. Once running, dry mode continues until humidity is back to `target_humidity` |
 
 **Mode priority** (when humidity control is enabled):
 1. Temperature outside deadband > cool/heat mode
@@ -268,9 +268,9 @@ The **Battery-Aware Mode** and **Efficient Operation** switches toggle the featu
 |--------|------|---------|-------------|
 | `enable_predictive_control` | bool | `false` | Rate-of-change based proactive adjustments |
 | `predictive_lookahead_minutes` | float | `5.0` | Minutes to project temperature ahead |
-| `predictive_boost_factor` | float | `0.3` | Boost/reduction factor (0.0-1.0) |
+| `predictive_boost_factor` | float | `0.3` | How far (0.0-1.0) to move each zone toward the position for the predicted temperature |
 
-**How it works**: Monitors the rate of temperature change and proactively adjusts fan speeds before the room actually reaches the threshold. Uses exponential decay dampening for accuracy.
+**How it works**: Measures each room's rate of temperature change, projects the temperature `predictive_lookahead_minutes` ahead and moves the zone part of the way toward the position the damper curve gives for that predicted temperature. A room closing on its target eases off before it overshoots; a room drifting away gets more air early. Rates under 0.03°C/min are treated as no trend, so sensor noise doesn't move zones.
 
 ## Open Window Detection
 
@@ -328,7 +328,7 @@ The *Compressor Runtime Today* sensor resets daily; the *Filter Runtime* sensor 
 | `enable_learning` | bool | `false` | Enable data collection and adaptive learning |
 | `learning_mode` | select | `passive` | passive (collect only) or active (apply adjustments) |
 | `learning_confidence_threshold` | float | `0.7` | Minimum confidence to apply learning (0.0-1.0) |
-| `learning_max_adjustment` | float | `0.10` | Maximum parameter adjustment per update (10%) |
+| `learning_max_adjustment` | float | `0.10` | How far one hourly update may move a learned value (thermal mass and cooling efficiency on a 0 to 1 scale) |
 
 ### Adaptive Features (require learning enabled + active mode)
 
@@ -337,14 +337,14 @@ The *Compressor Runtime Today* sensor resets daily; the *Filter Runtime* sensor 
 | `enable_adaptive_bands` | bool | `true` | Adjust temperature bands based on learned thermal mass |
 | `enable_adaptive_efficiency` | bool | `true` | Adjust fan speeds based on learned cooling efficiency |
 | `enable_adaptive_predictive` | bool | `true` | Adjust predictive boost based on learned convergence rate |
-| `enable_adaptive_ac_setpoint` | bool | `false` | Adjust AC setpoint based on house-wide efficiency |
+| `enable_adaptive_ac_setpoint` | bool | `false` | Scale the AC setpoint gain by house-wide cooling efficiency (×0.75 to ×1.25); the target itself never shifts |
 | `enable_adaptive_balancing` | bool | `true` | Apply learned biases to room balancing |
 | `enable_room_coupling_detection` | bool | `true` | Detect thermally coupled rooms |
 
 **Activation requirements**:
 1. Enable learning: `enable_learning: true`
 2. Set mode to active: `learning_mode: "active"`
-3. Wait for data collection (200+ points, about 1.5-2 hours)
+3. Wait for data collection: estimates start at 50 data points per room, and confidence reaches the default 0.7 at about 140 (roughly 70 minutes of active cycling)
 4. Features auto-activate when confidence reaches the threshold (default 0.7)
 
 ## Critical Room Protection

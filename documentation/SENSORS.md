@@ -164,7 +164,7 @@ Current humidity reading for the room.
 | `sensor.smart_aircon_manager_optimization_status` | Current status: maintaining, equalizing, cooling, etc. |
 | `sensor.smart_aircon_manager_last_optimization_response` | Human-readable summary of last optimization decision |
 | `sensor.smart_aircon_manager_effective_target_temperature` | Current effective target (after weather/schedule adjustments) |
-| `sensor.smart_aircon_manager_room_temperature_variance` | Temperature spread across rooms (°C) |
+| `sensor.smart_aircon_manager_room_temperature_variance` | Standard deviation of the rooms' distances from their own targets (°C). Attribute `room_spread` is the warmest-minus-coolest spread that starts balancing, and `variance_status` compares it with the target |
 
 ### Timing
 
@@ -188,7 +188,7 @@ Current humidity reading for the room.
 
 | Sensor | Description |
 |--------|-------------|
-| `sensor.smart_aircon_manager_main_fan_speed_recommendation` | Recommended main AC fan speed (low/medium/high) |
+| `sensor.smart_aircon_manager_main_fan_speed_recommendation` | Main AC fan speed applied, or the level the logic picks when no main fan is configured (low/medium/high). Attributes show the figures behind it: `house_demand`, `worst_room_excess`, `room_spread`, `decided_level` (before sleep, boost or battery caps) |
 | `sensor.smart_aircon_manager_ac_needs_running` | Whether the system thinks AC should be on |
 
 ### Weather (if enabled)

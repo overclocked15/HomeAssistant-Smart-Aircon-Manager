@@ -110,7 +110,7 @@ Quick actions apply temporary behavior changes across all rooms. They auto-expir
 
 ### `smart_aircon_manager.vacation_mode`
 
-Enable energy-saving mode for extended absences. Reduces all fan speeds to 30% and widens the temperature deadband.
+Enable energy-saving mode for extended absences. Sets each zone to 30% of its computed position (never below the minimum airflow) and widens the temperature deadband.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -131,13 +131,13 @@ data:
   enabled: false
 ```
 
-**Behavior**: No auto-expiry. Must be manually disabled. Fan speeds capped at 30%, deadband widened to 2.0°C.
+**Behavior**: No auto-expiry. Must be manually disabled. Zones at 30% of their computed position, deadband widened to 2.0°C.
 
 ---
 
 ### `smart_aircon_manager.boost_mode`
 
-Aggressive cooling/heating for rapid temperature adjustment. Multiplies all fan speeds by 1.5x (capped at 100%).
+Reach the target as fast as the system can. While rooms still need conditioning, the AC setpoint gets its full overdrive (4°C past the target) and the main fan runs on high. Zones open in proportion: the neediest room fully open and the others scaled by the same factor, so the hottest room (or coldest, when heating) keeps the biggest share of the air.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -151,13 +151,13 @@ data:
   duration_minutes: 30
 ```
 
-**Behavior**: Auto-expires after duration. Enhanced compressor protection is bypassed for faster response.
+**Behavior**: Auto-expires after duration. Comfort relaxation, battery saving and efficient operation stand down while it runs. Once the rooms reach their targets, the setpoint and fan return to normal control. Compressor protection still applies.
 
 ---
 
 ### `smart_aircon_manager.sleep_mode`
 
-Quieter operation for sleeping. Caps all fan speeds at 40% and relaxes comfort by 1°C (warmer while cooling, cooler while heating) on top of schedules and per-room targets. Your target temperature itself is not changed.
+Quieter operation for sleeping. Holds the main fan at low and relaxes comfort by 1°C (warmer while cooling, cooler while heating) on top of schedules and per-room targets. Your target temperature itself is not changed. Zones keep their normal positions: in a ducted system the noise comes from the blower, and closing zones while it runs makes it louder, not quieter. Without a main fan entity, sleep only relaxes comfort.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -171,13 +171,13 @@ data:
   duration_minutes: 480
 ```
 
-**Behavior**: Auto-expires after duration. Fan speeds capped at 40% for quieter operation.
+**Behavior**: Auto-expires after duration. A critical-room emergency lifts the main fan cap.
 
 ---
 
 ### `smart_aircon_manager.party_mode`
 
-Equalize all rooms to a consistent temperature. Sets all fans to median speed (minimum 60%) for uniform comfort.
+Give every room the same airflow. Sets every zone to the same opening: the median position, at least 60%.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -191,7 +191,7 @@ data:
   duration_minutes: 120
 ```
 
-**Behavior**: Auto-expires after duration. All rooms get equal airflow for consistent comfort across the house.
+**Behavior**: Auto-expires after duration. Equal openings give roughly equal airflow, not equal temperatures: rooms with more sun or more people still run warmer.
 
 ---
 

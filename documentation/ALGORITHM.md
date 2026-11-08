@@ -15,86 +15,63 @@ The system runs an optimization cycle every 30 seconds (configurable). Each cycl
 7. Sets AC temperature and fan speed
 8. Applies fan speeds to zone dampers
 
-## 8-Band Temperature Logic
+## Damper Curve
 
-Fan speeds are calculated based on how far each room's temperature is from the target, using an 8-band system.
+Each room's zone position comes from how far the room is from its own target (Δ, in the direction being conditioned):
 
-### Cooling Mode (room above target)
+| Room | Position |
+|------|----------|
+| Needs conditioning, more than 0.5°C off | 50 + 50 × min(1, (Δ / 4)^0.8) % |
+| Within ±0.5°C (the deadband) | 50% (baseline circulation) |
+| Past its target by 0.5 to 1°C | 35% tapering to 22% |
+| Past its target by 1 to 2°C, 2 to 3°C, 3°C or more | 22%, 12%, 5% (the overshoot tiers) |
 
-| Deviation | Fan Speed | Purpose |
-|-----------|-----------|---------|
-| 4°C+ above | 100% | Maximum cooling |
-| 3-4°C | 90% | Aggressive cooling |
-| 2-3°C | 75% | Strong cooling |
-| 1.5-2°C | 65% | Good cooling |
-| 1-1.5°C | 55% | Moderate cooling |
-| 0.7-1°C | 45% | Gentle cooling |
-| 0.5-0.7°C | 40% | Minimal cooling |
-| Within ±0.5°C | 50% | Baseline circulation |
+Example positions:
 
-### Cooling Mode (room below target - overshot)
+| Off target by | +0.6 | +1 | +1.5 | +2 | +3 | +4 | -0.6 | -1 | -2 | -3 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Position | 60% | 66% | 72% | 78% | 89% | 100% | 32% | 22% | 12% | 5% |
 
-| Deviation | Fan Speed | Purpose |
-|-----------|-----------|---------|
-| 3°C+ below | 5% | Near shutdown |
-| 2-3°C | 12% | Minimal airflow |
-| 1-2°C | 22% | Reduced cooling |
-| 0.7-1°C | 30% | Gentle reduction |
-| 0.5-0.7°C | 35% | Slight reduction |
+The curve is steepest near the target (about 15 points per °C just outside the deadband) and flattens toward 100%. With learning active, adaptive bands move the 4°C saturation point (×1.2 for a slow room, ×0.8 for a fast one).
 
-### Heating Mode
+Heating mirrors cooling: a room below its target is the one that needs conditioning. In auto mode the direction is the one resolved for the cycle (see Auto Mode below).
 
-Same logic as cooling, but inverted: rooms below target get more fan, rooms above target get less.
-
-### Auto Mode
-
-Auto mode decides each cycle whether the house needs cooling or heating, from the room temperatures:
-
-- **Reversal guard**: while the AC is running in cool (or heat) it keeps that direction. It switches off through the normal turn-off thresholds first, and only then may it restart the other way. It never reverses cool↔heat while running.
-- **Outlier rooms**: a single room more than 1.5× the turn-on threshold past its target sets the direction.
-- **Hysteresis**: otherwise the house must pass the target by the deadband on the other side before the direction changes.
+Zones share one airflow, so what steers temperature is each room's position relative to the others, not the absolute numbers.
 
 ## Fan Speed Smoothing
 
-To prevent fan speed oscillation (rapid changes every cycle), a smoothing algorithm is applied:
+Small changes are blended with the previous position to stop zones twitching:
 
 ```
-smoothed_speed = (new_speed × factor) + (previous_speed × (1 - factor))
+smoothed = round(new_speed × factor + previous_speed × (1 - factor))
 ```
 
-- **Factor** (default 0.7): Higher = faster response, lower = smoother transitions
-- **Threshold** (default 10): Changes larger than this skip smoothing for fast response
+- **Factor** (default 0.7): higher = faster response, lower = smoother transitions
+- **Threshold** (default 10): a change larger than this is applied at once
 
-Example: If current speed is 50% and calculated speed is 80%:
-- Change = 30% (above threshold of 10) > applied immediately
-- If calculated speed was 55%, change = 5% (below threshold) > smoothed to ~53.5%
+Example: from 50%, a new calculation of 55% (5 points, within the threshold) gives 54%; a new calculation of 80% (30 points) is applied immediately. At 30-second cycles a factor of 0.7 settles in about two cycles, so smoothing removes jitter rather than slowing control. Commands within 3 points of the zone's current position are skipped.
 
 ## Room Balancing
 
-When temperatures differ between rooms, the balancing algorithm adjusts fan speeds to equalize them.
+Balancing moves airflow from rooms that are ahead of their target to rooms that are behind.
 
-**How it works**:
-1. Calculate the average temperature across all rooms
-2. For each room, calculate deviation from the average
-3. Adjust fan speed up (for rooms further from target) or down (for rooms closer to target)
-4. The adjustment magnitude is controlled by `balancing_aggressiveness` (default 0.2)
+**When it runs**: the spread between rooms (warmest minus coolest, each measured against its own target) is more than `target_room_variance` (default 1.5°C) and the house on average is within 1°C of target. It keeps running until the spread is back under two thirds of the setting (1.0°C by default) or the house average drifts more than 1.25°C off, so it can't switch on and off at the edge.
 
 **Formula**:
 ```
-balancing_bias = deviation_from_avg × aggressiveness × 100
+balancing_bias = (room deviation - average deviation) × aggressiveness × 100
 ```
 
-**Constraints**:
-- Minimum airflow is always maintained (default 15%)
-- Balancing only activates when the house average is near the target
-- Very hot/cold rooms are excluded from balancing to prioritize direct cooling/heating
+With the default aggressiveness of 0.2 that's 20 points per °C: a room hotter than the rest gets more air while cooling and less while heating.
+
+**Minimum airflow**: no adjustment (balancing, learning, quick actions, humidity weighting, predictive control) takes a room below `min_airflow_percent` (default 15%), and none lifts a room the damper curve set lower on purpose (the 12% and 5% overshoot tiers).
 
 ### Adaptive Balancing (with learning)
 
 When learning is active and confident, additional adjustments are made:
-- **Learned balancing bias**: Corrects for rooms that consistently overshoot/undershoot
-- **Relative convergence rate**: Rooms that heat/cool faster get less aggressive balancing
-- **Room coupling**: Thermally connected rooms (shared walls/open doors) are balanced together
+- **Learned bias**: up to ±10 points for a room that runs short of its target (or past it) day after day. It follows the room's mean shortfall over 24 hours, in "needs more air" terms for whichever mode is running, and fades once the room is fine
+- **Relative drift rate**: rooms that gain heat (cooling) or lose heat (heating) faster than average at low airflow get extra balancing toward them
+- **Room coupling**: rooms whose temperatures move together are balanced together
 
 ## AC Control Logic
 
@@ -120,24 +97,36 @@ With **efficient operation** (efficiency mode, or battery-aware mode while runni
 
 It resumes at the normal turn-on thresholds. With humidity control on, the existing cool → dry → fan-only flow is left unchanged.
 
+### Auto Mode
+
+Auto mode decides each cycle whether the house needs cooling or heating, from the room temperatures:
+
+- **Outlier rooms**: a single room more than 1.5× the turn-on threshold past its target sets the direction.
+- **Hysteresis**: otherwise the house must pass the target by the deadband on the other side before the direction changes.
+- **Reversal guard**: a running AC keeps its direction and is never reversed directly (dry counts as cooling).
+- **Changeover**: a run ends once the house on average needs the other direction by the turn-on threshold (default 1°C), unless one room is still an outlier on the running side. After the minimum off-time the AC starts the other way. So heating starts about 1°C below target after cooling, instead of after the 2°C turn-off threshold, and one extreme room can't bounce the AC between modes.
+
 ### AC Temperature Setpoint
 
-When `auto_control_ac_temperature` is enabled, the setpoint is the target plus a proportional overdrive while the house still needs conditioning:
+When `auto_control_ac_temperature` is enabled, the setpoint moves with house demand, both ways around the target:
 
 ```
-overdrive = min(4°C, 2 × house demand)      # 2°C cap with efficient operation
-cooling:  setpoint = target − overdrive
-heating:  setpoint = target + overdrive
+offset = clamp(2 × house demand, -2°C, +4°C)      # +2°C cap with efficient operation
+cooling:  setpoint = target - offset
+heating:  setpoint = target + offset
 ```
 
-At or past the target the setpoint equals the target. It is refreshed even while every room sits inside the deadband, so a hard setpoint can't keep driving the unit past the target. Values are rounded to the unit's `target_temp_step` and clamped to its `min_temp`/`max_temp`.
+While the house needs conditioning the unit is driven past the target (overdrive). Once the house is past the target the setpoint moves the other way (back-off), so the unit's own thermostat stops: a unit whose sensor reads 1°C warmer than the rooms settles them about 0.3°C under target instead of 1°C. Boost uses the full overdrive until the rooms reach their targets. With adaptive setpoint learning the gain is ×0.75 for a house that cools easily and ×1.25 for one that struggles; the target itself never shifts. It is refreshed even while every room sits inside the deadband. Values are rounded to the unit's `target_temp_step` (halves round up) and clamped to its `min_temp`/`max_temp`.
 
 ### Main Fan Speed
 
-The main AC fan speed is set based on overall need:
-- **Low**: All rooms near target (variance <= 1°C, avg deviation <= 0.5°C)
-- **High**: Significant need (avg deviation >= 2.5°C OR max deviation >= 3°C)
-- **Medium**: All other conditions
+The main fan level comes from the same per-room distances, so a room kept warmer or cooler on purpose is satisfied at its own target:
+- **Low**: rooms within 1°C of each other and the house within 0.5°C of its targets
+- **High**: the house on average `main_fan_high_threshold` (default 2.5°C) short of its targets, or one room 3°C short with rooms 2°C apart
+- **Medium**: the house on average `main_fan_medium_threshold` (default 1°C) short, or rooms 2°C apart
+- **Low**: otherwise
+
+A room past its target counts as at most one deadband past it, since more blower air can't help it. A level changes only once a threshold is passed by 0.2°C, so the fan doesn't flip at a boundary. Sleep holds it at low, boost raises it to high while rooms still need conditioning, and battery-aware saving levels cap it.
 
 The speed is mapped onto the fan modes the unit actually offers: `mid`/`med` spellings, numbered speeds such as Daikin's 1–5, or quiet modes. A command is only sent when the mode changes. A fan mode picked on the manager's climate card holds until "auto" is picked again.
 
@@ -162,19 +151,19 @@ Reduces mode change frequency (cool/heat to fan_only):
 
 ## Predictive Control
 
-Uses rate-of-change to anticipate temperature trends and act proactively.
+Uses the rate of change to act on where each room is heading.
 
 **How it works**:
 1. Track temperature history (last 10 readings per room)
-2. Calculate rate of change using linear regression with outlier filtering
-3. Project temperature forward by `predictive_lookahead_minutes`
-4. Apply exponential decay dampening (accounts for Newton's law of cooling)
-5. Boost or reduce fan speed based on predicted deviation
+2. Calculate the rate of change with weighted least squares (5-minute half-life) and outlier filtering
+3. Project ahead: predicted = current + rate × `predictive_lookahead_minutes` × D, where D runs from 0.4 near the target to 0.7 at 3°C or more away (a conservative factor that keeps the projection modest)
+4. Move the zone part of the way toward the position the damper curve gives for the predicted temperature: position = now + weight × (curve(predicted) - now), where the weight is `predictive_boost_factor` (default 0.3)
 
-**Example**: Room at 23°C, target 22°C, cooling at -0.2°C/min:
-- Linear prediction: 23 + (-0.2 × 5) = 22°C in 5 minutes
-- Dampened prediction: ~22.5°C (rate slows as target approaches)
-- Action: Reduce fan speed proactively to prevent overcooling
+Rates under 0.03°C/min count as no trend (a single 0.1°C sensor step reads as about 0.01 to 0.02°C/min), so sensor noise doesn't move zones.
+
+**Example**: room at 24°C, target 23°C, cooling at 0.15°C/min, 5-minute lookahead:
+- Predicted: 24 - 0.15 × 5 × 0.5 = 23.6°C, where the curve gives 61% against 66% now
+- With weight 0.3 the zone eases off from 66% to 65%; with weight 1.0, to 61%
 
 ## HVAC Mode Determination (with Humidity Control)
 
@@ -185,20 +174,28 @@ When humidity control is enabled, the system dynamically switches between modes:
 2. **Humidity**: If temperature is OK but humidity is high > dry mode
 3. **Both OK**: If temperature and humidity are within targets > fan_only mode
 
+**Dry mode band**: dry mode starts when humidity reaches `dry_mode_humidity_threshold` (default 65%) or the target plus the humidity deadband, and keeps running until humidity is back down to `target_humidity` (default 60%). With a single switching point, humidity hovering at the threshold used to flip dry and fan-only every few minutes.
+
 **Hysteresis**: Mode changes are throttled:
 - Minimum time between changes: 300 seconds (default)
 - Extra deviation required to override: 0.3°C (default)
-- Exception: Exiting fan_only to cool/heat is always immediate (temperature priority)
+- Exception: Exiting fan_only to cool/heat/dry is always immediate
+
+"AC Mode Changed" alerts for dry and fan-only are sent at most once an hour each.
 
 ## Weather Adjustments
 
-When enabled, outdoor temperature influences the target:
+When enabled, outdoor temperature nudges the target in the direction that helps the current mode:
 
-- **Hot weather** (>30°C outdoor): Target lowered by up to `weather_influence_factor × 2°C`
-- **Cold weather** (<10°C outdoor): Target raised by up to `weather_influence_factor × 2°C`
-- **Mild weather** (10-30°C): No adjustment
+| Outdoor | Adjustment (before the influence factor) |
+|---------|-----------|
+| Above 30°C | -0.5°C |
+| Above 25 up to 30°C | -0.25°C |
+| 20 to 25°C | none |
+| 15 up to 20°C | +0.25°C |
+| Below 15°C | +0.5°C |
 
-The adjustment scales linearly with how extreme the outdoor temperature is.
+A fast outdoor trend adds -0.125°C per °C/hour of rise (only beyond ±1°C/hour, capped at ±0.5°C). Only adjustments that help the current mode apply (lower while cooling, higher while heating). The result is multiplied by `weather_influence_factor` (default 0.5) and rounded to 0.1°C: at defaults, at most 0.2°C from the tiers and 0.5°C with a fast trend. It is skipped while battery-aware mode is saving.
 
 ## Occupancy Control
 
@@ -210,24 +207,29 @@ This reduces energy usage for unoccupied rooms while maintaining comfort in occu
 
 ## Adaptive Learning
 
-The learning system collects data on each room's behavior and adjusts parameters accordingly.
+The learning system records each room's behavior and adjusts parameters from it.
 
 ### What is Learned
 
-| Metric | Description | Effect |
+| Metric | How it is measured | Effect |
 |--------|-------------|--------|
-| **Thermal mass** | How quickly the room changes temperature (0.0-1.0) | Adjusts temperature band widths |
-| **Cooling efficiency** | How effectively the room responds to fan changes (0.0-1.0) | Adjusts fan speed magnitude |
-| **Convergence rate** | Time to reach target temperature | Adjusts predictive boost |
-| **Overshoot frequency** | How often the room overshoots the target | Adjusts smoothing factor |
-| **Balancing bias** | Consistent over/under-shoot tendency | Adjusts room balancing |
+| **Thermal mass** (0 fast to 1 slow) | Median rate of change while the room is actively conditioned (more than 0.5°C off target, zone steady and at least half open), on a 0.2°C/min scale | Stretches (×1.2, slow room) or tightens (×0.8, fast room) the damper curve |
+| **Cooling efficiency** (0 to 1) | Net cooling per minute per unit of zone opening while the room is more than 0.5°C above target, on a 0.1°C/min scale | Adjusts zone positions while cooling and, if enabled, the setpoint gain |
+| **Convergence time** | Net progress toward the target over time while more than 0.5°C off | Scales predictive control |
+| **Overshoot frequency** | Target crossings per day | Tunes smoothing (more overshoots, more damping) |
+| **Relative drift** | Net heat gain or loss at low airflow, against the house average | Balancing |
+| **Balancing bias** | Mean shortfall from target over 24 hours | Balancing (±10 points) |
+
+Every interval counts, including ones where nothing changed, and each temperature change is paired with the zone position that was in place while it happened, so sensor noise and 0.1°C sensor steps average out.
 
 ### Learning Activation
 
-1. Data collection begins immediately when learning is enabled
-2. Requires 200+ data points per room (about 1.5-2 hours at 30s intervals)
-3. Confidence must reach the threshold (default 0.7) before adjustments are applied
-4. All adjustments are bounded to prevent extreme changes
+1. Data collection begins when learning is enabled (one data point per room for each full pass while the AC runs)
+2. Estimates start once a room has 50 data points; confidence (a recency-weighted sample count) reaches the default threshold of 0.7 at about 140 points
+3. Adjustments apply in active mode once confidence passes the threshold
+4. `learning_max_adjustment` (default 0.10) limits how far one hourly update moves a learned value
+
+Profiles learned before v3.5.0 restart their estimates, because the old estimators saturated or measured sensor noise. Room coupling is kept.
 
 ### Room Coupling Detection
 
@@ -237,14 +239,14 @@ The system detects thermally coupled rooms (rooms that influence each other's te
 
 Quick actions temporarily override normal behavior:
 
-| Mode | Fan Speed Effect | Duration | Notes |
+| Mode | What it does | Duration | Notes |
 |------|-----------------|----------|-------|
-| **Vacation** | Fans at 30% of computed speed (never below minimum airflow) | Manual on/off | Widens deadband to 2.0°C; survives restarts |
-| **Boost** | All fans × 1.5 (max 100%) | 30 min default | Suspends comfort relaxation |
-| **Sleep** | All fans capped at 40% | 8 hours default | Comfort relaxed by 1°C (warmer while cooling, cooler while heating) |
-| **Party** | All fans to median (min 60%) | 2 hours default | Equalizes all rooms; suspends comfort relaxation |
+| **Vacation** | Zones at 30% of computed position (never below minimum airflow) | Manual on/off | Widens deadband to 2.0°C; survives restarts |
+| **Boost** | Full setpoint overdrive and main fan on high while rooms still need conditioning; zones opened in proportion, neediest fully open | 30 min default | Suspends comfort relaxation, battery saving and efficient operation |
+| **Sleep** | Main fan held at low; comfort relaxed by 1°C (warmer while cooling, cooler while heating) | 8 hours default | Zones keep their positions: closing them with the blower running makes a ducted system louder, not quieter |
+| **Party** | Every zone at the same opening (the median, at least 60%) | 2 hours default | Equal airflow to every room; suspends comfort relaxation |
 
-Quick actions are checked each cycle and auto-expire when their duration elapses. Vacation's deadband is restored on exit, unless the user changed it during the mode. Sleep never edits the target temperature. Its 1°C relaxation is applied each cycle on top of schedules and per-room targets, so it can't flip auto mode to the opposite direction or outlive the mode. Quick actions never override a safety response: rooms paused by open-window detection and rooms in a critical-room emergency keep their airflow.
+Quick actions are checked each cycle and auto-expire when their duration elapses. Vacation's deadband is restored on exit, unless the user changed it during the mode. Sleep never edits the target temperature. Its 1°C relaxation is applied each cycle on top of schedules and per-room targets, so it can't flip auto mode to the opposite direction or outlive the mode. Quick actions never override a safety response: rooms paused by open-window detection and rooms in a critical-room emergency keep their airflow, and a critical-room emergency lifts sleep's main fan cap.
 
 ## Battery-Aware Mode
 

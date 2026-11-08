@@ -20,6 +20,25 @@ _LOGGER = logging.getLogger(__name__)
 # a target change rather than a room overshooting.
 _TARGET_CHANGE_EPSILON = 0.25
 
+# A room further than this from its target (°C) is being actively conditioned
+ACTIVE_ERROR_C = 0.5
+# Intervals longer than this (minutes) span downtime or an AC that was off
+MAX_INTERVAL_MINUTES = 10.0
+# Thermal mass: a room changing this fast (°C/min) while actively conditioned
+# reads 0.0; one that barely moves reads 1.0. Conditioned rooms typically move
+# 0.02 to 0.15 °C/min.
+THERMAL_RATE_SCALE = 0.2
+# Cooling efficiency: cooling this fast (°C/min) with the damper fully open reads 1.0
+EFFICIENCY_SCALE = 0.1
+# Below this damper position a room is "at low airflow" for passive drift
+LOW_AIRFLOW_PERCENT = 30
+# Balancing bias: a room whose mean shortfall from its target passes this (°C)
+# moves its bias by one step per hourly update; otherwise the bias decays
+BIAS_SHORTFALL_C = 0.3
+BIAS_STEP = 0.05
+# Profiles saved before this version were learned with the old estimators
+PROFILE_VERSION = 2
+
 
 def _target_changed(prev: dict[str, Any], curr: dict[str, Any]) -> bool:
     """True when the target moved between two consecutive data points."""
@@ -90,46 +109,63 @@ class PerformanceTracker:
             room_name, temp_before, fan_speed, target_temp
         )
 
+    def _intervals(
+        self, room_name: str, mode: str | None = None, time_window_hours: float | None = None
+    ):
+        """Yield (previous, current, minutes) for consecutive data points.
+
+        ``current`` records the temperature change since the previous tracked
+        pass (temp_before → temp_after), and that change happened under the
+        damper position applied at the previous pass, ``previous["fan_speed"]``
+        (each point stores the position applied after its own measurement).
+        Skips target changes, intervals longer than MAX_INTERVAL_MINUTES,
+        points without a reading and, with ``mode``, points tagged with the
+        other mode (legacy untagged points are kept).
+        """
+        points = self._data_points.get(room_name, [])
+        cutoff = time.time() - time_window_hours * 3600 if time_window_hours else None
+        for previous, current in zip(points, points[1:]):
+            if current.get("temp_after") is None or current.get("temp_before") is None:
+                continue
+            if cutoff is not None and current.get("timestamp", 0) <= cutoff:
+                continue
+            if mode is not None and current.get("operating_mode") not in (None, mode):
+                continue
+            if _target_changed(previous, current):
+                continue
+            minutes = current.get("cycle_duration", 0) / 60.0
+            if minutes <= 0 or minutes > MAX_INTERVAL_MINUTES:
+                continue
+            yield previous, current, minutes
+
     def get_convergence_rate(
         self, room_name: str, time_window_hours: int = 24, mode: str | None = None
     ) -> float | None:
-        """Calculate average temperature convergence rate (°C/minute).
+        """Net speed (°C/min) at which the room closes on its target.
 
-        Returns how fast temperature moves toward target on average.
-        ``mode`` optionally filters to cool/heat data points (legacy points
-        recorded before mode tagging are always included).
+        Total progress toward the target over total time, for intervals that
+        start more than ACTIVE_ERROR_C from the target. Intervals that move
+        away count against it, so sensor noise averages out (clipping each
+        interval at zero, as before, turned noise into apparent convergence).
+        ``mode`` optionally filters to cool/heat data. None with fewer than
+        5 qualifying intervals; 0.0 when the room isn't closing in.
         """
-        if room_name not in self._data_points:
-            return None
-
-        cutoff_time = time.time() - (time_window_hours * 3600)
-        recent_points = [
-            p for p in self._data_points[room_name]
-            if p["timestamp"] > cutoff_time and p["temp_after"] is not None
-            and (mode is None or p.get("operating_mode") in (None, mode))
-        ]
-
-        if len(recent_points) < 10:
-            return None
-
-        convergence_rates = []
-        for point in recent_points:
-            target = point.get("target_temp")
+        progress = 0.0
+        total_minutes = 0.0
+        count = 0
+        for _previous, current, minutes in self._intervals(room_name, mode, time_window_hours):
+            target = current.get("target_temp")
             if target is None:
-                # Fallback: use absolute change rate if no target available
-                temp_change = abs(point["temp_after"] - point["temp_before"])
-            else:
-                # Only count movement toward target as convergence
-                dist_before = abs(point["temp_before"] - target)
-                dist_after = abs(point["temp_after"] - target)
-                temp_change = max(0, dist_before - dist_after)  # 0 if diverging
-            time_minutes = point["cycle_duration"] / 60.0
-            if time_minutes > 0:
-                # Diverging/stalled cycles count as zero — dropping them
-                # entirely would systematically overestimate convergence.
-                convergence_rates.append(temp_change / time_minutes)
-
-        return statistics.mean(convergence_rates) if convergence_rates else None
+                continue
+            dist_before = abs(current["temp_before"] - target)
+            if dist_before <= ACTIVE_ERROR_C:
+                continue
+            progress += dist_before - abs(current["temp_after"] - target)
+            total_minutes += minutes
+            count += 1
+        if count < 5 or total_minutes <= 0:
+            return None
+        return max(0.0, progress / total_minutes)
 
     def get_overshoot_frequency(self, room_name: str, time_window_hours: int = 24) -> float:
         """Calculate how often temperature overshoots target (overshoots per day)."""
@@ -170,96 +206,79 @@ class PerformanceTracker:
         return 0.0
 
     def estimate_thermal_mass(self, room_name: str) -> float | None:
-        """Estimate thermal mass (0.0-1.0, higher = slower temperature change).
+        """How slowly the room responds (0.0 fast to 1.0 slow).
 
-        Analyzes cooldown/warmup curves to determine thermal inertia.
+        Median rate of change over 10-pass windows in which the room was being
+        actively conditioned: further than ACTIVE_ERROR_C from its target
+        throughout, damper steady (within 10 points) and at least half open.
+
+            thermal_mass = clamp(1 − median rate / THERMAL_RATE_SCALE, 0, 1)
+
+        The old estimate used every steady window (mostly rooms sitting still
+        at target) on a 1 °C/min scale, so every room read about 0.97.
+        None until 50 points and 5 qualifying windows exist.
         """
-        if room_name not in self._data_points:
-            return None
-
-        points = self._data_points[room_name]
+        points = self._data_points.get(room_name, [])
         if len(points) < 50:
             return None
 
-        # Look at periods with consistent fan speed
-        cooldown_rates = []
-        for i in range(10, len(points)):
-            # Get last 10 points
-            window = points[i-10:i]
+        rates = []
+        for end in range(10, len(points) + 1):
+            window = points[end - 10:end]
+            fans = [p.get("fan_speed", 0) for p in window]
+            if max(fans) - min(fans) > 10 or min(fans) < 50:
+                continue
+            if any(abs(p.get("temp_diff_from_target", 0.0)) <= ACTIVE_ERROR_C for p in window):
+                continue
+            if any(p.get("temp_after") is None for p in window):
+                continue
+            durations = [p.get("cycle_duration", 0) / 60.0 for p in window]
+            if min(durations) <= 0 or max(durations) > MAX_INTERVAL_MINUTES:
+                continue
+            change = abs(window[-1]["temp_after"] - window[0]["temp_before"])
+            rates.append(change / sum(durations))
 
-            # Check if fan speed was consistent
-            fan_speeds = [p["fan_speed"] for p in window]
-            if max(fan_speeds) - min(fan_speeds) > 10:
-                continue  # Skip inconsistent periods
-
-            # Calculate temperature change rate
-            temp_change = abs(window[-1]["temp_before"] - window[0]["temp_before"])
-            time_minutes = sum(p["cycle_duration"] for p in window) / 60.0
-
-            if time_minutes > 0:
-                rate = temp_change / time_minutes
-                cooldown_rates.append(rate)
-
-        if len(cooldown_rates) < 5:
+        if len(rates) < 5:
             return None
-
-        # Average rate: lower rate = higher thermal mass
-        avg_rate = statistics.mean(cooldown_rates)
-
-        # Normalize to 0-1 scale (assume 0.5°C/min is middle, 1.0°C/min is low mass)
-        thermal_mass = max(0.0, min(1.0, 1.0 - (avg_rate / 1.0)))
-
-        return round(thermal_mass, 2)
+        rate = statistics.median(rates)
+        return round(max(0.0, min(1.0, 1.0 - rate / THERMAL_RATE_SCALE)), 2)
 
     def estimate_cooling_efficiency(self, room_name: str) -> float | None:
-        """Estimate cooling efficiency (0.0-1.0, higher = more effective).
+        """How well airflow cools the room (0.0-1.0, higher = more effective).
 
-        Measures how well fan speed changes affect temperature. Only uses
-        cool-mode data points — this metric feeds cool-mode adjustments, and
-        heating-season data would blend an unrelated (often inverted) signal
-        into it. Legacy points recorded before mode tagging are included to
-        preserve existing learning.
+        Net cooling per minute per unit of damper opening, over cool-mode
+        intervals that start with the room more than ACTIVE_ERROR_C above its
+        target, using the damper position in place during each interval:
+
+            raw = Σ(T_before − T_after) / Σ(minutes × damper fraction)
+            efficiency = clamp(raw / EFFICIENCY_SCALE, 0, 1)
+
+        Every such interval counts, including ones where the room didn't
+        cool. The old estimate averaged only the passes that improved, per
+        pass, divided by the next pass's damper position: sensor noise over
+        damper position. Cool-mode data only (legacy untagged points kept).
+        None until 50 points and 20 qualifying intervals exist.
         """
-        if room_name not in self._data_points:
+        if len(self._data_points.get(room_name, [])) < 50:
             return None
 
-        points = [
-            p for p in self._data_points[room_name]
-            if p.get("operating_mode") in (None, "cool")
-        ]
-        if len(points) < 50:
-            return None
-
-        # Correlate fan speed with temperature change
-        efficiency_samples = []
-
-        for i in range(1, len(points)):
-            prev = points[i - 1]
-            curr = points[i]
-
-            if curr["temp_after"] is None:
+        cooling = 0.0
+        weight = 0.0
+        count = 0
+        for previous, current, minutes in self._intervals(room_name, "cool"):
+            target = current.get("target_temp")
+            if target is None or current["temp_before"] - target <= ACTIVE_ERROR_C:
                 continue
+            fraction = previous.get("fan_speed", 0) / 100.0
+            if fraction <= 0.1:
+                continue
+            cooling += current["temp_before"] - current["temp_after"]
+            weight += minutes * fraction
+            count += 1
 
-            # Temperature moved toward target
-            prev_diff = abs(prev["temp_diff_from_target"])
-            curr_diff = abs(curr["temp_diff_from_target"])
-
-            if curr_diff < prev_diff:  # Improvement
-                improvement = prev_diff - curr_diff
-                fan_effect = curr["fan_speed"] / 100.0
-
-                if fan_effect > 0.1:  # Ignore very low fan speeds
-                    efficiency = improvement / fan_effect
-                    efficiency_samples.append(efficiency)
-
-        if len(efficiency_samples) < 10:
+        if count < 20 or weight <= 0:
             return None
-
-        # Normalize: assume 0.05°C improvement per 10% fan is middle efficiency
-        avg_efficiency = statistics.mean(efficiency_samples)
-        normalized = min(1.0, avg_efficiency / 0.5)
-
-        return round(normalized, 2)
+        return round(max(0.0, min(1.0, cooling / weight / EFFICIENCY_SCALE)), 2)
 
     def get_relative_convergence_rate(self, room_name: str, mode: str | None = None) -> float | None:
         """Calculate room's convergence rate relative to house average.
@@ -298,35 +317,52 @@ class PerformanceTracker:
         return round(relative_rate, 2)
 
     def _passive_drift_rate(self, room_name: str, mode: str) -> float | None:
-        """Average passive drift rate (°C/min) away from target at low airflow.
+        """Net drift rate (°C/min) away from target at low airflow.
 
         mode="cool": upward drift = heat gain (sun load, poor insulation).
         mode="heat": downward drift = heat loss.
 
-        Only low-airflow cycles count, so the measurement reflects the room's
-        envelope rather than its duct supply quality. Legacy points recorded
-        before mode tagging are included.
+        Total drift over total time across intervals spent at or below
+        LOW_AIRFLOW_PERCENT, so the figure reflects the room's envelope rather
+        than its duct supply. Intervals with no change, or a change the other
+        way, count too: averaging only the rising intervals returned the
+        sensor's step size (0.2 °C/min for any room with 0.1 °C sensors).
+        None with fewer than 10 intervals or no net drift that way.
         """
-        LOW_AIRFLOW_PERCENT = 30
-        rates = []
-        for point in self._data_points.get(room_name, []):
-            if point.get("temp_after") is None:
+        drift = 0.0
+        total_minutes = 0.0
+        count = 0
+        for previous, current, minutes in self._intervals(room_name, mode):
+            if previous.get("fan_speed", 100) > LOW_AIRFLOW_PERCENT:
                 continue
-            if point.get("fan_speed", 100) > LOW_AIRFLOW_PERCENT:
-                continue
-            if point.get("operating_mode") not in (None, mode):
-                continue
-            minutes = point.get("cycle_duration", 0) / 60.0
-            if minutes <= 0:
-                continue
-            delta = point["temp_after"] - point["temp_before"]
-            drift = delta if mode == "cool" else -delta
-            if drift > 0:
-                rates.append(drift / minutes)
-
-        if len(rates) < 10:
+            delta = current["temp_after"] - current["temp_before"]
+            drift += delta if mode == "cool" else -delta
+            total_minutes += minutes
+            count += 1
+        if count < 10 or total_minutes <= 0:
             return None
-        return statistics.mean(rates)
+        rate = drift / total_minutes
+        return rate if rate > 0 else None
+
+    def get_chronic_shortfall(self, room_name: str, time_window_hours: int = 24) -> float | None:
+        """Mean distance (°C) the room sits short of its target.
+
+        Measured in the direction being conditioned: > 0 when the room runs
+        warmer than its target while cooling (or cooler while heating) and so
+        needs more air, < 0 when it is over-conditioned. Points without a
+        cool/heat tag are skipped. None with fewer than 20 points.
+        """
+        cutoff = time.time() - time_window_hours * 3600
+        values = []
+        for point in self._data_points.get(room_name, []):
+            mode = point.get("operating_mode")
+            diff = point.get("temp_diff_from_target")
+            if point.get("timestamp", 0) <= cutoff or mode not in ("cool", "heat") or diff is None:
+                continue
+            values.append(diff if mode == "cool" else -diff)
+        if len(values) < 20:
+            return None
+        return statistics.mean(values)
 
     def get_relative_drift_rate(self, room_name: str, mode: str) -> float | None:
         """Room's passive drift rate relative to the house average.
@@ -547,16 +583,23 @@ class LearningProfile:
         self.overshoot_rate_per_day = None
 
         # Adaptive balancing characteristics
-        self.balancing_bias = 0.0  # Learned bias adjustment (-1.0 to +1.0)
+        # Signed, -1.0 to +1.0: > 0 when the room chronically runs short of its
+        # target (needs more conditioning air), < 0 when over-conditioned
+        self.balancing_bias = 0.0
         self.relative_heat_gain_rate = 1.0  # Relative to house avg (0.5-2.0)
         self.relative_cool_rate = 1.0  # Relative to house avg (0.5-2.0)
         self.coupled_rooms = []  # List of thermally coupled room names
         self.coupling_factors = {}  # Dict: room_name → coupling factor (0.0-1.0)
 
-    def update_from_tracker(self, tracker: PerformanceTracker) -> bool:
+    def update_from_tracker(self, tracker: PerformanceTracker, max_step: float | None = None) -> bool:
         """Update profile from performance tracker data.
 
-        Returns True if update was successful, False if insufficient data.
+        Each estimate updates on its own as soon as it has enough data.
+        ``max_step`` (the "learning max adjustment" setting) limits how far
+        one hourly update moves thermal mass and cooling efficiency (0 to 1
+        scale) and the relative drift rates (scaled to their 0.5 to 2.0 range).
+
+        Returns True if anything was learned, False if there wasn't enough data.
         """
         # Always update confidence based on data points collected, weighted by recency
         import time as time_module
@@ -574,116 +617,128 @@ class LearningProfile:
                 weighted_count += weight
             self.confidence = min(1.0, weighted_count / 200.0)
 
-        # Estimate thermal characteristics
+        def stepped(old: float, new: float, limit: float | None) -> float:
+            if limit is None or limit <= 0:
+                return new
+            return old + max(-limit, min(limit, new - old))
+
+        learned = []
+
+        # Thermal characteristics (each only once it has enough data)
         thermal_mass = tracker.estimate_thermal_mass(self.room_name)
+        if thermal_mass is not None:
+            self.thermal_mass = round(stepped(self.thermal_mass, thermal_mass, max_step), 3)
+            learned.append("thermal mass")
         cooling_efficiency = tracker.estimate_cooling_efficiency(self.room_name)
+        if cooling_efficiency is not None:
+            self.cooling_efficiency = round(stepped(self.cooling_efficiency, cooling_efficiency, max_step), 3)
+            learned.append("cooling efficiency")
 
-        if thermal_mass is None or cooling_efficiency is None:
-            _LOGGER.debug(
-                "Insufficient data to update thermal characteristics for %s (need 50+ data points), confidence=%.2f (%d points)",
-                self.room_name, self.confidence, len(data_points)
-            )
-            return False
-
-        self.thermal_mass = thermal_mass
-        self.cooling_efficiency = cooling_efficiency
-
-        # Get performance stats
         convergence_rate = tracker.get_convergence_rate(self.room_name)
-        overshoot_freq = tracker.get_overshoot_frequency(self.room_name)
-
         if convergence_rate:
-            # Convergence rate is °C/min, convert to estimated time to reach 0.5°C
+            # °C/min -> estimated time to close 0.5 °C
             self.avg_convergence_time_seconds = int((0.5 / convergence_rate) * 60)
+            learned.append("convergence")
+        self.overshoot_rate_per_day = tracker.get_overshoot_frequency(self.room_name)
 
-        self.overshoot_rate_per_day = overshoot_freq
-
-        # Smoothing parameter learning: compare recent performance windows
-        # Split recent data into two halves and compare metrics
-        data_points = tracker._data_points.get(self.room_name, [])
+        # Smoothing parameter learning: compare overshoots in the two halves
+        # of the last 48 hours. The factor weights the NEW speed (1.0 = no
+        # smoothing), so more damping means a LOWER factor; the threshold is
+        # the largest change that gets smoothed, so more damping means a
+        # HIGHER threshold. (The factor used to move the wrong way.)
         recent_points = [p for p in data_points if p.get("timestamp", 0) > time_module.time() - 48 * 3600]
-
         if len(recent_points) >= 40:
             midpoint = len(recent_points) // 2
-            first_half = recent_points[:midpoint]
-            second_half = recent_points[midpoint:]
 
-            # Calculate overshoot rate for each half
             def half_overshoot_count(points):
                 count = 0
                 for i in range(1, len(points)):
-                    if _target_changed(points[i-1], points[i]):
+                    if _target_changed(points[i - 1], points[i]):
                         continue
-                    prev_diff = points[i-1].get("temp_diff_from_target", 0)
+                    prev_diff = points[i - 1].get("temp_diff_from_target", 0)
                     curr_diff = points[i].get("temp_diff_from_target", 0)
                     if (prev_diff > 0 and curr_diff < -0.3) or (prev_diff < 0 and curr_diff > 0.3):
                         count += 1
                 return count
 
-            first_overshoots = half_overshoot_count(first_half)
-            second_overshoots = half_overshoot_count(second_half)
-
-            # If overshoots increased, increase smoothing (more dampening)
-            # If overshoots decreased, keep current direction
+            first_overshoots = half_overshoot_count(recent_points[:midpoint])
+            second_overshoots = half_overshoot_count(recent_points[midpoint:])
             if second_overshoots > first_overshoots + 1:
-                # Performance worsened - increase smoothing
-                self.optimal_smoothing_factor = min(0.95, self.optimal_smoothing_factor + 0.02)
+                # More overshoots lately: damp more
+                self.optimal_smoothing_factor = round(max(0.5, self.optimal_smoothing_factor - 0.02), 3)
                 self.optimal_smoothing_threshold = min(20, self.optimal_smoothing_threshold + 1)
+                learned.append("smoothing")
             elif second_overshoots < first_overshoots and first_overshoots > 0:
-                # Performance improved - cautiously decrease smoothing for responsiveness
-                self.optimal_smoothing_factor = max(0.5, self.optimal_smoothing_factor - 0.01)
+                # Fewer overshoots: cautiously respond faster
+                self.optimal_smoothing_factor = round(min(0.95, self.optimal_smoothing_factor + 0.01), 3)
                 self.optimal_smoothing_threshold = max(5, self.optimal_smoothing_threshold - 1)
-            # If same: keep parameters unchanged (they're working)
+                learned.append("smoothing")
 
-        # Update adaptive balancing characteristics. These feed the balancing
-        # convergence adjustment, whose semantics are "rate > 1.0 = this room
-        # gains/loses heat faster than average, give it more air". The
-        # convergence rate previously used here measures how fast a room
-        # moves toward target WITH airflow (i.e. duct supply quality) —
-        # nearly the opposite population — so measure passive drift at low
-        # airflow instead, and stay neutral (1.0) until real drift data
-        # accumulates.
+        # Relative passive drift (heat gain while cooling, heat loss while
+        # heating) at low airflow, for the balancing convergence adjustment:
+        # > 1.0 = this room drifts faster than the average room
+        drift_step = None if max_step is None else max_step * 1.5
         heat_gain = tracker.get_relative_drift_rate(self.room_name, mode="cool")
         heat_loss = tracker.get_relative_drift_rate(self.room_name, mode="heat")
         if heat_gain is not None:
-            self.relative_heat_gain_rate = max(0.5, min(2.0, heat_gain))
+            self.relative_heat_gain_rate = round(
+                max(0.5, min(2.0, stepped(self.relative_heat_gain_rate, heat_gain, drift_step))), 3
+            )
+            learned.append("heat gain")
         if heat_loss is not None:
-            self.relative_cool_rate = max(0.5, min(2.0, heat_loss))
+            self.relative_cool_rate = round(
+                max(0.5, min(2.0, stepped(self.relative_cool_rate, heat_loss, drift_step))), 3
+            )
+            learned.append("heat loss")
 
         # Detect room coupling
         coupling = tracker.detect_room_coupling(self.room_name)
         if coupling:
             self.coupled_rooms = list(coupling.keys())
             self.coupling_factors = coupling
+            learned.append("coupling")
             _LOGGER.debug(
                 "Room %s coupled to: %s",
                 self.room_name,
                 ", ".join(f"{room}({factor:.2f})" for room, factor in coupling.items())
             )
 
-        # Adjust balancing bias based on historical performance
-        # If room consistently overshoots/undershoots, adjust bias
-        if overshoot_freq is not None:
-            if overshoot_freq > 2.0:
-                # High overshoot - reduce balancing aggressiveness
-                self.balancing_bias = max(-1.0, self.balancing_bias - 0.05)
-            elif overshoot_freq < 0.5:
-                # Very stable - can be more aggressive
-                self.balancing_bias = min(1.0, self.balancing_bias + 0.05)
+        # Balancing bias: an integral-like correction for a room that sits
+        # short of (or past) its target day after day. Signed, in "needs more
+        # air" terms, and decaying once the room is fine. (It used to follow
+        # overshoot frequency and push every "stable" room the same way, so
+        # a room stuck below target while cooling got more cold air.)
+        shortfall = tracker.get_chronic_shortfall(self.room_name)
+        if shortfall is not None:
+            if shortfall > BIAS_SHORTFALL_C:
+                self.balancing_bias = min(1.0, self.balancing_bias + BIAS_STEP)
+            elif shortfall < -BIAS_SHORTFALL_C:
+                self.balancing_bias = max(-1.0, self.balancing_bias - BIAS_STEP)
+            elif self.balancing_bias > 0:
+                self.balancing_bias = max(0.0, self.balancing_bias - BIAS_STEP)
+            else:
+                self.balancing_bias = min(0.0, self.balancing_bias + BIAS_STEP)
+            self.balancing_bias = round(self.balancing_bias, 3)
+            learned.append("balancing bias")
 
-        # Confidence was already updated at the start of this method
+        if not learned:
+            _LOGGER.debug(
+                "Not enough data to learn for %s yet, confidence=%.2f (%d points)",
+                self.room_name, self.confidence, len(data_points)
+            )
+            return False
+
         self.last_updated = datetime.now(timezone.utc).isoformat()
-
         _LOGGER.info(
-            "Updated learning profile for %s: thermal_mass=%.2f, efficiency=%.2f, confidence=%.2f",
-            self.room_name, self.thermal_mass, self.cooling_efficiency, self.confidence
+            "Updated learning profile for %s (%s): thermal_mass=%.2f, efficiency=%.2f, confidence=%.2f",
+            self.room_name, ", ".join(learned), self.thermal_mass, self.cooling_efficiency, self.confidence
         )
-
         return True
 
     def to_dict(self) -> dict[str, Any]:
         """Convert profile to dictionary for storage."""
         return {
+            "version": PROFILE_VERSION,
             "room_name": self.room_name,
             "last_updated": self.last_updated,
             "confidence": self.confidence,
@@ -717,6 +772,19 @@ class LearningProfile:
         profile.relative_cool_rate = data.get("relative_cool_rate", 1.0)
         profile.coupled_rooms = data.get("coupled_rooms", [])
         profile.coupling_factors = data.get("coupling_factors", {})
+        if data.get("version", 1) < PROFILE_VERSION:
+            # Learned by the old estimators (thermal mass saturated near 1,
+            # efficiency measured sensor noise, the smoothing factor moved the
+            # wrong way, the balancing bias ignored direction): start these
+            # again. Coupling uses the same estimator and is kept.
+            profile.thermal_mass = 0.5
+            profile.cooling_efficiency = 0.6
+            profile.optimal_smoothing_factor = 0.7
+            profile.optimal_smoothing_threshold = 10
+            profile.avg_convergence_time_seconds = None
+            profile.balancing_bias = 0.0
+            profile.relative_heat_gain_rate = 1.0
+            profile.relative_cool_rate = 1.0
         return profile
 
 
@@ -825,7 +893,7 @@ class LearningManager:
             old_confidence = profile.confidence
             # update_from_tracker always refreshes confidence; it returns True
             # only if thermal characteristics were successfully calculated
-            if profile.update_from_tracker(self.tracker):
+            if profile.update_from_tracker(self.tracker, self.max_adjustment_per_update):
                 updated_rooms.append(room_name)
                 any_profile_modified = True
             elif abs(profile.confidence - old_confidence) > 0.005:

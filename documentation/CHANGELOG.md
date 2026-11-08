@@ -1,5 +1,57 @@
 # Changelog
 
+## v3.5.0 - Logic and Maths Review
+
+**Release Date**: 2026-11-08
+
+A review of the logic and maths behind every decision. Each finding was reproduced on v3.4.0 before it was fixed.
+
+### House decisions
+
+- **Auto mode changes over 1°C past target, not 2°C.** A running AC kept its direction until the 2°C turn-off threshold, so a 22°C house drifted to about 20°C on a cool evening before heating could start. A run now also ends once the house on average needs the other direction by the turn-on threshold (default 1°C), and after the minimum off-time the AC starts the other way. It still never reverses directly (dry now counts as cooling for this), and a room that is still an outlier on the running side keeps the run going, so one sunny room can't bounce the AC between modes.
+- **Dry mode has a band.** It starts at the dry threshold (default 65%) and runs until humidity is back down to the target (default 60%). It used to start and stop at the same 65%: in a 4-hour test with humidity hovering there, that meant 48 mode changes and 48 phone alerts. Now it's 10 and 6. "AC Mode Changed" alerts go out at most once an hour per mode.
+- **The main fan judges rooms against their own targets.** It compared raw temperatures with the house target, so a room held at its own warmer target (an office at 25°C in a 22°C house) kept the main fan on high with zero demand. It now uses the same per-room thresholds as the on/off logic, and a room past its target counts as at most one deadband past it.
+- **Main fan hysteresis.** A level changes only once its threshold is passed by 0.2°C. A house sitting on a threshold used to flip between low and medium every cycle, with a command each time.
+- **The setpoint backs off once the house is past target.** It could only push harder, so a unit whose own sensor reads warmer than the rooms (common with ceiling returns) overcooled the house by the full error without ever reaching the turn-off threshold: a sensor 1°C warm meant rooms 1°C cold. The setpoint now moves both ways (up to 2°C of back-off), and the same unit settles the rooms about 0.3°C under target.
+- **The adaptive setpoint changes the gain, not the target.** It added ±1°C at every demand level, which moved where the house settled (1°C cold for a "low efficiency" house). It now scales the setpoint gain, ×0.75 to ×1.25.
+- Setpoints round halves up. Python's rounding sent 22.5 to 22 but 23.5 to 24.
+
+### Zone dampers
+
+- **Predictive control ignores sensor noise.** Its adjustment was proportional to the whole predicted error and switched on by the sign of the rate, so a room 3°C over target flipped between 89% and 100% as noise moved the rate across zero. It now moves the zone part of the way (the predictive factor) toward the position for the predicted temperature, and rates under 0.03°C/min count as no trend.
+- **Balancing triggers on the spread between rooms, with hysteresis.** It used a standard deviation, which shrinks as rooms are added: a single room had to be 3.0°C off target in a 4-room house and 3.7°C in a 6-room house. It now starts when the warmest and coolest rooms (each against its own target) are further apart than the target spread, and stops once they're back within two thirds of it. Before, its 15 to 20 point bias switched on and off at the edge.
+- **Minimum airflow means one thing.** No adjustment (balancing, learning, quick actions, humidity weighting, predictive control) takes a room below it, and none lifts a room the overshoot tiers set lower. Balancing or learning used to lift a 5% room to 15%.
+- **Boost keeps the airflow split.** It multiplied every zone by 1.5, which pushed most rooms to 100% and gave the hottest room a smaller share (50% down to 40% in a 3-room example), and it left the AC alone. It now drives the setpoint to full overdrive and the main fan to high while rooms still need conditioning, opens zones in proportion (neediest fully open), and stands down efficient operation.
+- **Sleep quietens the blower.** It capped zones at 40%, which raises duct pressure and noise in a ducted system while the blower keeps running, and gave a room 3°C hot the same 40% as one on target. It now holds the main fan at low and leaves the zones alone; a critical-room emergency lifts the cap. The 1°C comfort relaxation is unchanged. Without a main fan entity, sleep only relaxes comfort.
+- Smoothing rounds instead of truncating. It settled 1 point short when approaching from below.
+
+### Adaptive learning
+
+Learning is opt-in. With it on, these estimates fed real adjustments:
+
+- **Thermal mass** read about 0.97 for every room: it mostly measured rooms sitting still, on a 1°C/min scale. It now uses windows in which the room is actively conditioned, on a 0.2°C/min scale. Rooms responding at 0.03 and 0.12°C/min now read 0.8 and 0.4.
+- **Heat gain and loss ratios** were always 1.0 with 0.1°C sensors, because averaging only the rising intervals returned the sensor step. They now use total drift over total time: rooms drifting at 0.010 and 0.040°C/min now read as a 4.0× ratio.
+- **Cooling efficiency** averaged only the passes that improved, per pass, divided by the next pass's damper position: sensor noise over damper position. It's now net cooling per minute per unit of zone opening.
+- **Convergence time** clipped each interval at zero, which turned noise into apparent convergence. It's now net progress over time.
+- Every estimate now pairs each temperature change with the zone position that was in place while it happened. Each data point stores the position applied after its measurement, which the old estimators used instead.
+- **Smoothing learning** moved the factor the wrong way: more overshoots meant less damping.
+- **Balancing bias** followed overshoot frequency and pushed every "stable" room the same way, so a room stuck below target while cooling got more cold air. It now follows the room's mean shortfall over 24 hours, signed, and fades once the room is fine.
+- **Learning max adjustment** was saved but never used. It now limits how far one hourly update moves a learned value.
+- Each estimate updates on its own as soon as it has enough data.
+- Profiles learned before v3.5.0 restart their estimates. Room coupling is kept.
+
+### Sensors and docs
+
+- New coordinator data `main_fan_decision`. The main fan sensors show the figures behind the decision instead of re-deriving it with stale rules. The room temperature variance sensor adds `room_spread`, and its status follows the balancing trigger.
+- ALGORITHM.md, CONFIGURATION.md, SERVICES.md and SENSORS.md corrected: the stale 8-band fan table (it gave a room just outside the deadband less air than one on target), the weather adjustment (stepped, at most 0.2°C at defaults without a trend, not up to 1°C), balancing exclusions that didn't exist, a predictive example that did nothing, the learning data requirements, and a compressor-protection bypass for boost that never existed.
+
+### Tests
+
+- New `tests/test_maths_review.py` (58 tests) covering the changeover, dry-mode band and alert throttling, main fan levels and hysteresis, the two-sided and adaptive setpoint, predictive control, each learning estimator and profile migration, balancing, minimum airflow, boost, sleep and smoothing. 49 fail on v3.4.0; the other 9 guard behavior that must not change (no direct reversal, overdrive, the airflow floor).
+- One test updated: emergency rooms skipping quick-action caps now uses vacation, since sleep no longer caps zones.
+- An 800-cycle comparison with v3.4.0 differs only in zone positions (mostly 1 to 2 points from rounding), setpoints during overshoot, and the new `main_fan_decision` data, with no errors.
+- Suite: 376 tests (375 passing, 1 skipped).
+
 ## v3.4.0 - Rooms In Use
 
 **Release Date**: 2026-11-08
