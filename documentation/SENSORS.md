@@ -63,7 +63,7 @@ Turns battery-aware mode on or off at runtime. Learning continues while it is of
 
 ### `switch.smart_aircon_manager_night_mode` (if night mode rooms are configured)
 
-Turns night mode on or off at runtime: only the night-mode rooms are conditioned, every other room's zone is closed off. The state survives restarts.
+Turns night mode on or off at runtime: only the night-mode rooms are conditioned, every other room's zone is closed off. The state survives restarts. It turns off by itself when the AC is switched off (not by this integration) and stays off until turned on again.
 
 | Attribute | Description |
 |-----------|-------------|
@@ -181,7 +181,7 @@ Current humidity reading for the room.
 |--------|-------------|
 | `sensor.smart_aircon_manager_error_tracking` | Error count and details |
 | `sensor.smart_aircon_manager_valid_sensors_count` | Number of working temperature sensors |
-| `sensor.smart_aircon_manager_system_status_debug` | Overall health and debug info |
+| `sensor.smart_aircon_manager_system_status_debug` | Overall health and debug info. `held_dampers` lists rooms whose zone keeps ignoring its position (for example a constant zone the AC controller holds open), which aren't re-sent it for now |
 | `sensor.smart_aircon_manager_total_optimizations_run` | Total optimization cycles since startup |
 
 ### Main AC

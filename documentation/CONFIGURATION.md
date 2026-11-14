@@ -176,6 +176,10 @@ Turning night mode on or off moves the zones straight away (the switch triggers 
 
 A room you've disabled under **Room Overrides** is never moved, night mode included.
 
+**Night mode ends when the AC is switched off.** If the AC is switched off by anything other than this integration (its remote or app, a timer, another automation), night mode turns off and the target from before night mode comes back. It stays off when the AC comes back on, until you turn night mode on again. You can turn night mode on while the AC is off (for example in a bedtime automation that turns the AC on afterwards); it then lasts until the AC is next switched off. Under auto control, the integration idling the AC doesn't end the night.
+
+**Zones the controller holds open.** Some controllers keep certain zones open whatever they're told. On Advantage Air these are the *constant zones*, which open whenever too little of the system is open, as at night when only the bedrooms are open. A closed-off room that is a constant zone gets reopened by the controller within seconds. The integration notices after two tries, stops re-sending the close for 5 minutes (doubling up to 30), and logs one warning naming the room. To keep that room closed at night, make the night-mode rooms the constant zones in the controller's settings, or add the room to the night-mode rooms.
+
 ### Temperature drop
 
 With a drop set (for example 2 °C on a 23 °C target), turning night mode on lowers the target to 21 °C, and you'll see it on the climate card. You can still adjust it during the night: the drop happens once each time night mode turns on, not on every cycle, so a target you raise to 22 °C stays at 22 °C. Turning night mode off restores the target from before night mode (23 °C), even if you changed it during the night. The drop therefore never compounds from one night to the next.

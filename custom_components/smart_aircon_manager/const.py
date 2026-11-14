@@ -309,6 +309,15 @@ DEFAULT_NIGHT_MODE_CLOSED_POSITION = 0  # % damper position for closed-off rooms
 NIGHT_MODE_REOPEN_POSITION = 50  # % for a reopened room with no reading to compute from
 NIGHT_MODE_RETRY_MIN_SECONDS = 60  # backoff after a failed zone command
 NIGHT_MODE_RETRY_MAX_SECONDS = 1800
+
+# Damper command feedback. A zone that accepts a position but keeps reporting
+# another one (for example a constant zone the AC controller holds open)
+# stops getting the same command on every pass.
+COVER_FEEDBACK_MIN_SECONDS = 20  # time a zone gets to follow a command before a miss counts
+COVER_FEEDBACK_MISSES = 2  # accepted commands in a row a zone must ignore before the hold
+COVER_FEEDBACK_HOLD_MIN_SECONDS = 300  # first hold; doubles each time the zone ignores a retry
+COVER_FEEDBACK_HOLD_MAX_SECONDS = 1800
+COVER_FEEDBACK_WARN_INTERVAL_SECONDS = 6 * 3600  # one warning per held zone per this long
 # Optional temperature drop: applied once each time night mode turns on, so
 # the target can still be adjusted during the night; the target it replaced
 # is stored and restored when night mode turns off

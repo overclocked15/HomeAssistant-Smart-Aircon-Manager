@@ -1,5 +1,34 @@
 # Changelog
 
+## v3.6.0 - Controller Feedback and Night Mode Auto-Off
+
+**Release Date**: 2026-11-14
+
+Fixes from a field report: three days of Home Assistant logs and history from an Advantage Air system, with repeated zone and AC command timeouts and a zone left open at night.
+
+### Night mode
+
+- **Night mode ends when the AC is switched off.** If the AC is switched off by anything other than this integration (its remote or app, a timer, another automation), night mode turns off in the same cycle, the night temperature drop is undone, and it stays off until it's turned on again, also when the AC comes back on. In the report, night mode stayed on through the day after the morning switch-off, so the living areas stayed closed whenever the AC ran. These don't count as a switch-off: the integration idling the AC under auto control (its own off commands within the previous 2 minutes), a controller outage (unavailable readings), and the first reading after a restart. Night mode can still be turned on while the AC is off; it then lasts until the AC is next switched off.
+
+### Zone dampers
+
+- **Zones that ignore a position aren't sent it on every pass.** A successful command only means the controller accepted it. A zone that accepts the same position twice but still reports something else isn't sent it again for 5 minutes, doubling up to 30, then gets one more try. A new position, the zone moving on its own, or the zone reaching its position ends the wait. In the report, the controller held its two constant zones open whenever night mode left only two rooms open, reopening each close within seconds. The integration re-sent the close on every pass: about 560 commands in three days, each one a request to a controller that was already dropping requests. These commands made up most of the logged timeouts. One warning per room (at most every 6 hours) now says the zone is probably being held, and the System Status Debug sensor lists such rooms in `held_dampers` (also in diagnostics). Failed commands (timeouts) are retried exactly as before.
+
+### Home Assistant warnings
+
+- **No blocking file read.** The device info read `manifest.json` inside the event loop. The version now comes from Home Assistant's already-loaded copy of the manifest.
+- **Climate entity uses the `native_` temperature names.** Home Assistant 2026.11 deprecated `temperature_unit`, `current_temperature` and `target_temperature` (they stop working in 2027.11) and logged a warning for each. The entity now provides the native names, plus the old ones that Home Assistant before 2026.11 reads. Checked against Home Assistant 2026.11.1 on Python 3.14: the full suite passes, and the old entity reproduces the three warnings.
+- **No "Cover entity ... not found" warnings at startup.** The first pass can run before the integration that provides the zones has created them, which logged a warning for every room. While Home Assistant is starting this is now a debug message. Afterwards a missing cover is warned about once, and again only if it disappears after being found.
+
+### Not changed
+
+- The timeouts come from the controller. Home Assistant's own Advantage Air polling hit the same outages, including while the AC was off and this integration was idle. Retries, timeouts and cooling behaviour are unchanged.
+
+### Tests
+
+- New `tests/test_damper_feedback.py` (13 tests), `tests/test_night_mode_ac_off.py` (11) and `tests/test_ha_warnings.py` (10). 26 of the 34 fail on v3.5.0. The other 8 guard behaviour that must not change: other rooms unaffected, outages, restarts and the integration's own switch-off not ending night mode, the climate attributes, and the deprecation check, which fails on v3.5.0 only under Home Assistant 2026.11.
+- Suite: 417 tests (416 passing, 1 skipped) on Home Assistant 2024.12.5 and on 2026.11.1.
+
 ## v3.5.0 - Logic and Maths Review
 
 **Release Date**: 2026-11-08

@@ -85,6 +85,7 @@ async def async_get_config_entry_diagnostics(
             "night_mode_closed_position": optimizer.night_mode_closed_position,
             "closed_off_rooms": sorted(optimizer._night_mode_applied_closed or []),
             "excluded_rooms": sorted(optimizer.excluded_rooms),
+            "held_dampers": optimizer._held_dampers(),
         }
 
     if coordinator and coordinator.data:

@@ -200,9 +200,11 @@ class NightModeSwitch(OptimizerFeatureSwitch):
     """Condition only the night-mode rooms and close off the rest.
 
     Toggle it from a dashboard or an automation (e.g. on at bedtime, off in
-    the morning). The state survives restarts. With a temperature drop set,
-    turning it on lowers the target once and turning it off restores the
-    target from before (see night_mode_entry_data).
+    the morning). The state survives restarts. It also turns off by itself
+    when the AC is switched off (not by this integration), and stays off
+    until turned on again. With a temperature drop set, turning it on lowers
+    the target once and turning it off restores the target from before (see
+    night_mode_entry_data).
     """
 
     # New entity, so it can follow the documented naming without renaming
@@ -252,15 +254,7 @@ class NightModeSwitch(OptimizerFeatureSwitch):
 
     def _apply(self, enabled: bool, new_data: dict[str, Any]) -> None:
         """Switch the optimizer over, including any target change."""
-        self._optimizer.enable_night_mode = enabled
-        new_target = new_data.get(CONF_TARGET_TEMPERATURE)
-        if new_target is not None and float(new_target) != self._optimizer.target_temperature:
-            previous = self._optimizer.target_temperature
-            self._optimizer.target_temperature = float(new_target)
-            _LOGGER.info(
-                "Night mode %s - target %.1f -> %.1f °C",
-                "on" if enabled else "off", previous, float(new_target),
-            )
+        self._optimizer.apply_night_mode(enabled, new_data)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn night mode on and apply it now."""

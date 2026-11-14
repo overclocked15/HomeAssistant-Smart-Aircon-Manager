@@ -8,13 +8,21 @@ import math
 import statistics
 import time
 import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CoreState, HomeAssistant
 
 from .const import (
+    CONF_TARGET_TEMPERATURE,
+    COVER_FEEDBACK_HOLD_MAX_SECONDS,
+    COVER_FEEDBACK_HOLD_MIN_SECONDS,
+    COVER_FEEDBACK_MIN_SECONDS,
+    COVER_FEEDBACK_MISSES,
+    COVER_FEEDBACK_WARN_INTERVAL_SECONDS,
     MAX_TARGET_TEMPERATURE,
     MIN_TARGET_TEMPERATURE,
     NIGHT_MODE_REOPEN_POSITION,
@@ -22,9 +30,24 @@ from .const import (
     NIGHT_MODE_RETRY_MIN_SECONDS,
 )
 from .learning import LearningManager
+from .night_mode import night_mode_entry_data
 from .temperature_utils import normalize_temperature, validate_temperature_range
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _CoverFeedback:
+    """What a zone did with the last position it accepted."""
+
+    position: int  # the last position the zone accepted
+    sent_at: float  # when it accepted it
+    before: int | None  # where the zone was before the first command for this position
+    evaluated: bool = False  # whether that command has been judged yet
+    misses: int = 0  # accepted commands in a row the zone didn't follow
+    hold_until: float = 0.0  # the same position isn't re-sent before this
+    hold_seconds: float = 0.0  # length of the current hold (doubles each time)
+    held_at: int | None = None  # where the zone was when the hold started
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -36,6 +59,9 @@ RETRY_BACKOFF_FACTOR = 2.0  # exponential backoff multiplier
 UNREACHABLE_STATES = ("unavailable", "unknown")
 # Zone states in which a new position would fight the current movement
 COVER_MOVING_STATES = ("opening", "closing")
+# A zone within this many % of its target counts as there (zones like
+# Advantage Air's round to 5 % steps, so they can sit 2 % off)
+COVER_POSITION_TOLERANCE = 3
 # A repeated failure notification (same room) waits this long
 FAILURE_NOTIFY_COOLDOWN_SECONDS = 1800
 # Informational "AC Mode Changed" alerts: at most one per mode per hour
@@ -459,6 +485,14 @@ class AirconOptimizer:
         self._night_mode_unsettled: set[str] = set()
         # room -> (earliest next attempt, current delay) after a failed command
         self._night_mode_retry_backoff: dict[str, tuple[float, float]] = {}
+        # Damper command feedback per room: zones that accept a position but
+        # keep reporting another one aren't re-sent it every pass (_cover_held)
+        self._cover_feedback: dict[str, _CoverFeedback] = {}
+        # room -> when its "damper isn't following" warning was last logged
+        # (log rate limit only; never consulted for a control decision)
+        self._cover_hold_warned_at: dict[str, float] = {}
+        # Rooms whose missing cover entity has been warned about (log only)
+        self._missing_cover_warned: set[str] = set()
 
         # One optimization cycle at a time: HA's coordinator doesn't serialize
         # refreshes, and a refresh requested mid-cycle (switches, the climate
@@ -1918,7 +1952,7 @@ class AirconOptimizer:
                 return True
         return False
 
-    def _observe_external_ac_transitions(self, main_climate_state: dict[str, Any] | None) -> None:
+    def _observe_external_ac_transitions(self, main_climate_state: dict[str, Any] | None) -> bool:
         """Arm the compressor min on/off timers for transitions made elsewhere.
 
         The critical monitor, the unit's own remote or app, or another
@@ -1926,17 +1960,21 @@ class AirconOptimizer:
         transitions, the optimizer could switch off an AC the critical
         monitor has just started (its min-on timer was stale) or restart one
         the user has just switched off.
+
+        Returns True when this reading shows the AC switched off by something
+        other than this integration. Unavailable readings are skipped, and the
+        first reading after a restart only sets the baseline.
         """
         if not main_climate_state:
-            return
+            return False
         mode = main_climate_state.get("hvac_mode")
         if mode in (None, "unavailable", "unknown"):
-            return
+            return False
         active = mode != "off"
         previous = self._last_seen_ac_active
         self._last_seen_ac_active = active
         if previous is None or previous == active:
-            return
+            return False
         now = time.time()
         # Our own commands stamp the timers when sent; only stamp transitions
         # that no recent command of ours explains.
@@ -1946,6 +1984,47 @@ class AirconOptimizer:
         elif not active and (self._ac_last_turned_off is None or now - self._ac_last_turned_off > 120):
             self._ac_last_turned_off = now
             _LOGGER.debug("Main AC switched off externally - arming compressor min-off timer")
+            return True
+        return False
+
+    def apply_night_mode(self, enabled: bool, new_data: Mapping[str, Any]) -> None:
+        """Switch night mode on or off from saved entry data, with its target.
+
+        ``new_data`` is the entry data as saved by night_mode_entry_data, so
+        a temperature drop is applied when night mode turns on and undone when
+        it turns off. Used by the Night Mode switch and when the AC is
+        switched off.
+        """
+        self.enable_night_mode = enabled
+        new_target = new_data.get(CONF_TARGET_TEMPERATURE)
+        if new_target is not None and float(new_target) != self.target_temperature:
+            previous = self.target_temperature
+            self.target_temperature = float(new_target)
+            _LOGGER.info(
+                "Night mode %s - target %.1f -> %.1f °C",
+                "on" if enabled else "off", previous, float(new_target),
+            )
+
+    def _end_night_mode_after_ac_off(self) -> None:
+        """Turn night mode off because the AC was switched off.
+
+        It stays off until the user turns it on again, also when the AC comes
+        back on. Saved first and then applied, like the Night Mode switch, so
+        the stored state never drifts from the running one; if the entry can't
+        be saved, night mode is left on.
+        """
+        new_data: Mapping[str, Any] = {}
+        if self.config_entry is not None:
+            new_data = night_mode_entry_data(self.config_entry.data, False, self.target_temperature)
+            try:
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            except Exception as err:  # noqa: BLE001 - report and leave night mode on
+                _LOGGER.warning(
+                    "Main AC switched off, but night mode couldn't be saved as off (%s) - left on", err
+                )
+                return
+        self.apply_night_mode(False, new_data)
+        _LOGGER.info("Main AC switched off - night mode turned off until it is switched on again")
 
     def _compute_comfort_relaxation(self, room_states: dict[str, dict[str, Any]]) -> dict[str, Any]:
         """Comfort relaxation for this cycle (°C, energy-saving direction).
@@ -2585,6 +2664,42 @@ class AirconOptimizer:
         # Battery-aware mode: read the battery and decide this cycle's level
         await self._update_battery_state()
 
+        # Read the main AC first: auto mode's reversal guard (when resolving the
+        # cycle's direction) depends on what the unit is doing right now, and an
+        # AC switched off ends night mode before this cycle uses it.
+        main_climate_state = None
+        main_ac_running = False
+        if self.main_climate_entity:
+            climate_state = self.hass.states.get(self.main_climate_entity)
+            if climate_state:
+                # Standard HA climate entities expose the hvac mode as the
+                # entity STATE, not as an attribute; without the state
+                # fallback, "hvac_mode" is None on real entities and every
+                # downstream mode comparison (turn-off, compressor
+                # protection, redundant-mode-set suppression) silently fails.
+                hvac_mode = climate_state.attributes.get("hvac_mode") or climate_state.state
+                main_climate_state = {
+                    "state": climate_state.state,
+                    "temperature": climate_state.attributes.get("temperature"),
+                    "current_temperature": climate_state.attributes.get("current_temperature"),
+                    "hvac_mode": hvac_mode,
+                    "hvac_action": climate_state.attributes.get("hvac_action"),
+                }
+                hvac_action = climate_state.attributes.get("hvac_action")
+                main_ac_running = (
+                    hvac_action in ["cooling", "heating", "drying", "fan"]  # Include more actions
+                    or (hvac_mode and hvac_mode not in ["off", "unavailable"])
+                )
+        current_ac_mode = main_climate_state.get("hvac_mode") if main_climate_state else None
+
+        # Arm compressor timers for on/off transitions made by someone else.
+        # Night mode only lasts while the AC runs: switched off by anyone but
+        # this integration, it turns night mode off too (before the target and
+        # the closed rooms are worked out below, so this cycle already runs
+        # without it).
+        if self._observe_external_ac_transitions(main_climate_state) and self.enable_night_mode:
+            self._end_night_mode_after_ac_off()
+
         active_schedule = None
         effective_target = self.target_temperature
 
@@ -2664,36 +2779,6 @@ class AirconOptimizer:
                     weather_adjustment,
                     effective_target
                 )
-
-        # Read the main AC before resolving the cycle's direction: auto mode's
-        # reversal guard depends on what the unit is doing right now.
-        main_climate_state = None
-        main_ac_running = False
-        if self.main_climate_entity:
-            climate_state = self.hass.states.get(self.main_climate_entity)
-            if climate_state:
-                # Standard HA climate entities expose the hvac mode as the
-                # entity STATE, not as an attribute — without the state
-                # fallback, "hvac_mode" is None on real entities and every
-                # downstream mode comparison (turn-off, compressor
-                # protection, redundant-mode-set suppression) silently fails.
-                hvac_mode = climate_state.attributes.get("hvac_mode") or climate_state.state
-                main_climate_state = {
-                    "state": climate_state.state,
-                    "temperature": climate_state.attributes.get("temperature"),
-                    "current_temperature": climate_state.attributes.get("current_temperature"),
-                    "hvac_mode": hvac_mode,
-                    "hvac_action": climate_state.attributes.get("hvac_action"),
-                }
-                hvac_action = climate_state.attributes.get("hvac_action")
-                main_ac_running = (
-                    hvac_action in ["cooling", "heating", "drying", "fan"]  # Include more actions
-                    or (hvac_mode and hvac_mode not in ["off", "unavailable"])
-                )
-        current_ac_mode = main_climate_state.get("hvac_mode") if main_climate_state else None
-
-        # Arm compressor timers for on/off transitions made by someone else
-        self._observe_external_ac_transitions(main_climate_state)
 
         # Comfort relaxation (sleep, battery-aware mode) and this cycle's
         # conditioning direction. The direction is resolved on the UNRELAXED
@@ -3065,6 +3150,8 @@ class AirconOptimizer:
             "night_mode_active": self.night_mode_active,
             "night_mode_rooms": list(self.night_mode_rooms),
             "night_mode_closed_rooms": sorted(closed_off - excluded_this_cycle),
+            # Dampers that keep ignoring their position (not re-sent for now)
+            "held_dampers": self._held_dampers(),
             "efficiency_active": self._efficiency_active(),
             "efficient_fan_idle": self._efficient_fan_idle,
             "battery": self.battery_summary(),
@@ -4390,9 +4477,10 @@ class AirconOptimizer:
         Returns the rooms whose damper needs nothing more: the command went
         through, the zone was already within the debounce, or there is
         nothing a retry could change (control disabled for the room, room or
-        cover entity missing). Rooms skipped because the zone was moving,
-        unavailable or unknown, rooms whose command failed, and every room
-        while manual override is on, are left out.
+        cover entity missing, zone ignoring that position; see _cover_held).
+        Rooms skipped because the zone was moving, unavailable or unknown,
+        rooms whose command failed, and every room while manual override is
+        on, are left out.
         """
         delivered: set[str] = set()
         # Check manual override before issuing any commands
@@ -4422,9 +4510,10 @@ class AirconOptimizer:
             cover_state = self.hass.states.get(cover_entity)
 
             if not cover_state:
-                _LOGGER.warning("Cover entity %s for room %s not found", cover_entity, room_name)
+                self._log_missing_cover(room_name, cover_entity)
                 delivered.add(room_name)
                 continue
+            self._missing_cover_warned.discard(room_name)
 
             if cover_state.state in UNREACHABLE_STATES:
                 _LOGGER.warning("Cover entity %s for room %s is %s", cover_entity, room_name, cover_state.state)
@@ -4439,19 +4528,23 @@ class AirconOptimizer:
                 )
                 continue
 
-            # Debounce: skip if position change is ≤3% to reduce unnecessary commands
-            current_pos = cover_state.attributes.get("current_position")
-            if current_pos is not None:
-                try:
-                    if abs(int(current_pos) - int(position)) <= 3:
-                        _LOGGER.debug(
-                            "Skipping %s position change (%d%% → %d%%) - within 3%% debounce",
-                            room_name, int(current_pos), int(position)
-                        )
-                        delivered.add(room_name)
-                        continue
-                except (ValueError, TypeError):
-                    pass  # Can't parse current position, proceed with update
+            # Debounce: a zone already within tolerance of its target needs
+            # nothing (an unparseable position always gets the command)
+            current = self._cover_position(cover_state)
+            if current is not None:
+                if abs(current - int(position)) <= COVER_POSITION_TOLERANCE:
+                    _LOGGER.debug(
+                        "Skipping %s position change (%d%% → %d%%) - within %d%% debounce",
+                        room_name, current, int(position), COVER_POSITION_TOLERANCE
+                    )
+                    self._cover_followed(room_name)
+                    delivered.add(room_name)
+                    continue
+                # A zone that keeps ignoring this position isn't sent it again
+                # for a while; nothing a retry could change, so it counts as done
+                if self._cover_held(room_name, int(position), current):
+                    delivered.add(room_name)
+                    continue
 
             # Use retry logic for cover position changes
             success = await self._retry_service_call(
@@ -4463,6 +4556,8 @@ class AirconOptimizer:
 
             if success:
                 delivered.add(room_name)
+                if current is not None:
+                    self._cover_command_accepted(room_name, int(position), current)
                 # The zone works again: a later failure notifies promptly
                 self._failure_notified_at.pop(f"cover:{room_name}", None)
                 _LOGGER.debug("Set cover position for %s (%s) to %d%%", room_name, cover_entity, position)
@@ -4474,6 +4569,126 @@ class AirconOptimizer:
                 )
 
         return delivered
+
+    def _log_missing_cover(self, room_name: str, cover_entity: str) -> None:
+        """Warn once that a room's cover entity doesn't exist.
+
+        Not while Home Assistant is starting: the first pass can run before
+        the integration that provides the covers (Advantage Air, say) has
+        created them. Warned again only after the entity has been seen.
+        """
+        if self.hass.state is not CoreState.running or room_name in self._missing_cover_warned:
+            _LOGGER.debug("Cover entity %s for room %s not found", cover_entity, room_name)
+            return
+        self._missing_cover_warned.add(room_name)
+        _LOGGER.warning("Cover entity %s for room %s not found", cover_entity, room_name)
+
+    @staticmethod
+    def _cover_position(cover_state) -> int | None:
+        """The position a zone reports in %, or None when it reports none."""
+        value = cover_state.attributes.get("current_position")
+        if value is None:
+            return None
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _cover_followed(self, room_name: str) -> None:
+        """The zone is where it was told to be: forget its misses and any hold."""
+        feedback = self._cover_feedback.pop(room_name, None)
+        if feedback is not None and feedback.hold_seconds:
+            _LOGGER.info("%s's damper is following commands again", room_name)
+
+    def _cover_command_accepted(self, room_name: str, position: int, before: int) -> None:
+        """Record a position the zone accepted, to check on a later pass."""
+        now = time.time()
+        feedback = self._cover_feedback.get(room_name)
+        if feedback is None or abs(position - feedback.position) > COVER_POSITION_TOLERANCE:
+            self._cover_feedback[room_name] = _CoverFeedback(position=position, sent_at=now, before=before)
+            return
+        # The same target again (the retry after a hold, or a resend before
+        # the zone could be judged): keep the streak, judge this command.
+        # ``before`` stays where the zone was before the streak began, so a
+        # zone that moved part of the way isn't later taken as overridden.
+        feedback.position = position
+        feedback.sent_at = now
+        feedback.evaluated = False
+        feedback.hold_until = 0.0
+        feedback.held_at = None
+
+    def _cover_held(self, room_name: str, position: int, current: int) -> bool:
+        """Whether to skip re-sending ``position`` to a zone that keeps ignoring it.
+
+        Only called while the zone reports a position outside tolerance of
+        ``position``. A successful service call only says the controller took
+        the command; whether the zone followed shows on a later pass. After
+        COVER_FEEDBACK_MISSES accepted commands in a row that the zone didn't
+        follow, the same position waits 5 minutes before it is sent again,
+        doubling up to 30 while the zone keeps ignoring it. An AC controller
+        holding a constant zone open does exactly this, and the close used to
+        go out on every pass all night. A new target, or the zone moving on
+        its own, ends the hold at once.
+        """
+        feedback = self._cover_feedback.get(room_name)
+        if feedback is None:
+            return False
+        if abs(position - feedback.position) > COVER_POSITION_TOLERANCE:
+            # A new target: send it and judge from scratch
+            del self._cover_feedback[room_name]
+            return False
+        now = time.time()
+        if feedback.hold_until:
+            if feedback.held_at is not None and abs(current - feedback.held_at) > COVER_POSITION_TOLERANCE:
+                # Something moved the zone since the hold started: try again now
+                del self._cover_feedback[room_name]
+                return False
+            # Skip while the hold lasts; once it is over, send the position once
+            # more (_cover_command_accepted then starts judging that command)
+            return now < feedback.hold_until
+        if feedback.evaluated:
+            return False  # judged already (its resend failed): send again
+        age = now - feedback.sent_at
+        if age < COVER_FEEDBACK_MIN_SECONDS:
+            return False  # too early to judge; resending is harmless
+        if age > max(3 * self._optimization_interval, 120):
+            # Judged long after the command (control paused, the AC off): what
+            # moved the zone since says nothing about that command
+            del self._cover_feedback[room_name]
+            return False
+        feedback.evaluated = True
+        feedback.misses += 1
+        if feedback.misses < COVER_FEEDBACK_MISSES:
+            return False
+        feedback.hold_seconds = min(
+            COVER_FEEDBACK_HOLD_MAX_SECONDS, max(COVER_FEEDBACK_HOLD_MIN_SECONDS, feedback.hold_seconds * 2)
+        )
+        feedback.hold_until = now + feedback.hold_seconds
+        feedback.held_at = current
+        # Warn when the zone went back to where it was (something overrides
+        # it); a zone that moved but can't reach the exact position (coarse
+        # steps) is only held, quietly
+        reverted = feedback.before is not None and abs(current - feedback.before) <= COVER_POSITION_TOLERANCE
+        last_warned = self._cover_hold_warned_at.get(room_name)
+        if reverted and (last_warned is None or now - last_warned >= COVER_FEEDBACK_WARN_INTERVAL_SECONDS):
+            self._cover_hold_warned_at[room_name] = now
+            _LOGGER.warning(
+                "%s's damper accepted %d%% %d times in a row but still reports %d%%, so something "
+                "else is probably holding it there (for example a constant zone on the AC "
+                "controller). Not sending %d%% again for %d min",
+                room_name, position, feedback.misses, current, position, feedback.hold_seconds / 60,
+            )
+        else:
+            _LOGGER.debug(
+                "%s's damper reports %d%% after accepting %d%% - not re-sending it for %d min",
+                room_name, current, position, feedback.hold_seconds / 60,
+            )
+        return True
+
+    def _held_dampers(self) -> list[str]:
+        """Rooms whose damper position is being held back (see _cover_held)."""
+        now = time.time()
+        return sorted(room for room, feedback in self._cover_feedback.items() if feedback.hold_until > now)
 
     async def _determine_and_set_main_fan_speed(self, room_states: dict[str, dict[str, Any]]) -> str:
         """Determine and set the main aircon fan speed."""
