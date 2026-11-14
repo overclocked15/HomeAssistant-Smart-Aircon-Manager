@@ -49,7 +49,7 @@
 
 **Cause**: The AC controller is overriding the zone. On Advantage Air the usual reason is a **constant zone**: the controller opens constant zones whenever too little of the system is open, for example at night when only the bedrooms are open. It reopens the zone within seconds of each close. The constant zones are listed in the Advantage Air diagnostics (`constant1` to `constant3`, as zone numbers).
 
-**What the integration does**: After two ignored commands it stops re-sending that position for 5 minutes, doubling up to 30, then tries again in case the controller now allows it. The room is listed in the System Status Debug sensor's `held_dampers` attribute. A new position, or the zone moving, makes it send at once.
+**What the integration does**: After two ignored commands it stops re-sending that position for 5 minutes. When the wait is over, the next pass that sends zone positions tries again, in case the controller now allows it; each ignored retry doubles the wait, up to 30 minutes, and a zone reopened soon after it was allowed to close starts at double the last wait. The room is listed in the System Status Debug sensor's `held_dampers` attribute. A new position, or the zone moving towards its position, makes it send at once.
 
 **Fixes**: Make the rooms you keep open at night the constant zones (in the controller's installer settings), or add the constant-zone room to the night-mode rooms. Opening the night rooms further can also let the controller release it: in one report, the constant zone could close only while both open zones were at 100%.
 

@@ -17,7 +17,6 @@ from .const import (
     CONF_EXCLUDED_ROOMS,
     CONF_NIGHT_MODE_SAVED_TARGET,
     CONF_NIGHT_MODE_TEMP_DROP,
-    CONF_TARGET_TEMPERATURE,
     DEFAULT_NIGHT_MODE_TEMP_DROP,
     DOMAIN,
 )
@@ -349,11 +348,10 @@ class RoomInUseSwitch(OptimizerFeatureSwitch):
     def _apply(self, enabled: bool, new_data: dict[str, Any]) -> None:
         """Switch the optimizer over to the saved list (and any target change)."""
         self._optimizer.excluded_rooms = list(new_data[CONF_EXCLUDED_ROOMS])
-        new_target = new_data.get(CONF_TARGET_TEMPERATURE)
-        if new_target is not None and float(new_target) != self._optimizer.target_temperature:
+        previous = self._optimizer.apply_entry_target(new_data)
+        if previous is not None:
             _LOGGER.info(
                 "Night mode %s - target %.1f -> %.1f °C",
                 "focus room back in use" if self._optimizer.night_mode_active else "standing aside",
-                self._optimizer.target_temperature, float(new_target),
+                previous, self._optimizer.target_temperature,
             )
-            self._optimizer.target_temperature = float(new_target)
