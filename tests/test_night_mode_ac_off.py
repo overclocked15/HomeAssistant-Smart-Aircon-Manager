@@ -305,20 +305,29 @@ class TestOwnSwitchOff:
             switch_off(opt, states)
         assert opt.enable_night_mode is False
 
-    def test_user_switch_off_right_after_an_own_restart_ends_it(self):
-        # Auto control restarts the AC and the user switches it off before
-        # any poll has read it running
+    def test_off_readings_right_after_an_own_restart_are_not_a_switch_off(self):
+        # An accepted restart that still reads off for a poll or two (Codex
+        # review on #8): the idle's off readings mustn't count towards it
         opt, calls, states, _ = night_cycle_optimizer(auto_control_main_ac=True)
         run_cycle(opt)
         self._idle(opt, states, calls)
         set_ac_mode(states, "off")
-        run_cycle(opt)                                   # a poll sees the idle
+        for _ in range(4):
+            run_cycle(opt)                               # idle polls
+        assert opt._night_mode_ac_off_reads == 0
         set_room_temps(states, Bed=23.0, Living=23.0)
         later = time.time() + 600                        # past the min off-time
         with patch("time.time", return_value=later):
-            run_cycle(opt)                               # restart sent
+            run_cycle(opt)                               # restart accepted...
             assert hvac_commands(calls)[-1] != "off"
-            switch_off(opt, states)                      # user: off again
+            run_cycle(opt)                               # ...but still reads off
+            run_cycle(opt)
+        assert opt.enable_night_mode is True
+        # Once it reads running, a switch-off by the user ends night mode
+        set_ac_mode(states, "cool")
+        with patch("time.time", return_value=later + 90):
+            run_cycle(opt)
+            switch_off(opt, states)
         assert opt.enable_night_mode is False
 
     def test_failed_switch_off_that_left_the_ac_running_is_forgotten(self):

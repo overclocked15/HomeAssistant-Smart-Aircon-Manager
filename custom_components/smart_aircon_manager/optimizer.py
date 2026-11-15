@@ -2064,11 +2064,15 @@ class AirconOptimizer:
             self._night_mode_ac_seen_on = True
             self._night_mode_ac_off_reads = 0
             return False
+        if self._ac_off_intended:
+            # Off because auto control idled it (or a restart it sent hasn't
+            # shown yet): these readings don't count towards a switch-off
+            self._night_mode_ac_off_reads = 0
+            return False
         self._night_mode_ac_off_reads += 1
         return (
             self._night_mode_ac_seen_on
             and self._night_mode_ac_off_reads >= NIGHT_MODE_AC_OFF_READINGS
-            and not self._ac_off_intended
         )
 
     def _end_night_mode_after_ac_off(self) -> None:
@@ -5326,9 +5330,9 @@ class AirconOptimizer:
                 )
                 if success:
                     self._ac_last_turned_on = time.time()
-                    # Back on by this integration: a switch-off from here on is
-                    # someone else's, even before a poll reads the AC running
-                    self._ac_off_intended = False
+                    # The intended-off marker stays until a poll reads the AC
+                    # running: an accepted restart can still read off for a
+                    # poll or two, which isn't anyone switching it off
                     # Persist timestamp for compressor protection across restarts
                     await self._save_compressor_state()
                     await self._send_notification("AC Turned On", f"Smart Manager turned on AC in {optimal_mode} mode")
