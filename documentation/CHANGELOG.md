@@ -1,5 +1,52 @@
 # Changelog
 
+## v3.6.0 - Controller Feedback and Night Mode Auto-Off
+
+**Release Date**: 2026-11-14
+
+Fixes from a field report: three days of Home Assistant logs and history from an Advantage Air system, with repeated zone and AC command timeouts and a zone left open at night.
+
+### Night mode
+
+- **Night mode ends when the AC is switched off.** If the AC is switched off by anything other than this integration (its remote or app, a timer, another automation), night mode turns off, the night temperature drop is undone, and it stays off until it's turned on again, also when the AC comes back on. In the report, night mode stayed on through the day after the morning switch-off, so the living areas stayed closed whenever the AC ran. It ends once the AC, having run since night mode was turned on, reads off on two polls in a row (about 30 seconds). With auto control of the AC on, turning the manager off (which switches the AC off) ends it at once, also while the AC is idling. These don't end it: the integration idling the AC under auto control, a controller outage (unavailable readings), a single off reading, and an AC that was already off when night mode was turned on or when Home Assistant started.
+
+### Zone dampers
+
+- **Zones that ignore a position aren't sent it on every pass.** A successful command only means the controller accepted it. A zone that accepts the same position twice but still reports something else isn't sent it again for 5 minutes; then the next pass that sends zone positions tries once more, and each ignored try doubles the wait, up to 30 minutes. A zone that ignores the same position again within 30 minutes of its last wait starts at double that wait. A new position, the zone moving towards its position, or the zone reaching it ends the wait. In the report, the controller held its two constant zones open whenever night mode left only two rooms open, reopening each close within seconds. The integration re-sent the close on every pass: about 560 commands in three days, each one a request to a controller that was already dropping requests. These commands made up most of the logged timeouts. One warning per room (at most every 6 hours) now says the zone is probably being held, and the System Status Debug sensor lists such rooms in `held_dampers` (also in diagnostics). Failed commands (timeouts) are retried exactly as before.
+
+### Home Assistant warnings
+
+- **No blocking file read.** The device info read `manifest.json` inside the event loop. The version now comes from Home Assistant's already-loaded copy of the manifest.
+- **Climate entity uses the `native_` temperature names.** Home Assistant 2026.11 deprecated `temperature_unit`, `current_temperature` and `target_temperature` (they stop working in 2027.11) and logged a warning for each. The entity now provides the native names, plus the old ones that Home Assistant before 2026.11 reads. Checked against Home Assistant 2026.11.1 on Python 3.14: the full suite passes, and the old entity reproduces the three warnings.
+- **No "Cover entity ... not found" warnings at startup.** The first pass can run before the integration that provides the zones has created them, which logged a warning for every room. While Home Assistant is starting this is now a debug message. Afterwards a missing cover is warned about once, and again only if it disappears after being found.
+
+### From the pre-release bug check
+
+- **Who switched the AC off no longer depends on timing.** The first build counted an off as the integration's own only if it was seen within 2 minutes of a successful off command. A controller outage, a slow unit, or an off command reported as failed but carried out ended night mode in the middle of the night under auto control, and a user's switch-off within 2 minutes of the integration's own command was missed. The integration now notes when auto control sends the off and clears that once the AC is running again.
+- **Turning night mode on just after switching the AC off** (before a poll saw the off) no longer turns it straight back off: night mode only ends once the AC has run since it was turned on.
+- **Turning the manager off ends night mode deliberately**, instead of by accident when the manager was turned back on, which also re-armed the compressor's minimum off-time for no reason.
+- **A failed save of night mode as off is retried** on the next poll. It used to leave night mode on for the rest of the day.
+- **A held zone moving further away no longer restarts the streak.** A controller varying a held constant zone's opening (75% and 80%) got 24 close commands an hour instead of 5. Only movement towards the position ends a wait.
+- **The wait keeps growing across brief follows.** A constant zone closed and reopened as other zones move restarted at 5 minutes each time.
+- **A wait that ran out long ago starts over**, instead of holding for 30 minutes after one ignored command.
+- **The warning covers zones opened elsewhere.** It only fired when the zone went back to where it was before the command, so a zone pre-positioned at 30% and opened to 100% by the controller was held without one. It now fires when a held zone is more than 12% away from its position.
+- `held_dampers` is reported while room readings are missing; a zone's position is read and clamped the same way for room states and damper commands; the room switch and night mode share one way of applying a target; docs say a retry needs a pass that sends zone positions.
+
+### From the Codex review
+
+- **A restart held back by compressor protection no longer ends night mode.** When auto control had idled the AC and demand came back within the minimum off-time (or during an outage), the AC stayed off only because the restart was held back. The integration had already stopped counting that off as its own, so two polls later night mode ended and the day target came back. The off now stays the integration's own until the AC is running again.
+- From the bug check of that fix: turning the manager off while auto control has the AC idling now ends night mode as documented.
+- **Off readings right after an accepted restart no longer end night mode** (second Codex review). A restart can still read off for a poll or two, and the off readings counted during the idle carried over, so one stale reading ended the night. Off readings the integration's own idle explains no longer count, and its restart only counts once the AC reads running. The cost: a user switch-off before any poll sees the restarted AC running is missed, and night mode then ends at the next switch-off instead.
+
+### Not changed
+
+- The timeouts come from the controller. Home Assistant's own Advantage Air polling hit the same outages, including while the AC was off and this integration was idle. Retries, timeouts and cooling behaviour are unchanged.
+
+### Tests
+
+- New `tests/test_damper_feedback.py` (21 tests), `tests/test_night_mode_ac_off.py` (24) and `tests/test_ha_warnings.py` (10). 43 of the 55 fail on v3.5.0. The other 12 guard behaviour that must not change: other rooms unaffected, outages, single off readings, restarts, the integration's own switch-off and held-back restarts not ending night mode, missing covers warned about again after they were back, the climate attributes, and the deprecation check, which fails on v3.5.0 only under Home Assistant 2026.11. 19 of the 45 damper and night mode tests fail on the first v3.6.0 build, covering every bug-check finding except the docs one; the Codex-review tests fail on the builds it reviewed (2 on the first, 1 on the second), and the manager-off test from the bug check of that fix fails on the fix.
+- Suite: 438 tests (437 passing, 1 skipped) on Home Assistant 2024.12.5 and on 2026.11.1.
+
 ## v3.5.0 - Logic and Maths Review
 
 **Release Date**: 2026-11-08

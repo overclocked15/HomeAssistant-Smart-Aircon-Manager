@@ -43,6 +43,16 @@
 - **Stability detection**: If temperatures are stable, the system reduces the frequency of changes
 - **Cover in motion**: The system waits for covers to finish moving before issuing new commands
 
+### A Zone Stays Open Although Its Recommendation Is 0%
+
+**Symptom**: A room night mode closes off (or any room set to 0%) keeps showing its zone open, often at its old position, and the log shows: *"Media Room's damper accepted 0% 2 times in a row but still reports 75%, so something else is probably holding it there..."*
+
+**Cause**: The AC controller is overriding the zone. On Advantage Air the usual reason is a **constant zone**: the controller opens constant zones whenever too little of the system is open, for example at night when only the bedrooms are open. It reopens the zone within seconds of each close. The constant zones are listed in the Advantage Air diagnostics (`constant1` to `constant3`, as zone numbers).
+
+**What the integration does**: After two ignored commands it stops re-sending that position for 5 minutes. When the wait is over, the next pass that sends zone positions tries again, in case the controller now allows it; each ignored retry doubles the wait, up to 30 minutes, and a zone reopened soon after it was allowed to close starts at double the last wait. The room is listed in the System Status Debug sensor's `held_dampers` attribute. A new position, or the zone moving towards its position, makes it send at once.
+
+**Fixes**: Make the rooms you keep open at night the constant zones (in the controller's installer settings), or add the constant-zone room to the night-mode rooms. Opening the night rooms further can also let the controller release it: in one report, the constant zone could close only while both open zones were at 100%.
+
 ### Quick Action Mode Won't Activate
 
 **Symptom**: Calling vacation/boost/sleep/party service has no effect.
@@ -108,6 +118,7 @@
 - Temperature sensors intermittently unavailable (check WiFi, battery)
 - Cover entities not responding (check Z-Wave/Zigbee mesh)
 - Main climate entity offline
+- The AC controller dropping requests. *"Failed to call cover.set_cover_position ... Connection timed out"* warnings that succeed on a later attempt, alongside Advantage Air's own *"Error fetching Advantage Air data"* errors, point at the controller or its network (on Advantage Air, the wall tablet: power, Wi-Fi signal, the app being put to sleep, a fixed IP address), not at this integration
 
 **Solutions**:
 1. Check HA logs for specific error messages

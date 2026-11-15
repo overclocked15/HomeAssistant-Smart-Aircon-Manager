@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.loader import async_get_integration
 
 from .const import (
     DOMAIN,
@@ -134,24 +135,30 @@ SERVICE_SCHEMA_TIMED_MODE = vol.Schema({
 })
 
 
+async def _async_cache_version(hass: HomeAssistant) -> None:
+    """Cache this integration's version for the device info.
+
+    Home Assistant has already loaded the manifest, so this reads no file:
+    reading manifest.json from an entity property blocked the event loop.
+    """
+    global _CACHED_VERSION
+    if _CACHED_VERSION is not None:
+        return
+    try:
+        integration = await async_get_integration(hass, DOMAIN)
+        _CACHED_VERSION = str(integration.version) if integration.version else "unknown"
+    except Exception:  # noqa: BLE001 - the version is cosmetic
+        _CACHED_VERSION = "unknown"
+
+
 def get_device_info(config_entry: ConfigEntry) -> dict:
     """Get device info for all entities."""
-    global _CACHED_VERSION
-    if _CACHED_VERSION is None:
-        import json
-        from pathlib import Path
-        try:
-            manifest_path = Path(__file__).parent / "manifest.json"
-            manifest = json.loads(manifest_path.read_text())
-            _CACHED_VERSION = manifest.get("version", "unknown")
-        except Exception:
-            _CACHED_VERSION = "unknown"
     return {
         "identifiers": {(DOMAIN, config_entry.entry_id)},
         "name": "Smart Aircon Manager",
         "manufacturer": "Smart Aircon Manager",
         "model": "Logic-Based HVAC Controller",
-        "sw_version": _CACHED_VERSION,
+        "sw_version": _CACHED_VERSION or "unknown",
     }
 
 
@@ -194,6 +201,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Smart Aircon Manager from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+    await _async_cache_version(hass)
 
     # Create the optimizer instance
     optimizer = AirconOptimizer(

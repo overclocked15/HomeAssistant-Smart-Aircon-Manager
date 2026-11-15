@@ -701,6 +701,9 @@ class SystemStatusDebugSensor(AirconManagerSensorBase):
             "recommendation_count": len(self.coordinator.data.get("recommendations", {})),
             "ai_response_available": bool(self.coordinator.data.get("optimization_response_text")),
             "main_climate_state": self.coordinator.data.get("main_climate_state"),
+            # Dampers that keep ignoring their position, e.g. a constant zone
+            # the AC controller holds open (not re-sent it for now)
+            "held_dampers": self.coordinator.data.get("held_dampers", []),
         }
 
 

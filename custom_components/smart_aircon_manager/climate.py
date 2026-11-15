@@ -42,6 +42,11 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
 
     _attr_has_entity_name = True
     _attr_name = "Smart Aircon Manager"
+    # Home Assistant 2026.11 reads the native_ temperature names and older
+    # versions the plain ones. Providing both here serves either: newer
+    # versions take the native names (no deprecation warning) and ignore the
+    # plain ones, which older versions need.
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE
@@ -82,7 +87,7 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         return get_device_info(self._config_entry)
 
     @property
-    def current_temperature(self) -> float | None:
+    def native_current_temperature(self) -> float | None:
         """Return the current temperature (average of the controlled rooms).
 
         Rooms night mode has closed off are left out: the average reflects
@@ -104,9 +109,13 @@ class AirconAIClimate(CoordinatorEntity, ClimateEntity):
         return round(sum(temps) / len(temps), 1)
 
     @property
-    def target_temperature(self) -> float | None:
+    def native_target_temperature(self) -> float | None:
         """Return the target temperature."""
         return self._optimizer.target_temperature
+
+    # The names Home Assistant before 2026.11 reads (see the unit above)
+    current_temperature = native_current_temperature
+    target_temperature = native_target_temperature
 
     @property
     def hvac_mode(self) -> HVACMode:
