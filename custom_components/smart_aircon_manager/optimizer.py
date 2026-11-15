@@ -2029,6 +2029,16 @@ class AirconOptimizer:
         self.target_temperature = float(new_target)
         return previous
 
+    @staticmethod
+    def _ac_mode_running(mode: str | None) -> bool | None:
+        """Whether an hvac mode reading means the AC is on (any mode but off).
+
+        None for readings that say nothing (missing, unavailable, unknown).
+        """
+        if mode in (None, "unavailable", "unknown"):
+            return None
+        return mode != "off"
+
     def _night_mode_should_end(self, mode: str | None) -> bool:
         """Whether this reading of the AC ends night mode.
 
@@ -2041,9 +2051,9 @@ class AirconOptimizer:
         outage or a command reported as failed but carried out all leave the
         decision the same.
         """
-        if mode in (None, "unavailable", "unknown"):
+        read_on = self._ac_mode_running(mode)
+        if read_on is None:
             return False
-        read_on = mode != "off"
         if read_on and self._ac_prev_read_on is False:
             # Back on (whoever did it): a later off is judged afresh
             self._ac_off_intended = False
@@ -2620,7 +2630,13 @@ class AirconOptimizer:
         if not self.main_climate_entity:
             return
         state = self.hass.states.get(self.main_climate_entity)
-        if not state or state.state in ("off", "unavailable", "unknown"):
+        if not state or state.state in ("unavailable", "unknown"):
+            return
+        if state.state == "off":
+            # Already off (auto control idling it): the manager going off
+            # still ends night mode, as when it switches the AC off itself
+            if self.enable_night_mode:
+                self._end_night_mode_after_ac_off()
             return
         # Never cut an active critical-room rescue: the monitor would only
         # re-trigger after its 5-minute cooldown, leaving the room unprotected.
@@ -5244,7 +5260,7 @@ class AirconOptimizer:
             return False
 
         current_mode = main_climate_state.get("hvac_mode")
-        if needs_ac and current_mode not in (None, "off", "unavailable", "unknown"):
+        if needs_ac and self._ac_mode_running(current_mode):
             # Running and wanted running: a switch-off from here on isn't this
             # integration's doing. While the AC is still off from its own idle
             # (a restart held back by compressor protection or an outage), the
@@ -5310,6 +5326,9 @@ class AirconOptimizer:
                 )
                 if success:
                     self._ac_last_turned_on = time.time()
+                    # Back on by this integration: a switch-off from here on is
+                    # someone else's, even before a poll reads the AC running
+                    self._ac_off_intended = False
                     # Persist timestamp for compressor protection across restarts
                     await self._save_compressor_state()
                     await self._send_notification("AC Turned On", f"Smart Manager turned on AC in {optimal_mode} mode")

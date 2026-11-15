@@ -288,7 +288,38 @@ class TestOwnSwitchOff:
         set_room_temps(states, Bed=23.0, Living=23.0)    # demand returns during the outage
         run_cycle(opt)
         switch_off(opt, states)                          # back, still off from the idle
+        assert hvac_commands(calls)[-1] == "off"         # restart held back meanwhile
         assert opt.enable_night_mode is True
+        # The restart goes ahead once allowed, and the night carries on
+        later = time.time() + 600
+        with patch("time.time", return_value=later):
+            run_cycle(opt)
+        restart_mode = hvac_commands(calls)[-1]
+        assert restart_mode != "off"
+        set_ac_mode(states, restart_mode)
+        with patch("time.time", return_value=later + 30):
+            run_cycle(opt)
+        assert opt.enable_night_mode is True
+        # And once it is running, a switch-off by the user ends it
+        with patch("time.time", return_value=later + 60):
+            switch_off(opt, states)
+        assert opt.enable_night_mode is False
+
+    def test_user_switch_off_right_after_an_own_restart_ends_it(self):
+        # Auto control restarts the AC and the user switches it off before
+        # any poll has read it running
+        opt, calls, states, _ = night_cycle_optimizer(auto_control_main_ac=True)
+        run_cycle(opt)
+        self._idle(opt, states, calls)
+        set_ac_mode(states, "off")
+        run_cycle(opt)                                   # a poll sees the idle
+        set_room_temps(states, Bed=23.0, Living=23.0)
+        later = time.time() + 600                        # past the min off-time
+        with patch("time.time", return_value=later):
+            run_cycle(opt)                               # restart sent
+            assert hvac_commands(calls)[-1] != "off"
+            switch_off(opt, states)                      # user: off again
+        assert opt.enable_night_mode is False
 
     def test_failed_switch_off_that_left_the_ac_running_is_forgotten(self):
         # The off command failed and the AC kept running. Once auto control
@@ -326,6 +357,18 @@ class TestOwnSwitchOff:
 
 
 class TestManagerTurnedOff:
+    def test_turning_the_manager_off_while_the_ac_idles_ends_night_mode(self):
+        opt, calls, states, entry = night_cycle_optimizer(auto_control_main_ac=True)
+        run_cycle(opt)
+        TestOwnSwitchOff._idle(opt, states, calls)
+        set_ac_mode(states, "off")
+        run_cycle(opt)
+        commands = len(hvac_commands(calls))
+        asyncio.run(opt.async_turn_off_main_ac())
+        assert len(hvac_commands(calls)) == commands     # nothing to switch off
+        assert opt.enable_night_mode is False
+        assert entry.data["enable_night_mode"] is False
+
     def test_turning_the_manager_off_ends_night_mode(self):
         opt, calls, states, entry = night_cycle_optimizer()
         run_cycle(opt)
