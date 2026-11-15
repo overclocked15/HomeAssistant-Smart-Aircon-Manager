@@ -22,7 +22,7 @@ Fixes from a field report: three days of Home Assistant logs and history from an
 
 ### From the pre-release bug check
 
-- **Who switched the AC off no longer depends on timing.** The first build counted an off as the integration's own only if it was seen within 2 minutes of a successful off command. A controller outage, a slow unit, or an off command reported as failed but carried out ended night mode in the middle of the night under auto control, and a user's switch-off within 2 minutes of the integration's own command was missed. The integration now notes when auto control sends the off and clears that once it wants the AC running again or the AC comes back on.
+- **Who switched the AC off no longer depends on timing.** The first build counted an off as the integration's own only if it was seen within 2 minutes of a successful off command. A controller outage, a slow unit, or an off command reported as failed but carried out ended night mode in the middle of the night under auto control, and a user's switch-off within 2 minutes of the integration's own command was missed. The integration now notes when auto control sends the off and clears that once the AC is running again.
 - **Turning night mode on just after switching the AC off** (before a poll saw the off) no longer turns it straight back off: night mode only ends once the AC has run since it was turned on.
 - **Turning the manager off ends night mode deliberately**, instead of by accident when the manager was turned back on, which also re-armed the compressor's minimum off-time for no reason.
 - **A failed save of night mode as off is retried** on the next poll. It used to leave night mode on for the rest of the day.
@@ -32,14 +32,18 @@ Fixes from a field report: three days of Home Assistant logs and history from an
 - **The warning covers zones opened elsewhere.** It only fired when the zone went back to where it was before the command, so a zone pre-positioned at 30% and opened to 100% by the controller was held without one. It now fires when a held zone is more than 12% away from its position.
 - `held_dampers` is reported while room readings are missing; a zone's position is read and clamped the same way for room states and damper commands; the room switch and night mode share one way of applying a target; docs say a retry needs a pass that sends zone positions.
 
+### From the Codex review
+
+- **A restart held back by compressor protection no longer ends night mode.** When auto control had idled the AC and demand came back within the minimum off-time (or during an outage), the AC stayed off only because the restart was held back. The integration had already stopped counting that off as its own, so two polls later night mode ended and the day target came back. The off now stays the integration's own until the AC is running again.
+
 ### Not changed
 
 - The timeouts come from the controller. Home Assistant's own Advantage Air polling hit the same outages, including while the AC was off and this integration was idle. Retries, timeouts and cooling behaviour are unchanged.
 
 ### Tests
 
-- New `tests/test_damper_feedback.py` (21 tests), `tests/test_night_mode_ac_off.py` (19) and `tests/test_ha_warnings.py` (10). 39 of the 50 fail on v3.5.0. The other 11 guard behaviour that must not change: other rooms unaffected, outages, single off readings, restarts and the integration's own switch-off not ending night mode, missing covers warned about again after they were back, the climate attributes, and the deprecation check, which fails on v3.5.0 only under Home Assistant 2026.11. 19 of the 40 damper and night mode tests fail on the first v3.6.0 build, covering every bug-check finding except the docs one.
-- Suite: 433 tests (432 passing, 1 skipped) on Home Assistant 2024.12.5 and on 2026.11.1.
+- New `tests/test_damper_feedback.py` (21 tests), `tests/test_night_mode_ac_off.py` (22) and `tests/test_ha_warnings.py` (10). 40 of the 53 fail on v3.5.0. The other 13 guard behaviour that must not change: other rooms unaffected, outages, single off readings, restarts, the integration's own switch-off and held-back restarts not ending night mode, missing covers warned about again after they were back, the climate attributes, and the deprecation check, which fails on v3.5.0 only under Home Assistant 2026.11. 19 of the 43 damper and night mode tests fail on the first v3.6.0 build, covering every bug-check finding except the docs one, and the 2 Codex-review tests fail on the build it reviewed.
+- Suite: 436 tests (435 passing, 1 skipped) on Home Assistant 2024.12.5 and on 2026.11.1.
 
 ## v3.5.0 - Logic and Maths Review
 

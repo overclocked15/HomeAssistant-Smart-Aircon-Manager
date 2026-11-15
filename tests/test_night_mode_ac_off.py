@@ -256,6 +256,61 @@ class TestOwnSwitchOff:
         switch_off(opt, states)                          # the unit did switch off
         assert opt.enable_night_mode is True
 
+    def test_restart_held_back_by_compressor_protection_keeps_night_mode(self):
+        # Demand returns inside the minimum off-time: the AC stays off only
+        # because the restart is held back, which is still the integration's
+        # own idle (Codex review on #8)
+        opt, calls, states, _ = night_cycle_optimizer(auto_control_main_ac=True)
+        run_cycle(opt)
+        self._idle(opt, states, calls)                   # own off: min off-time starts
+        set_ac_mode(states, "off")
+        set_room_temps(states, Bed=23.0, Living=23.0)    # demand is back
+        for _ in range(3):
+            run_cycle(opt)
+        assert hvac_commands(calls)[-1] == "off"         # restart still held back
+        assert opt.enable_night_mode is True
+        # The min off-time passes: the AC restarts and night mode carries on
+        later = time.time() + 600
+        with patch("time.time", return_value=later):
+            run_cycle(opt)
+        restart_mode = hvac_commands(calls)[-1]
+        assert restart_mode != "off"
+        set_ac_mode(states, restart_mode)
+        with patch("time.time", return_value=later + 30):
+            run_cycle(opt)
+        assert opt.enable_night_mode is True
+
+    def test_restart_after_an_outage_keeps_night_mode(self):
+        opt, calls, states, _ = night_cycle_optimizer(auto_control_main_ac=True)
+        run_cycle(opt)
+        self._idle(opt, states, calls)
+        set_ac_mode(states, "unavailable")
+        set_room_temps(states, Bed=23.0, Living=23.0)    # demand returns during the outage
+        run_cycle(opt)
+        switch_off(opt, states)                          # back, still off from the idle
+        assert opt.enable_night_mode is True
+
+    def test_failed_switch_off_that_left_the_ac_running_is_forgotten(self):
+        # The off command failed and the AC kept running. Once auto control
+        # wants it running again, a later switch-off is the user's
+        opt, calls, states, _ = night_cycle_optimizer(auto_control_main_ac=True)
+        run_cycle(opt)
+        record = opt.hass.services.async_call
+
+        async def timing_out(domain, service, data, blocking=False):
+            await record(domain, service, data, blocking)
+            if service == "set_hvac_mode":
+                raise RuntimeError("Connection timed out.")
+
+        opt.hass.services.async_call = timing_out
+        with patch("custom_components.smart_aircon_manager.optimizer.asyncio.sleep"):
+            self._idle(opt, states, calls)               # AC still running
+        opt.hass.services.async_call = record
+        set_room_temps(states, Bed=23.0, Living=23.0)    # wanted running again
+        run_cycle(opt)
+        switch_off(opt, states)                          # the user switches it off
+        assert opt.enable_night_mode is False
+
     def test_user_switch_off_after_the_ac_came_back_on_ends_it(self):
         opt, calls, states, _ = night_cycle_optimizer(auto_control_main_ac=True)
         run_cycle(opt)

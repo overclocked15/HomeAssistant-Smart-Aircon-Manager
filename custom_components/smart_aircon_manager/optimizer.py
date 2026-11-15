@@ -412,8 +412,8 @@ class AirconOptimizer:
         # Night mode lasts while the AC runs (_night_mode_should_end): whether
         # the AC has run since night mode was turned on, how many readings in
         # a row it has been off, whether auto control switched it off itself
-        # (set when it sends the off, cleared when it wants the AC on or the
-        # AC comes back on), and the previous reading's on/off
+        # (set when it sends the off, cleared once the AC is running again),
+        # and the previous reading's on/off
         self._night_mode_ac_seen_on = False
         self._night_mode_ac_off_reads = 0
         self._ac_off_intended = False
@@ -5243,11 +5243,13 @@ class AirconOptimizer:
             _LOGGER.debug("Manual override active - skipping AC control")
             return False
 
-        if needs_ac:
-            # A switch-off from here on isn't this integration's doing
-            self._ac_off_intended = False
-
         current_mode = main_climate_state.get("hvac_mode")
+        if needs_ac and current_mode not in (None, "off", "unavailable", "unknown"):
+            # Running and wanted running: a switch-off from here on isn't this
+            # integration's doing. While the AC is still off from its own idle
+            # (a restart held back by compressor protection or an outage), the
+            # off stays its own until the AC comes back on.
+            self._ac_off_intended = False
         if not self._main_ac_reachable(current_mode):
             return False
 
